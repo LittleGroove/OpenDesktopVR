@@ -8,6 +8,8 @@
 #include <OpenDesktopVR/Product.hpp>
 #include <OpenDesktopVR/StringUtil.hpp>
 
+#include <algorithm>
+
 namespace OpenDesktopVR::Registration {
 
 namespace {
@@ -102,6 +104,7 @@ std::vector<LayerEntry> ListLayers(const RegistryLocation& location) {
   }
   for (const auto& value: ReadValues(key.get())) {
     LayerEntry entry;
+    entry.mRoot = location.mRoot;
     entry.mWhere = location.Describe();
     entry.mManifestPath = value.mName;
     entry.mEnabled = value.mIsDword && value.mData == 0;
@@ -124,7 +127,28 @@ std::vector<LayerEntry> ListAllImplicitLayers() {
       all.insert(all.end(), entries.begin(), entries.end());
     }
   }
-  return all;
+  return MergeSharedViews(std::move(all));
+}
+
+std::vector<LayerEntry> MergeSharedViews(std::vector<LayerEntry> entries) {
+  std::vector<LayerEntry> merged;
+  for (auto& entry: entries) {
+    // Only HKCU is shared; HKLM's two views are separate keys, so an entry
+    // in both is two real registrations
+    const bool seen = entry.mRoot == HKEY_CURRENT_USER && std::ranges::any_of(merged, [&](const LayerEntry& kept) {
+      return kept.mRoot == entry.mRoot
+        && StringUtil::EqualsIgnoreCase(kept.mManifestPath.wstring(), entry.mManifestPath.wstring());
+    });
+    if (seen) {
+      continue;
+    }
+    // HKCU\Software is one key in both views, so its view label means nothing
+    if (entry.mRoot == HKEY_CURRENT_USER) {
+      entry.mWhere = L"HKCU";
+    }
+    merged.push_back(std::move(entry));
+  }
+  return merged;
 }
 
 RegisterResult Register(const std::filesystem::path& manifest, const RegistryLocation& location) {

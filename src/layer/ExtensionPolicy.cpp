@@ -63,7 +63,7 @@ Support ProbeInstanceExtension(PFN_xrGetInstanceProcAddr next, std::string_view 
 
 std::string_view ExtensionPlan::Who() const noexcept {
   if (mGameEnabledHandTracking) {
-    return "the game";
+    return "the game or a layer above us";
   }
   if (mLayerAddsHandTracking) {
     return "the layer";

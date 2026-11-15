@@ -30,7 +30,8 @@ struct RegistryLocation {
 RegistryLocation UserImplicitLayers();
 
 struct LayerEntry {
-  std::wstring mWhere;// for example "HKCU (64-bit)"
+  HKEY mRoot {nullptr};
+  std::wstring mWhere;// for example "HKLM (64-bit)"
   std::filesystem::path mManifestPath;
   bool mEnabled {false};// data is DWORD 0
   bool mManifestExists {false};
@@ -47,8 +48,12 @@ bool IsOurs(const std::filesystem::path& manifest, const std::optional<std::stri
 std::vector<LayerEntry> ListLayers(const RegistryLocation& location);
 
 // Every implicit layer in both hives and both registry views, for
-// diagnostics and the debug bundle (LG-4)
+// diagnostics and the debug bundle (LG-4). Each entry appears once.
 std::vector<LayerEntry> ListAllImplicitLayers();
+
+// Drops entries seen twice because a key is shared between the 32- and
+// 64-bit registry views (HKCU\Software is). Keeps the first of each.
+std::vector<LayerEntry> MergeSharedViews(std::vector<LayerEntry> entries);
 
 struct RegisterResult {
   bool mOk {false};

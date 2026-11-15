@@ -94,6 +94,27 @@ int main() {
     Check(entries.size() == 1 && !entries[0].mIsOurs, "the other product's entry remains");
   });
 
+  Scenario("A per-user entry is listed once, though both registry views show it (test round 1)", [&] {
+    const auto entry = [](HKEY root, const wchar_t* where, const wchar_t* path) {
+      LayerEntry e;
+      e.mRoot = root;
+      e.mWhere = where;
+      e.mManifestPath = path;
+      return e;
+    };
+    const auto merged = MergeSharedViews({
+      entry(HKEY_CURRENT_USER, L"HKCU (64-bit)", L"C:\\Users\\A\\Layer.json"),
+      entry(HKEY_CURRENT_USER, L"HKCU (32-bit)", L"c:\\users\\a\\layer.json"),
+      entry(HKEY_LOCAL_MACHINE, L"HKLM (64-bit)", L"C:\\Other\\Other.json"),
+      entry(HKEY_LOCAL_MACHINE, L"HKLM (32-bit)", L"C:\\Other\\Other.json"),
+    });
+    Check(merged.size() == 3, std::format("3 entries after merging ({})", merged.size()));
+    Check(merged.size() == 3 && merged[0].mWhere == L"HKCU", "the per-user entry is labelled HKCU, without a view");
+    Check(
+      merged.size() == 3 && merged[1].mWhere == L"HKLM (64-bit)" && merged[2].mWhere == L"HKLM (32-bit)",
+      "machine-wide views are separate keys: both kept");
+  });
+
   RegDeleteTreeW(HKEY_CURRENT_USER, testRoot.c_str());
   return Finish();
 }

@@ -163,7 +163,7 @@ int main() {
     Check(plan.mNames.size() == 1 && !plan.mLayerAddsHandTracking, "unsupported: not added");
     const char* gameWithHands[] {"XR_KHR_D3D11_enable", XR_EXT_HAND_TRACKING_EXTENSION_NAME};
     plan = PlanExtensions(gameWithHands, Support::Supported);
-    Check(plan.mNames.size() == 2 && plan.Who() == "the game", "the game enabled it: never added twice");
+    Check(plan.mNames.size() == 2 && plan.Who() == "the game or a layer above us", "already requested above us: never added twice");
     plan = WithoutLayerAdditions(game);
     Check(plan.mNames.size() == 1 && !plan.mLayerAddsHandTracking, "the retry uses only the game's list");
   });

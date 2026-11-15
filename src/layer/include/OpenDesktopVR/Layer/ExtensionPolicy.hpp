@@ -28,7 +28,8 @@ struct ExtensionPlan {
   std::vector<const char*> mNames;
   bool mGameEnabledHandTracking {false};
   bool mLayerAddsHandTracking {false};
-  // Log for "who enabled it"
+  // Log for "who enabled it". We only see what reaches us, so a request
+  // from the game and one from a layer above us look the same.
   std::string_view Who() const noexcept;
 };
 
