@@ -15,6 +15,7 @@
 // - a version mismatch in shared memory: pass through, one log line (SY-7);
 // - the host's fence 100 ms late: frames keep the previous image, forced
 //   waits are a minority, and the game's CPU never waits (ADR-012);
+// - the host's GPU work never completing: no GPU wait at all (ADR-024);
 // - static panels: nothing copied while nothing changes (bench gate).
 
 #include "check.hpp"
@@ -209,7 +210,24 @@ int main(int argc, char** argv) {
     Check(run.mMaxEndFrameMs < 5, std::format("no stall (max {:.2f} ms)", run.mMaxEndFrameMs));
   });
 
+  Scenario("A host whose GPU work never completes never gets a GPU wait (ADR-024)", [&] {
+    RunFrames(game, 3s, [] { return Quads() == 0; });
+    HostProcess host {L"--fence-delay-ms 600000"};
+    const auto before = ReadLayerStatus();
+    const auto run = RunFrames(game, 4s);
+    std::this_thread::sleep_for(1200ms);
+    RunFrames(game, 100ms);
+    const auto after = ReadLayerStatus();
+    Check(Quads() == 0, "nothing is shown until a frame is ready");
+    Check(after.has_value(), "the layer is connected and reporting");
+    const auto waits = after ? after->mForcedWaits - (before ? before->mForcedWaits : 0) : 1;
+    Check(waits == 0, std::format("no GPU wait on a fence that never signals ({})", waits));
+    Check(run.mMaxEndFrameMs < 5, std::format("no stall (max {:.2f} ms)", run.mMaxEndFrameMs));
+    host.Kill();
+  });
+
   Scenario("The host's fence 100 ms late: keep previous, rare GPU waits, no CPU wait (ADR-012)", [&] {
+    RunFrames(game, 3s, [] { return Quads() == 0; });
     HostProcess host {L"--fence-delay-ms 100"};
     RunFrames(game, 10s, [] { return Quads() == 2; });
     RunFrames(game, 1s);

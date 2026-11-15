@@ -2,11 +2,14 @@
 // Copyright (c) 2026 Robert McGough. All rights reserved.
 //
 // The host's panels inside the game (doc 03 "xrEndFrame work", step 3).
-// For each visible panel whose content changed (ADR-012, SY-1, SY-2):
-// - ready (fence completed; a non-blocking read): copy, no GPU wait;
-// - not ready, previous image shown: keep it, for up to 40 ms;
-// - still late after 40 ms, or nothing shown yet: queue a GPU-side wait on
-//   the fence, then copy.
+// For each visible panel whose content changed (ADR-012 as refined by
+// ADR-024; SY-1, SY-2):
+// - newest ready (fence completed; a non-blocking read): copy, no wait;
+// - otherwise the frame before it, if that's ready and newer than shown;
+// - one frame behind: keep it (a normal, short lag);
+// - nothing shown yet: show nothing until a frame is ready (never a wait);
+// - two or more behind: keep the previous image up to 40 ms, then a
+//   GPU-side wait, only while the host runs and its fence is moving.
 // The "what's shown" record (SY-4) holds the host generation, texture
 // generation and content version; it's reset on swapchain (re)creation and
 // set only after a successful release.
@@ -25,12 +28,16 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <utility>
 
 namespace OpenDesktopVR::Layer {
 
 struct StalenessOptions {
   // ADR-012: a starting value, to be tuned from the stats line's counts
   std::chrono::milliseconds mMaxStaleness {40};
+  // ADR-024: a GPU wait only on a fence that completed something this
+  // recently, so it can't wait for a signal that never comes
+  std::chrono::milliseconds mProgressWindow {250};
 };
 
 class HostPanels {
@@ -62,7 +69,14 @@ class HostPanels {
     uint64_t mCopies {0};
     uint64_t mKeptPrevious {0};
     uint64_t mForcedWaits {0};
+    uint64_t mPreviousSlotCopies {0};// the newest wasn't done; the one before was
   };
+
+  // True once after the link (re)connects: report at once, so the host can
+  // match our format without waiting for the next once-a-second report
+  bool TakeReportDue() noexcept {
+    return std::exchange(mReportDue, false);
+  }
   Counters GetCounters() const noexcept {
     return mCounters;
   }
@@ -74,6 +88,11 @@ class HostPanels {
     uint64_t mShownGeneration {0};
     uint32_t mShownTextureGeneration {0};
     std::optional<TimeUtil::TimePoint> mLateSince;
+    uint64_t mProgressGeneration {0};
+    uint32_t mProgressTextureGeneration {0};
+    uint64_t mLastCompleted {0};
+    TimeUtil::TimePoint mLastProgress {};
+    bool mLoggedStuck {false};
     XrCompositionLayerQuad mQuad {XR_TYPE_COMPOSITION_LAYER_QUAD};
     bool mLoggedFormat {false};
   };
@@ -94,6 +113,8 @@ class HostPanels {
   HostLink::Client mLink;
   std::array<Record, SharedAbi::MaxPanels> mRecords;
   Counters mCounters;
+  bool mWasConnected {false};
+  bool mReportDue {false};
 };
 
 }// namespace OpenDesktopVR::Layer

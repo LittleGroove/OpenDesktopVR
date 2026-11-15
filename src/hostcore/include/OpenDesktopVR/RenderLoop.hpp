@@ -38,8 +38,9 @@ struct RenderLoopOptions {
   // it's published, and is reused 3 publishes later, so publishes of one
   // panel are never closer than this, even for structural changes
   std::chrono::milliseconds mRingSafetyFloor {20};
-  // Test only: publish each frame this long before signalling its fence, to
-  // exercise the layer's bounded staleness (ADR-012)
+  // Test only: signal each frame's fence this long after publishing it,
+  // while rendering continues (a host whose GPU work is starved), to
+  // exercise the layer's bounded staleness (ADR-012, ADR-024)
   std::chrono::milliseconds mFenceDelay {0};
   bool mAllowWarp {false};
 };

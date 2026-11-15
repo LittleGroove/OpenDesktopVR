@@ -39,12 +39,15 @@ class PanelRing {
   // Signals the fence for a frame drawn into `slot` and flushes, so the
   // signal can't sit in the command buffer (SY-3). Returns the fence value
   // that marks the frame complete.
-  uint64_t Finish(ID3D11DeviceContext4* context, uint32_t slot) noexcept;
-  // The value the next Finish will signal (to publish a frame before its
-  // signal, which only the late-fence test does)
-  uint64_t NextFenceValue() const noexcept {
-    return mFenceValue + 1;
+  uint64_t Finish(ID3D11DeviceContext4* context, uint32_t slot) noexcept {
+    const auto value = Advance(slot);
+    Signal(context, value);
+    return value;
   }
+  // The two halves of Finish, for the late-fence test only: a frame is
+  // announced (Advance) and its fence signalled later (Signal)
+  uint64_t Advance(uint32_t slot) noexcept;
+  void Signal(ID3D11DeviceContext4* context, uint64_t value) noexcept;
 
   uint32_t NewestSlot() const noexcept {
     return mNewestSlot;

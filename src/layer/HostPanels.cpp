@@ -107,23 +107,88 @@ bool HostPanels::Bring(
     return true;// unchanged: the runtime keeps showing the last released image
   }
 
-  const bool ready = resources.mFence->GetCompletedValue() >= entry.mFenceValue;
+  const uint64_t completed = resources.mFence->GetCompletedValue();
+  // Progress is tracked per fence: a new host or ring starts with none
+  // (found by test: an old host's last value made a stuck fence look alive)
+  if (record.mProgressGeneration != resources.mGeneration || record.mProgressTextureGeneration != entry.mTextureGeneration) {
+    record.mProgressGeneration = resources.mGeneration;
+    record.mProgressTextureGeneration = entry.mTextureGeneration;
+    record.mLastCompleted = completed;
+    record.mLastProgress = {};
+  } else if (completed != record.mLastCompleted) {
+    record.mLastCompleted = completed;
+    record.mLastProgress = now;
+  }
+  const bool ready = completed >= entry.mFenceValue;
   bool wait = false;
   if (!ready) {
-    if (swapchain.HasReleasedImage()) {
+    // ADR-024 (refines ADR-012). In order:
+    const bool sameRing = record.mShownGeneration == resources.mGeneration
+      && record.mShownTextureGeneration == entry.mTextureGeneration;
+    const bool shown = swapchain.HasReleasedImage() && sameRing;
+    const uint64_t previousVersion = entry.mContentVersion - 1;
+
+    // 1. The newest isn't done, but the one before it usually is: the host's
+    //    GPU work queues behind the game's (test round 2: about half of all
+    //    frames). Show it now, with no wait (doc 02: copy the newest
+    //    completed slot). Only the slot just before the newest is safe: the
+    //    host draws its next frame into the slot before that.
+    const bool previousIsNewer = !shown || swapchain.ShownKey() < previousVersion;
+    if (entry.mFenceValue >= 2 && completed >= entry.mFenceValue - 1 && previousVersion > 0 && previousIsNewer) {
+      const uint32_t previousSlot = (entry.mCurrentSlot + SharedAbi::RingSlots - 1) % SharedAbi::RingSlots;
+      if (auto* previous = resources.mTextures[previousSlot].get()) {
+        const auto scope = mContextState.Enter(mContext);
+        if (swapchain.Present(mContext, previous, previousVersion)) {
+          record.mShownGeneration = resources.mGeneration;
+          record.mShownTextureGeneration = entry.mTextureGeneration;
+          record.mLateSince.reset();
+          ++mCounters.mCopies;
+          ++mCounters.mPreviousSlotCopies;
+          mStats.ImageReleased();
+          mStats.PreviousSlotShown();
+          return true;
+        }
+      }
+    }
+
+    // 2. One frame behind is a normal, short lag: keep it, no timer
+    if (shown && swapchain.ShownKey() + 1 >= entry.mContentVersion) {
+      record.mLateSince.reset();
+      ++mCounters.mKeptPrevious;
+      mStats.KeptPrevious();
+      return true;
+    }
+
+    // 3/4. Something of this ring is shown and we're two or more frames
+    //    behind: keep it for up to 40 ms. Nothing of this ring shown yet (a
+    //    new panel, or a new host whose image would replace the old one's):
+    //    nothing to keep, so go straight to 5.
+    if (shown) {
       if (!record.mLateSince) {
         record.mLateSince = now;
       }
       if (now - *record.mLateSince < mOptions.mMaxStaleness) {
         ++mCounters.mKeptPrevious;
         mStats.KeptPrevious();
-        return true;// keep showing the previous image (ADR-012)
+        return true;
       }
     }
-    // Late for too long, or nothing to show yet. Never wait on a fence whose
-    // host has gone: that signal may never come
-    if (!mLink.HostIsRunning()) {
-      return swapchain.HasReleasedImage();
+
+    // 5. A GPU-side wait, but only while the host is running and its fence
+    //    is moving. If the host's GPU work were stuck, a wait would hold the
+    //    game's GPU queue forever (a driver reset, a crashed game); then we
+    //    keep what we have, or show nothing
+    if (!mLink.HostIsRunning() || now - record.mLastProgress > mOptions.mProgressWindow) {
+      if (!shown) {
+        return false;
+      }
+      ++mCounters.mKeptPrevious;
+      mStats.KeptPrevious();
+      if (!record.mLoggedStuck) {
+        record.mLoggedStuck = true;
+        Log::Warning("Panel {:X}: the host's GPU work isn't completing; keeping the last image", entry.mPanelID);
+      }
+      return true;
     }
     wait = true;
   }
@@ -157,6 +222,10 @@ std::size_t HostPanels::Compose(TimeUtil::TimePoint now, std::span<ComposedPanel
     return 0;
   }
   mLink.Update(now);
+  if (mLink.IsConnected() != mWasConnected) {
+    mWasConnected = mLink.IsConnected();
+    mReportDue = mWasConnected;
+  }
   std::size_t added = 0;
   for (const auto& entry: mLink.Panels()) {
     if (added >= out.size()) {

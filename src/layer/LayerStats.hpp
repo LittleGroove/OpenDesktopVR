@@ -39,6 +39,9 @@ class LayerStats {
   void ForcedWait() noexcept {
     ++mForcedWaits;
   }
+  void PreviousSlotShown() noexcept {
+    ++mPreviousSlot;
+  }
   void HandFrame(double coverage) noexcept {
     ++mHandFrames;
     mHandCoverage += coverage;
@@ -63,13 +66,15 @@ class LayerStats {
   void Write(const char* title) const noexcept {
     const double frames = static_cast<double>(std::max<uint64_t>(mFrames, 1));
     Log::Info(
-      "{}: {} frames ({} with panels, {} with no game layers); images {}; kept previous {}; "
-      "forced waits {}; panels dropped {}; hand frames {} (coverage {:.1f}%); CPU avg {:.3f} ms, max {:.3f} ms",
+      "{}: {} frames ({} with panels, {} with no game layers); images {} ({} from the slot before the newest); "
+      "kept previous {}; forced waits {}; panels dropped {}; hand frames {} (coverage {:.1f}%); "
+      "CPU avg {:.3f} ms, max {:.3f} ms",
       title,
       mFrames,
       mFramesWithPanels,
       mZeroLayerFrames,
       mImagesReleased,
+      mPreviousSlot,
       mKeptPrevious,
       mForcedWaits,
       mPanelsDropped,
@@ -82,7 +87,7 @@ class LayerStats {
  private:
   void Reset() noexcept {
     mFrames = mZeroLayerFrames = mFramesWithPanels = mPanelsDropped = 0;
-    mImagesReleased = mKeptPrevious = mForcedWaits = mHandFrames = 0;
+    mImagesReleased = mKeptPrevious = mForcedWaits = mHandFrames = mPreviousSlot = 0;
     mHandCoverage = mCpuTotalMs = mCpuMaxMs = 0;
   }
 
@@ -94,6 +99,7 @@ class LayerStats {
   uint64_t mImagesReleased {0};
   uint64_t mKeptPrevious {0};
   uint64_t mForcedWaits {0};
+  uint64_t mPreviousSlot {0};
   uint64_t mHandFrames {0};
   double mHandCoverage {0};
   double mCpuTotalMs {0};

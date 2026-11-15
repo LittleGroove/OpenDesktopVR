@@ -76,12 +76,14 @@ PanelRing::~PanelRing() {
   }
 }
 
-uint64_t PanelRing::Finish(ID3D11DeviceContext4* context, uint32_t slot) noexcept {
+uint64_t PanelRing::Advance(uint32_t slot) noexcept {
   mNewestSlot = slot;
-  ++mFenceValue;
-  context->Signal(mFence.get(), mFenceValue);
+  return ++mFenceValue;
+}
+
+void PanelRing::Signal(ID3D11DeviceContext4* context, uint64_t value) noexcept {
+  context->Signal(mFence.get(), value);
   context->Flush();// SY-3: never leave the signal in the command buffer
-  return mFenceValue;
 }
 
 }// namespace OpenDesktopVR::Render

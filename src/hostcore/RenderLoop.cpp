@@ -59,6 +59,17 @@ struct RenderLoop::Impl {
   uint64_t mRendersSinceStats {0};
   uint64_t mFramesSinceStats {0};
 
+  // Test only (late-fence mode): signals waiting to be issued, oldest first
+  struct PendingSignal {
+    TimeUtil::TimePoint mDue;
+    HostPanel* mPanel;
+    uint32_t mTextureGeneration;
+    uint64_t mValue;
+  };
+  static constexpr std::size_t MaxPendingSignals = 64;
+  std::vector<PendingSignal> mPendingSignals;
+  void IssueDueSignals(TimeUtil::TimePoint now);
+
   ~Impl() {
     CloseHandle(mStop);
     CloseHandle(mTimer);
@@ -128,6 +139,7 @@ bool RenderLoop::Impl::EnsureGpu(std::optional<LUID> adapter) {
     panel.mRing.reset();
     panel.mSource.reset();
   }
+  mPendingSignals.clear();
   mGpu = std::move(gpu);
   for (std::size_t i = 0; i < mPanels.size(); ++i) {
     mPanels[i].mSource = mDefinitions[i].second(*mGpu);
@@ -292,19 +304,16 @@ bool RenderLoop::Impl::RenderPanel(HostPanel& panel, TimeUtil::TimePoint now) {
   }
 
   if (mOptions.mFenceDelay > 0ms) {
-    // Test only: the frame is announced before its GPU work is signalled
+    // Test only: announce the frame now, signal its fence later, while
+    // rendering carries on, like a host whose GPU work is starved
+    const auto value = ring.Advance(slot);
     panel.mContentVersion += 1;
-    const auto announced = ring.NextFenceValue();
-    auto entry = EntryFor(panel, true);
-    entry.mCurrentSlot = slot;
-    entry.mFenceValue = announced;
-    std::array<SharedAbi::PanelEntry, SharedAbi::MaxPanels> entries {};
-    for (std::size_t i = 0; i < mPanels.size() && i < entries.size(); ++i) {
-      entries[i] = (&mPanels[i] == &panel) ? entry : EntryFor(mPanels[i], mLastVisible);
+    if (mPendingSignals.size() < MaxPendingSignals) {
+      mPendingSignals.push_back({now + mOptions.mFenceDelay, &panel, panel.mTextureGeneration, value});
+      FrameWakeup::ScheduleNextFrame(now + mOptions.mFenceDelay);
     }
-    mPublisher->PublishPanels({entries.data(), std::min(mPanels.size(), entries.size())});
-    Sleep(static_cast<DWORD>(mOptions.mFenceDelay.count()));
-    ring.Finish(mGpu->Context(), slot);
+    // Full: this signal is dropped (the queue never grows). A later, higher
+    // signal still completes anything waiting on this value.
   } else {
     ring.Finish(mGpu->Context(), slot);// signal + flush (SY-3)
     panel.mContentVersion += 1;
@@ -313,6 +322,22 @@ bool RenderLoop::Impl::RenderPanel(HostPanel& panel, TimeUtil::TimePoint now) {
   panel.mLastPublish = now;
   ++panel.mRenders;
   return true;
+}
+
+void RenderLoop::Impl::IssueDueSignals(TimeUtil::TimePoint now) {
+  std::size_t issued = 0;
+  for (const auto& pending: mPendingSignals) {
+    if (pending.mDue > now) {
+      FrameWakeup::ScheduleNextFrame(pending.mDue);
+      break;
+    }
+    auto& panel = *pending.mPanel;
+    if (mGpu && panel.mRing && panel.mTextureGeneration == pending.mTextureGeneration) {
+      panel.mRing->Signal(mGpu->Context(), pending.mValue);
+    }
+    ++issued;
+  }
+  mPendingSignals.erase(mPendingSignals.begin(), mPendingSignals.begin() + static_cast<std::ptrdiff_t>(issued));
 }
 
 void RenderLoop::Impl::WriteStatsLine() {
@@ -370,6 +395,7 @@ void RenderLoop::Impl::Main(const std::atomic<bool>& visible) {
     }
 
     EnsurePublisher(now);
+    IssueDueSignals(now);
     if (mStatusTimer.Due(now)) {
       FollowLayer();
     }
@@ -414,10 +440,8 @@ void RenderLoop::Impl::Main(const std::atomic<bool>& visible) {
         FrameWakeup::ScheduleNextFrame(panel.mLimiter.NextAllowed());
       }
     }
-    if (publish && mOptions.mFenceDelay == 0ms) {
+    if (publish) {
       Publish(showing);
-    } else if (publish && !showing) {
-      Publish(false);
     }
     if (!mGpu) {
       FrameWakeup::RequestFrameSoon();

@@ -199,7 +199,8 @@ XrFrameEndInfo Session::Compose(const XrFrameEndInfo& game) noexcept {
       std::size_t panelCount = 0;
       if (mHostPanels) {
         panelCount += mHostPanels->Compose(start, {mPanels.data(), mPanels.size()});
-        if (mReportTimer.Due(start)) {
+        const bool reportNow = mHostPanels->TakeReportDue();
+        if (mReportTimer.Due(start) || reportNow) {
           mReport.mFramesSinceAttach = mStats.TotalFrames();
           mHostPanels->Report(mReport);
         }
