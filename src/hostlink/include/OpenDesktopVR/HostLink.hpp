@@ -83,9 +83,11 @@ class Client {
     return {mSnapshot.mPanels, IsConnected() ? mSnapshot.mPanelCount : 0u};
   }
 
-  // The shared textures and fence for a panel, opened on first use;
-  // null if they can't be opened
-  const PanelResources* Resources(const SharedAbi::PanelEntry& entry) noexcept;
+  // The shared textures and fence for a panel, opened on first use; null if
+  // they can't be opened. Opening costs real time (test round 4: part of a
+  // 24 ms frame), so it only happens while `openBudget` is true, and uses
+  // it up: callers allow one per frame.
+  const PanelResources* Resources(const SharedAbi::PanelEntry& entry, bool& openBudget) noexcept;
 
   // Layers: writes this process's report, claiming the status section if it
   // is free or its owner has exited. Only the owner writes.

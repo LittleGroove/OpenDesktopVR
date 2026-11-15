@@ -7,7 +7,8 @@
 //   no more once found (CP-6); a failed start is retried (CP-7);
 // - each FrameArrived drains the pool to the newest frame (CP-1) and wakes
 //   the render loop (CP-2); the frame is copied on the render thread, client
-//   area only (CP-3);
+//   area only (CP-3), and compared on the GPU with the frame shown: an
+//   identical frame is dropped (Windows 10 sends some; test round 4);
 // - inactive (hidden, or nobody watching): frames are dropped, the session
 //   stays, so showing again is instant (CP-5);
 // - frame-pool resize on a content-size change; captured cursor off; the
@@ -35,14 +36,18 @@ class WindowCaptureSource final : public Render::ContentSource {
   ~WindowCaptureSource() override;
 
   Render::PixelSize Size() const override;
+  Render::Readiness Prepare() override;
+  std::string StatsText() const override;
   void Render(ID2D1DeviceContext2* context, Render::PixelSize size, TimeUtil::TimePoint now) override;
   void SetActive(bool active) override;
+  void SetCrop(const Render::Crop& crop) override;
   void Maintain(TimeUtil::TimePoint now) override;
   std::wstring Describe() const override;
 
   // For tests and stats
   uint64_t FramesArrived() const noexcept;
   uint64_t FramesCopied() const noexcept;
+  uint64_t FramesUnchanged() const noexcept;
   bool IsCapturing() const noexcept;
 
  private:

@@ -189,7 +189,7 @@ bool Client::Open(PanelResources& resources, const SharedAbi::PanelEntry& entry)
   return !resources.mFailed;
 }
 
-const PanelResources* Client::Resources(const SharedAbi::PanelEntry& entry) noexcept {
+const PanelResources* Client::Resources(const SharedAbi::PanelEntry& entry, bool& openBudget) noexcept {
   if (!IsConnected() || entry.mContentVersion == 0) {
     return nullptr;
   }
@@ -214,9 +214,10 @@ const PanelResources* Client::Resources(const SharedAbi::PanelEntry& entry) noex
       }
     }
   }
-  if (!slot) {
-    return nullptr;
+  if (!slot || !openBudget) {
+    return nullptr;// not this frame
   }
+  openBudget = false;
   return Open(*slot, entry) ? slot : nullptr;
 }
 

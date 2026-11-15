@@ -22,10 +22,29 @@ struct PixelSize {
   bool operator==(const PixelSize&) const = default;
 };
 
+// How much of each edge to trim, as fractions of the content (CT-12):
+// frameless apps draw their own title bar inside the client area
+struct Crop {
+  float mLeft {0};
+  float mTop {0};
+  float mRight {0};
+  float mBottom {0};
+  bool operator==(const Crop&) const = default;
+  // Each edge at most 45%, so something is always left
+  Crop Clamped() const noexcept;
+};
+
 // Given to a source when it's made: call it, from any thread, when new
 // content exists. It marks the panel dirty and wakes the render loop (at
 // most every 8 ms: CP-2).
 using MarkDirty = std::function<void()>;
+
+// What Prepare found
+enum class Readiness {
+  Ready,     // new content to draw
+  Unchanged, // what arrived was identical to what's shown: nothing to draw
+  Pending,   // still finding out: ask again in a couple of milliseconds
+};
 
 class ContentSource {
  public:
@@ -39,6 +58,12 @@ class ContentSource {
   // pace. Sources that report changes through MarkDirty return false.
   virtual bool IsAnimated() const {
     return false;
+  }
+
+  // Before drawing a content change, on the render thread: is there really
+  // something new? Sources that can't tell say Ready.
+  virtual Readiness Prepare() {
+    return Readiness::Ready;
   }
 
   // Draws one frame. The context is between BeginDraw and EndDraw. Called on
@@ -55,8 +80,17 @@ class ContentSource {
   virtual void Maintain(TimeUtil::TimePoint /*now*/) {
   }
 
+  // Trim the content's edges; sources that can't crop ignore it
+  virtual void SetCrop(const Crop& /*crop*/) {
+  }
+
   // A short state for logs and menus ("capturing", "waiting for Discord")
   virtual std::wstring Describe() const {
+    return {};
+  }
+
+  // Counters for the 60 s stats line; empty if there's nothing to say
+  virtual std::string StatsText() const {
     return {};
   }
 };

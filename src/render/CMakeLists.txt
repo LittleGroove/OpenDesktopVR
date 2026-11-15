@@ -7,6 +7,7 @@
 odvr_module(
   render
   SOURCES
+  ContentSource.cpp
   GpuDevice.cpp
   PanelRing.cpp
   TestPatternSource.cpp

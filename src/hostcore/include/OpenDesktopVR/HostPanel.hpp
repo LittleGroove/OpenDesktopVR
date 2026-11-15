@@ -35,6 +35,7 @@ struct PanelDefinition {
   float mYawDegrees {0};
   float mWidthMeters {0.36f};// height follows the content's aspect
   double mMaxUpdatesPerSecond {0};// 0 = the global maximum
+  Render::Crop mCrop;// trimmed edges (CT-12)
   // Fields this version doesn't know, kept for a newer one (ST-5)
   JsonUtil::Json mExtra;
 

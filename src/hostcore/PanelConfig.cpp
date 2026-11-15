@@ -79,6 +79,13 @@ std::optional<PanelDefinition> FromJson(const Json& json) noexcept {
     panel.mWidthMeters = JsonUtil::GetOr<float>(json, "widthMeters", 0.4f);
     panel.mMaxUpdatesPerSecond = JsonUtil::GetOr<double>(json, "maxUpdatesPerSecond", 0.0);
     panel.mEnabled = JsonUtil::GetOr<bool>(json, "enabled", true);
+    if (const auto crop = JsonUtil::Get<Json>(json, "crop"); crop && crop->is_array() && crop->size() == 4) {
+      float edges[4] {};
+      for (std::size_t i = 0; i < 4; ++i) {
+        edges[i] = (*crop)[i].is_number() ? (*crop)[i].get<float>() : 0.0f;
+      }
+      panel.mCrop = Render::Crop {edges[0], edges[1], edges[2], edges[3]}.Clamped();
+    }
     // Untrusted (hand-edited files): finite numbers in sensible ranges
     if (!Finite(panel.mPosition[0]) || !Finite(panel.mPosition[1]) || !Finite(panel.mPosition[2])
         || std::abs(panel.mPosition[0]) > 20 || std::abs(panel.mPosition[1]) > 20 || std::abs(panel.mPosition[2]) > 20
@@ -112,6 +119,8 @@ Json ToJson(const PanelDefinition& panel) {
   json["widthMeters"] = panel.mWidthMeters;
   json["maxUpdatesPerSecond"] = panel.mMaxUpdatesPerSecond;
   json["enabled"] = panel.mEnabled;
+  const auto& crop = panel.mCrop;
+  json["crop"] = Json::array({crop.mLeft, crop.mTop, crop.mRight, crop.mBottom});
   return json;
 }
 

@@ -157,6 +157,9 @@ void RenderLoop::Impl::MakeSource(HostPanel& panel) {
       FrameWakeup::RequestFrameSoon();// at most every 8 ms (CP-2)
     }
   });
+  if (panel.mSource) {
+    panel.mSource->SetCrop(panel.mDefinition.mCrop);
+  }
   panel.mDirty->Mark(Panels::Dirty::Structural);
 }
 
@@ -182,7 +185,10 @@ void RenderLoop::Impl::ApplyPendingPanels() {
         break;
       }
     }
+    // ST-6: an edit touches only what it changes. New content gets a new
+    // source; a new crop redraws; placement and rate changes only publish.
     const bool newContent = !panel || !panel->mDefinition.SameContent(definition);
+    const bool newCrop = panel && !(panel->mDefinition.mCrop == definition.mCrop);
     if (!panel) {
       panel = std::make_unique<HostPanel>();
     }
@@ -190,8 +196,10 @@ void RenderLoop::Impl::ApplyPendingPanels() {
     panel->mLimiter.SetRate(panel->mDefinition.mMaxUpdatesPerSecond, mOptions.mGlobalMaxUpdatesPerSecond);
     if (newContent) {
       MakeSource(*panel);
+    } else if (newCrop && panel->mSource) {
+      panel->mSource->SetCrop(panel->mDefinition.mCrop);
+      panel->mDirty->Mark(Panels::Dirty::Structural);
     }
-    panel->mDirty->Mark(Panels::Dirty::Structural);
     next.push_back(std::move(panel));
   }
   // Removed panels (and their sources) go here
@@ -416,6 +424,11 @@ void RenderLoop::Impl::WriteStatsLine() {
   std::string perPanel;
   for (const auto& panel: mPanels) {
     perPanel += std::format(" '{}' {}", StringUtil::Narrow(panel->mDefinition.mName), panel->mRenders);
+    if (panel->mSource) {
+      if (const auto text = panel->mSource->StatsText(); !text.empty()) {
+        perPanel += " (" + text + ")";
+      }
+    }
   }
   RenderStats stats;
   {
@@ -517,6 +530,20 @@ void RenderLoop::Impl::Main(const std::atomic<bool>& visible) {
       }
       const auto kind = panel.mDirty->Take();
       const bool structural = kind & Panels::Dirty::Structural;
+      // Is there really something new? (Identical captured frames are
+      // dropped here; the GPU check answers a frame later.)
+      if (kind & Panels::Dirty::Content) {
+        const auto readiness = panel.mSource->Prepare();
+        if (readiness == Render::Readiness::Pending) {
+          panel.mDirty->Restore(Panels::Dirty::Content);
+          FrameWakeup::ScheduleNextFrame(now + 2ms);
+          if (!structural) {
+            continue;
+          }
+        } else if (readiness == Render::Readiness::Unchanged && !structural) {
+          continue;
+        }
+      }
       const auto floor = panel.mLastPublish + mOptions.mRingSafetyFloor;
       if (!panel.mLimiter.MayRender(now, structural) || (panel.mContentVersion > 0 && now < floor)) {
         panel.mDirty->Restore(kind);// postponed, never dropped

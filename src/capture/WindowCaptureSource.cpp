@@ -4,6 +4,7 @@
 // Written from Microsoft's documentation of Windows.Graphics.Capture and its
 // Win32 interop interfaces.
 
+#include <OpenDesktopVR/D3D11Util.hpp>
 #include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/ProcessUtil.hpp>
 #include <OpenDesktopVR/StringUtil.hpp>
@@ -24,6 +25,10 @@
 #include <mutex>
 
 namespace OpenDesktopVR::Capture {
+
+namespace Shaders {
+#include <CompareCS.h>
+}
 
 namespace wgc = winrt::Windows::Graphics::Capture;
 namespace wgdx = winrt::Windows::Graphics::DirectX;
@@ -72,10 +77,24 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
   wgc::GraphicsCaptureItem::Closed_revoker mClosedRevoker;
   TimeUtil::TimePoint mNextAttempt {};
   std::wstring mStatus {L"starting"};
-  winrt::com_ptr<ID3D11Texture2D> mImage;
-  winrt::com_ptr<ID2D1Bitmap1> mBitmap;
-  ID2D1DeviceContext2* mBitmapContext {nullptr};
-  Render::PixelSize mImageSize {};
+  // The image shown, and a new frame being compared with it
+  struct Image {
+    winrt::com_ptr<ID3D11Texture2D> mTexture;
+    winrt::com_ptr<ID3D11ShaderResourceView> mView;
+    winrt::com_ptr<ID2D1Bitmap1> mBitmap;
+    ID2D1DeviceContext2* mBitmapContext {nullptr};
+    Render::PixelSize mSize {};
+  };
+  Image mShown;
+  Image mCandidate;
+  bool mShownNotDrawn {false};
+  bool mComparing {false};
+  winrt::com_ptr<ID3D11ComputeShader> mCompare;
+  winrt::com_ptr<ID3D11Buffer> mResult;
+  winrt::com_ptr<ID3D11UnorderedAccessView> mResultView;
+  winrt::com_ptr<ID3D11Buffer> mReadback;
+  std::unique_ptr<D3D11Util::PrivateContextState> mContextState;
+  std::atomic<uint64_t> mUnchanged {0};
   winrt::com_ptr<IDWriteTextFormat> mTextFormat;
   winrt::com_ptr<ID2D1SolidColorBrush> mBrush;
 
@@ -83,6 +102,7 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
   mutable std::mutex mMutex;
   wgc::Direct3D11CaptureFrame mPending {nullptr};
   RECT mPendingCrop {};
+  Render::Crop mCrop;// guarded by mMutex
   winrt::Windows::Graphics::SizeInt32 mPoolSize {};
   std::atomic<bool> mActive {true};
   std::atomic<bool> mClosed {false};
@@ -204,6 +224,18 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
     }
     {
       std::scoped_lock lock(mMutex);
+      // The user's trim, on top of the client area (CT-12)
+      const auto w = static_cast<float>(crop.right - crop.left);
+      const auto h = static_cast<float>(crop.bottom - crop.top);
+      RECT trimmed {
+        crop.left + static_cast<LONG>(w * mCrop.mLeft),
+        crop.top + static_cast<LONG>(h * mCrop.mTop),
+        crop.right - static_cast<LONG>(w * mCrop.mRight),
+        crop.bottom - static_cast<LONG>(h * mCrop.mBottom),
+      };
+      if (trimmed.right - trimmed.left >= 1 && trimmed.bottom - trimmed.top >= 1) {
+        crop = trimmed;
+      }
       if (size.Width != mPoolSize.Width || size.Height != mPoolSize.Height) {
         pool.Recreate(mDevice, Format, 2, size);// the window was resized
         mPoolSize = size;
@@ -218,14 +250,100 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
   }
 
   Render::PixelSize Size() const {
-    std::scoped_lock lock(mMutex);
-    if (mPending) {
-      return {static_cast<uint32_t>(mPendingCrop.right - mPendingCrop.left), static_cast<uint32_t>(mPendingCrop.bottom - mPendingCrop.top)};
-    }
-    return mImage ? mImageSize : WaitingSize;
+    return mShown.mTexture ? mShown.mSize : WaitingSize;
   }
 
-  void TakePending(ID2D1DeviceContext2* context) {
+  bool EnsureImage(Image& image, Render::PixelSize size) {
+    if (image.mTexture && image.mSize == size) {
+      return true;
+    }
+    image = {};
+    const D3D11_TEXTURE2D_DESC desc {
+      .Width = size.mWidth, .Height = size.mHeight, .MipLevels = 1, .ArraySize = 1,
+      .Format = DXGI_FORMAT_B8G8R8A8_UNORM, .SampleDesc = {1, 0}, .Usage = D3D11_USAGE_DEFAULT,
+      .BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET,
+    };
+    if (FAILED(mGpu.Device()->CreateTexture2D(&desc, nullptr, image.mTexture.put()))
+        || FAILED(mGpu.Device()->CreateShaderResourceView(image.mTexture.get(), nullptr, image.mView.put()))) {
+      image = {};
+      return false;
+    }
+    image.mSize = size;
+    return true;
+  }
+
+  bool EnsureCompare() {
+    if (mCompare) {
+      return true;
+    }
+    mContextState = std::make_unique<D3D11Util::PrivateContextState>(mGpu.Device());
+    const D3D11_BUFFER_DESC resultDesc {
+      .ByteWidth = 16, .Usage = D3D11_USAGE_DEFAULT, .BindFlags = D3D11_BIND_UNORDERED_ACCESS,
+      .MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS};
+    const D3D11_BUFFER_DESC readbackDesc {
+      .ByteWidth = 16, .Usage = D3D11_USAGE_STAGING, .CPUAccessFlags = D3D11_CPU_ACCESS_READ};
+    D3D11_UNORDERED_ACCESS_VIEW_DESC viewDesc {.Format = DXGI_FORMAT_R32_TYPELESS, .ViewDimension = D3D11_UAV_DIMENSION_BUFFER};
+    viewDesc.Buffer = {0, 4, D3D11_BUFFER_UAV_FLAG_RAW};
+    if (FAILED(mGpu.Device()->CreateComputeShader(Shaders::g_CompareCS, sizeof(Shaders::g_CompareCS), nullptr, mCompare.put()))
+        || FAILED(mGpu.Device()->CreateBuffer(&resultDesc, nullptr, mResult.put()))
+        || FAILED(mGpu.Device()->CreateUnorderedAccessView(mResult.get(), &viewDesc, mResultView.put()))
+        || FAILED(mGpu.Device()->CreateBuffer(&readbackDesc, nullptr, mReadback.put()))) {
+      mCompare = nullptr;
+      return false;
+    }
+    return true;
+  }
+
+  // The candidate becomes what's shown
+  void Accept() {
+    std::swap(mShown, mCandidate);
+    mShownNotDrawn = true;
+  }
+
+  // Starts the GPU comparison of the candidate with what's shown
+  bool StartCompare() {
+    if (!EnsureCompare()) {
+      return false;
+    }
+    auto* context = mGpu.Context();
+    {
+      const auto scope = mContextState->Enter(context);
+      const UINT zeros[4] {};
+      context->ClearUnorderedAccessViewUint(mResultView.get(), zeros);
+      ID3D11ShaderResourceView* views[] {mCandidate.mView.get(), mShown.mView.get()};
+      ID3D11UnorderedAccessView* uav = mResultView.get();
+      context->CSSetShader(mCompare.get(), nullptr, 0);
+      context->CSSetShaderResources(0, 2, views);
+      context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+      context->Dispatch((mCandidate.mSize.mWidth + 7) / 8, (mCandidate.mSize.mHeight + 7) / 8, 1);
+      context->CopyResource(mReadback.get(), mResult.get());
+    }
+    context->Flush();
+    mComparing = true;
+    return true;
+  }
+
+  Render::Readiness Prepare() {
+    auto* context = mGpu.Context();
+    if (mComparing) {
+      D3D11_MAPPED_SUBRESOURCE mapped {};
+      const auto hr = context->Map(mReadback.get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+      if (hr == DXGI_ERROR_WAS_STILL_DRAWING) {
+        return Render::Readiness::Pending;
+      }
+      mComparing = false;
+      bool changed = true;// if the answer can't be read, assume a change
+      if (SUCCEEDED(hr)) {
+        changed = *static_cast<const uint32_t*>(mapped.pData) != 0;
+        context->Unmap(mReadback.get(), 0);
+      }
+      if (changed) {
+        Accept();
+        return Render::Readiness::Ready;
+      }
+      ++mUnchanged;// identical: dropped
+    }
+
     wgc::Direct3D11CaptureFrame frame {nullptr};
     RECT crop {};
     {
@@ -233,41 +351,25 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
       frame = std::exchange(mPending, nullptr);
       crop = mPendingCrop;
     }
-    if (!frame) {
-      return;
-    }
-    winrt::com_ptr<ID3D11Texture2D> source;
-    auto access = frame.Surface().as<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
-    if (FAILED(access->GetInterface(__uuidof(ID3D11Texture2D), source.put_void()))) {
-      frame.Close();
-      return;
-    }
-    const Render::PixelSize size {static_cast<uint32_t>(crop.right - crop.left), static_cast<uint32_t>(crop.bottom - crop.top)};
-    if (!mImage || !(mImageSize == size) || mBitmapContext != context) {
-      mImage = nullptr;
-      mBitmap = nullptr;
-      const D3D11_TEXTURE2D_DESC desc {
-        .Width = size.mWidth, .Height = size.mHeight, .MipLevels = 1, .ArraySize = 1,
-        .Format = DXGI_FORMAT_B8G8R8A8_UNORM, .SampleDesc = {1, 0}, .Usage = D3D11_USAGE_DEFAULT,
-        .BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET,
-      };
-      winrt::com_ptr<IDXGISurface> surface;
-      if (FAILED(mGpu.Device()->CreateTexture2D(&desc, nullptr, mImage.put())) || FAILED(mImage->QueryInterface(surface.put()))) {
-        mImage = nullptr;
+    if (frame) {
+      winrt::com_ptr<ID3D11Texture2D> source;
+      auto access = frame.Surface().as<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
+      const Render::PixelSize size {static_cast<uint32_t>(crop.right - crop.left), static_cast<uint32_t>(crop.bottom - crop.top)};
+      if (SUCCEEDED(access->GetInterface(__uuidof(ID3D11Texture2D), source.put_void())) && EnsureImage(mCandidate, size)) {
+        // CP-3: only the client area, never the whole (possibly monitor-sized) surface
+        const D3D11_BOX box {static_cast<UINT>(crop.left), static_cast<UINT>(crop.top), 0, static_cast<UINT>(crop.right), static_cast<UINT>(crop.bottom), 1};
+        context->CopySubresourceRegion(mCandidate.mTexture.get(), 0, 0, 0, 0, source.get(), 0, &box);
+        ++mCopied;
         frame.Close();
-        return;
+        if (!mShown.mTexture || !(mShown.mSize == size) || !StartCompare()) {
+          Accept();// nothing comparable: a first frame, a new size
+          return Render::Readiness::Ready;
+        }
+        return Render::Readiness::Pending;
       }
-      const D2D1_BITMAP_PROPERTIES1 properties {
-        .pixelFormat = {DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED}, .dpiX = 96, .dpiY = 96};
-      context->CreateBitmapFromDxgiSurface(surface.get(), &properties, mBitmap.put());
-      mBitmapContext = context;
-      mImageSize = size;
+      frame.Close();
     }
-    // CP-3: only the client area, never the whole (possibly monitor-sized) surface
-    const D3D11_BOX box {static_cast<UINT>(crop.left), static_cast<UINT>(crop.top), 0, static_cast<UINT>(crop.right), static_cast<UINT>(crop.bottom), 1};
-    mGpu.Context()->CopySubresourceRegion(mImage.get(), 0, 0, 0, 0, source.get(), 0, &box);
-    frame.Close();
-    ++mCopied;
+    return mShownNotDrawn ? Render::Readiness::Ready : Render::Readiness::Unchanged;
   }
 
   void DrawWaiting(ID2D1DeviceContext2* context, Render::PixelSize size) {
@@ -299,22 +401,50 @@ Render::PixelSize WindowCaptureSource::Size() const {
   return mState->Size();
 }
 
+Render::Readiness WindowCaptureSource::Prepare() {
+  return mState->Prepare();
+}
+
 void WindowCaptureSource::Render(ID2D1DeviceContext2* context, Render::PixelSize size, TimeUtil::TimePoint) {
   auto& state = *mState;
-  state.TakePending(context);
+  auto& shown = state.mShown;
   context->Clear({0.118f, 0.141f, 0.188f, 1});
-  if (state.mBitmap && state.mBitmapContext == context) {
+  if (shown.mTexture && (!shown.mBitmap || shown.mBitmapContext != context)) {
+    winrt::com_ptr<IDXGISurface> surface;
+    shown.mTexture->QueryInterface(surface.put());
+    const D2D1_BITMAP_PROPERTIES1 properties {
+      .pixelFormat = {DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED}, .dpiX = 96, .dpiY = 96};
+    shown.mBitmap = nullptr;
+    context->CreateBitmapFromDxgiSurface(surface.get(), &properties, shown.mBitmap.put());
+    shown.mBitmapContext = context;
+  }
+  if (shown.mBitmap) {
     const D2D1_RECT_F destination {0, 0, static_cast<float>(size.mWidth), static_cast<float>(size.mHeight)};
-    const bool exact = state.mImageSize == size;
-    context->DrawBitmap(state.mBitmap.get(), &destination, 1.0f,
+    const bool exact = shown.mSize == size;
+    context->DrawBitmap(shown.mBitmap.get(), &destination, 1.0f,
       exact ? D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR : D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr);
+    state.mShownNotDrawn = false;
   } else {
     state.DrawWaiting(context, size);
   }
 }
 
+std::string WindowCaptureSource::StatsText() const {
+  return std::format(
+    "frames {} arrived, {} identical skipped", mState->mArrived.load(), mState->mUnchanged.load());
+}
+
+uint64_t WindowCaptureSource::FramesUnchanged() const noexcept {
+  return mState->mUnchanged.load();
+}
+
 void WindowCaptureSource::SetActive(bool active) {
   mState->mActive = active;
+}
+
+void WindowCaptureSource::SetCrop(const Render::Crop& crop) {
+  std::scoped_lock lock(mState->mMutex);
+  mState->mCrop = crop.Clamped();
 }
 
 void WindowCaptureSource::Maintain(TimeUtil::TimePoint now) {

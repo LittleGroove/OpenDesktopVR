@@ -210,7 +210,8 @@ class Mirror {
         (entry.mFlags & SharedAbi::PanelFlags::Visible) ? L"" : L" (hidden)");
       d2d->DrawText(label.c_str(), static_cast<UINT32>(label.size()), mTextFormat.get(),
         {left, top, left + cellWidth - margin, top + 24}, mBrush.get());
-      const auto* resources = mLink->Resources(entry);
+      bool openBudget = true;// a tool: no frame budget to keep
+      const auto* resources = mLink->Resources(entry, openBudget);
       if (!resources || entry.mContentWidth == 0 || entry.mCurrentSlot >= SharedAbi::RingSlots) {
         continue;
       }

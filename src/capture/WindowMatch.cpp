@@ -23,6 +23,8 @@ bool TitleMatches(const Rule& rule, std::wstring_view title) {
     return true;
   }
   switch (rule.mTitleMode) {
+    case TitleMode::Prefer:
+      return true;// a preference, not a requirement
     case TitleMode::Exact:
       return StringUtil::EqualsIgnoreCase(rule.mTitle, title);
     case TitleMode::Prefix:
@@ -51,12 +53,14 @@ std::string_view TitleModeName(TitleMode mode) noexcept {
       return "contains";
     case TitleMode::Regex:
       return "regex";
+    case TitleMode::Prefer:
+      return "prefer";
   }
-  return "contains";
+  return "prefer";
 }
 
 std::optional<TitleMode> ParseTitleMode(std::string_view name) noexcept {
-  for (const auto mode: {TitleMode::Exact, TitleMode::Prefix, TitleMode::Contains, TitleMode::Regex}) {
+  for (const auto mode: {TitleMode::Exact, TitleMode::Prefix, TitleMode::Contains, TitleMode::Regex, TitleMode::Prefer}) {
     if (name == TitleModeName(mode)) {
       return mode;
     }
@@ -65,7 +69,7 @@ std::optional<TitleMode> ParseTitleMode(std::string_view name) noexcept {
 }
 
 Rule FromWindow(const WindowUtil::WindowInfo& window) {
-  return {window.mExecutablePath, window.mClassName, window.mTitle, TitleMode::Contains};
+  return {window.mExecutablePath, window.mClassName, window.mTitle, TitleMode::Prefer};
 }
 
 bool Matches(const Rule& rule, const WindowUtil::WindowInfo& window) noexcept {
@@ -83,12 +87,28 @@ bool Matches(const Rule& rule, const WindowUtil::WindowInfo& window) noexcept {
 }
 
 std::optional<WindowUtil::WindowInfo> FindWindow(const Rule& rule) noexcept {
-  for (auto& window: WindowUtil::ListCaptureCandidates()) {
-    if (Matches(rule, window)) {
-      return window;
+  try {
+    std::optional<WindowUtil::WindowInfo> best;
+    int bestScore = -1;
+    const auto wanted = Lower(rule.mTitle);
+    for (auto& window: WindowUtil::ListCaptureCandidates()) {
+      if (!Matches(rule, window)) {
+        continue;
+      }
+      int score = 0;
+      if (!wanted.empty()) {
+        const auto title = Lower(window.mTitle);
+        score = title == wanted ? 3 : title.starts_with(wanted) ? 2 : title.find(wanted) != std::wstring::npos ? 1 : 0;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        best = std::move(window);
+      }
     }
+    return best;
+  } catch (...) {
+    return std::nullopt;
   }
-  return std::nullopt;
 }
 
 JsonUtil::Json ToJson(const Rule& rule) {
@@ -109,7 +129,7 @@ std::optional<Rule> FromJson(const JsonUtil::Json& json) noexcept {
     rule.mExecutablePath = StringUtil::Widen(JsonUtil::GetOr<std::string>(json, "executable", ""));
     rule.mClassName = StringUtil::Widen(JsonUtil::GetOr<std::string>(json, "class", ""));
     rule.mTitle = StringUtil::Widen(JsonUtil::GetOr<std::string>(json, "title", ""));
-    rule.mTitleMode = ParseTitleMode(JsonUtil::GetOr<std::string>(json, "titleMode", "contains")).value_or(TitleMode::Contains);
+    rule.mTitleMode = ParseTitleMode(JsonUtil::GetOr<std::string>(json, "titleMode", "prefer")).value_or(TitleMode::Prefer);
     if (rule.mExecutablePath.empty() && rule.mClassName.empty() && rule.mTitle.empty()) {
       return std::nullopt;// would match every window
     }

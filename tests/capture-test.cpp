@@ -80,6 +80,9 @@ bool WaitFor(const std::function<bool()>& condition, std::chrono::milliseconds l
 
 // Renders the source into a ring slot and reads one pixel back (BGRA)
 uint32_t RenderAndSample(Render::GpuDevice& gpu, Capture::WindowCaptureSource& source, uint32_t x, uint32_t y) {
+  // Take what arrived, as the render loop does: the GPU check answers a
+  // frame later
+  WaitFor([&] { return source.Prepare() != Render::Readiness::Pending; }, 2s);
   const auto size = source.Size();
   auto ring = Render::PanelRing::Create(gpu, size.mWidth, size.mHeight, DXGI_FORMAT_B8G8R8A8_UNORM);
   if (!ring) {
@@ -140,6 +143,15 @@ int main(int argc, char** argv) {
     Check(!WindowMatch::Matches(rule, window), "a malformed regex never matches, never throws");
     rule = {L"C:\\Other.exe", L"", L"", WindowMatch::TitleMode::Contains};
     Check(!WindowMatch::Matches(rule, window), "another executable doesn't match");
+    // New rules: program and class must match; the title is only a preference
+    auto preferred = WindowMatch::FromWindow(window);
+    Check(preferred.mTitleMode == WindowMatch::TitleMode::Prefer, "new rules prefer the title, never require it");
+    WindowUtil::WindowInfo renamed = window;
+    renamed.mTitle = L"Discord - #another-channel";
+    Check(WindowMatch::Matches(preferred, renamed), "a changed title still matches (a new channel, song or tab)");
+    WindowUtil::WindowInfo otherApp = window;
+    otherApp.mExecutablePath = LR"(C:\Apps\Other.exe)";
+    Check(!WindowMatch::Matches(preferred, otherApp), "another program still doesn't");
     const auto json = WindowMatch::ToJson(WindowMatch::FromWindow(window));
     Check(WindowMatch::FromJson(json) == WindowMatch::FromWindow(window), "round-trips through settings JSON");
     Check(!WindowMatch::FromJson(JsonUtil::Json::object()), "an empty rule (matching everything) is refused");
@@ -166,16 +178,38 @@ int main(int argc, char** argv) {
   Scenario("A window is found and captured, client area only (CP-3)", [&] {
     Check(WaitFor([&] { return source.FramesArrived() > 0; }, 5s, [&] { source.Maintain(TimeUtil::Now()); }), "frames arrive");
     Check(dirty > 0, "a new frame marks the panel dirty (CP-2)");
+    // Take the frame, as the render loop does, before asking its size
+    WaitFor([&] { return source.Prepare() != Render::Readiness::Pending; }, 2s);
     RECT client {};
     GetClientRect(window, &client);
     const auto size = source.Size();
     Check(size.mWidth == static_cast<uint32_t>(client.right) && size.mHeight == static_cast<uint32_t>(client.bottom),
       std::format("panel size is the client area: {}x{} (client {}x{})", size.mWidth, size.mHeight, client.right, client.bottom));
     // The click target paints its client area RGB(30, 34, 44)
-    const auto pixel = RenderAndSample(*gpu, source, 2, 2);
+    // The first frame can arrive before the window has painted (transparent
+    // pixels): give it up to 2 s to paint
+    uint32_t pixel = 0;
+    WaitFor([&] {
+      pixel = RenderAndSample(*gpu, source, 2, 2);
+      return ((pixel >> 16) & 0xFF) == 30 && ((pixel >> 8) & 0xFF) == 34 && (pixel & 0xFF) == 44;
+    }, 2s);
     const uint32_t r = (pixel >> 16) & 0xFF, g = (pixel >> 8) & 0xFF, b = pixel & 0xFF;
     Check(r == 30 && g == 34 && b == 44, std::format("the top-left pixel is the client area's colour, not the frame ({}, {}, {})", r, g, b));
     Check(source.FramesCopied() >= 1, "the frame was copied on the render thread");
+  });
+
+  Scenario("An identical frame is dropped by the GPU check (test round 4)", [&] {
+    RenderAndSample(*gpu, source, 0, 0);// settle: everything taken
+    const auto unchanged = source.FramesUnchanged();
+    const auto arrived = source.FramesArrived();
+    // The click target repaints the same pixels
+    InvalidateRect(window, nullptr, TRUE);
+    WaitFor([&] { return source.FramesArrived() > arrived; }, 3s);
+    Render::Readiness readiness = Render::Readiness::Pending;
+    WaitFor([&] { readiness = source.Prepare(); return readiness != Render::Readiness::Pending; }, 2s);
+    Check(source.FramesArrived() > arrived, "a repaint delivered a frame");
+    Check(readiness == Render::Readiness::Unchanged, "Prepare says nothing changed");
+    Check(source.FramesUnchanged() > unchanged, "and counts it as an identical frame skipped");
   });
 
   Scenario("A resized window: new size, frame pool re-created", [&] {
@@ -183,6 +217,7 @@ int main(int argc, char** argv) {
     RECT client {};
     GetClientRect(window, &client);
     const bool resized = WaitFor([&] {
+      source.Prepare();
       const auto size = source.Size();
       return size.mWidth == static_cast<uint32_t>(client.right) && size.mHeight == static_cast<uint32_t>(client.bottom);
     }, 5s);

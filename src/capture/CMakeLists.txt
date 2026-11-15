@@ -12,10 +12,17 @@ odvr_module(
   WindowCaptureSource.cpp
   DEPS
   odvr::render
+  odvr::gfx
   odvr::settings
   odvr::core
   odvr::cppwinrt
   dwmapi
   d3d11
   dxgi
+)
+odvr_shaders(
+  odvr_capture
+  HLSL shaders/Compare.hlsl
+  ENTRIES
+  "CompareCS|cs_5_0|CompareCS"
 )

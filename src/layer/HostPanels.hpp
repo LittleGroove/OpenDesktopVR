@@ -98,7 +98,7 @@ class HostPanels {
   };
 
   Record* RecordFor(uint64_t panelID) noexcept;
-  bool Bring(Record& record, const SharedAbi::PanelEntry& entry, const HostLink::PanelResources& resources, TimeUtil::TimePoint now) noexcept;
+  bool Bring(Record& record, const SharedAbi::PanelEntry& entry, const HostLink::PanelResources& resources, TimeUtil::TimePoint now, bool& createBudget) noexcept;
 
   const NextFunctions& mNext;
   XrSession mSession;

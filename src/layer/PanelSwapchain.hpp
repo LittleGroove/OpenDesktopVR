@@ -28,6 +28,10 @@ class PanelSwapchain {
   // Creates the swapchain, or re-creates it after a size change or a failed
   // wait. Allocates only when it creates. False if creation failed.
   bool Ensure(uint32_t width, uint32_t height) noexcept;
+  // True if Ensure would create (or re-create) the swapchain
+  bool NeedsCreate(uint32_t width, uint32_t height) const noexcept {
+    return mSwapchain == XR_NULL_HANDLE || mNeedsRecreate || width != mWidth || height != mHeight;
+  }
 
   // Copies `source` (same format family) into a new image and releases it,
   // tagging the image with `contentKey`. Call inside the private context

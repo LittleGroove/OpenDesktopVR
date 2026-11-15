@@ -76,7 +76,8 @@ bool HostPanels::Bring(
   Record& record,
   const SharedAbi::PanelEntry& entry,
   const HostLink::PanelResources& resources,
-  TimeUtil::TimePoint now) noexcept {
+  TimeUtil::TimePoint now,
+  bool& createBudget) noexcept {
   // The host draws in our swapchain's channel order; until it does, skip
   const auto ringFormat = D3D11Util::DescribeColorFormat(static_cast<DXGI_FORMAT>(entry.mTextureFormat));
   if (!ringFormat || ringFormat->mTypeless != mSwapchainTypeless) {
@@ -92,6 +93,13 @@ bool HostPanels::Bring(
   }
   auto& swapchain = *record.mSwapchain;
   const bool sizeChanged = swapchain.Width() != entry.mContentWidth || swapchain.Height() != entry.mContentHeight;
+  if (swapchain.NeedsCreate(entry.mContentWidth, entry.mContentHeight)) {
+    if (!createBudget) {
+      // One creation per frame; until then the old image (if any) stays up
+      return swapchain.HasReleasedImage();
+    }
+    createBudget = false;
+  }
   if (!swapchain.Ensure(entry.mContentWidth, entry.mContentHeight)) {
     return false;
   }
@@ -227,6 +235,9 @@ std::size_t HostPanels::Compose(TimeUtil::TimePoint now, std::span<ComposedPanel
     mReportDue = mWasConnected;
   }
   std::size_t added = 0;
+  // At most one shared-resource open or swapchain creation per frame: each
+  // can take milliseconds (test round 4)
+  bool budget = true;
   for (const auto& entry: mLink.Panels()) {
     if (added >= out.size()) {
       break;
@@ -234,9 +245,9 @@ std::size_t HostPanels::Compose(TimeUtil::TimePoint now, std::span<ComposedPanel
     if (!(entry.mFlags & SharedAbi::PanelFlags::Visible) || !PlausibleEntry(entry)) {
       continue;
     }
-    const auto* resources = mLink.Resources(entry);
+    const auto* resources = mLink.Resources(entry, budget);
     auto* record = RecordFor(entry.mPanelID);
-    if (!resources || !record || !Bring(*record, entry, *resources, now)) {
+    if (!resources || !record || !Bring(*record, entry, *resources, now, budget)) {
       continue;
     }
     if (!record->mSwapchain || !record->mSwapchain->HasReleasedImage()) {
