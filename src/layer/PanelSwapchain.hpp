@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: LicenseRef-Proprietary
+// Copyright (c) 2026 Robert McGough. All rights reserved.
+//
+// One panel's OpenXR swapchain on D3D11 (ADR-016: one swapchain per panel).
+// - Created once; re-created only on a size change or after a failed image
+//   wait (XR-15).
+// - Tracks the "what's shown" key (SY-4): reset on (re)creation and before
+//   each draw, set only after a successful release. Unchanged content is
+//   never copied again; the runtime keeps showing the last released image.
+#pragma once
+
+#include "Dispatch.hpp"
+
+#include <winrt/base.h>
+
+#include <cstdint>
+#include <vector>
+
+namespace OpenDesktopVR::Layer {
+
+class PanelSwapchain {
+ public:
+  PanelSwapchain(const NextFunctions& next, XrSession session, DXGI_FORMAT format) noexcept;
+  ~PanelSwapchain();
+  PanelSwapchain(const PanelSwapchain&) = delete;
+  PanelSwapchain& operator=(const PanelSwapchain&) = delete;
+
+  // Creates the swapchain, or re-creates it after a size change or a failed
+  // wait. Allocates only when it creates. False if creation failed.
+  bool Ensure(uint32_t width, uint32_t height) noexcept;
+
+  // Copies `source` (same format family) into a new image and releases it,
+  // tagging the image with `contentKey`. Call inside the private context
+  // state. False on failure; a failed wait schedules a re-create.
+  bool Present(ID3D11DeviceContext* context, ID3D11Texture2D* source, uint64_t contentKey) noexcept;
+
+  XrSwapchain Handle() const noexcept {
+    return mSwapchain;
+  }
+  // 0 = nothing shown (new swapchain, or the last draw failed)
+  uint64_t ShownKey() const noexcept {
+    return mShownKey;
+  }
+  bool HasReleasedImage() const noexcept {
+    return mShownKey != 0;
+  }
+  uint32_t Width() const noexcept {
+    return mWidth;
+  }
+  uint32_t Height() const noexcept {
+    return mHeight;
+  }
+  uint64_t ImagesReleased() const noexcept {
+    return mImagesReleased;
+  }
+
+ private:
+  void Destroy() noexcept;
+
+  const NextFunctions& mNext;
+  XrSession mSession {XR_NULL_HANDLE};
+  DXGI_FORMAT mFormat {DXGI_FORMAT_UNKNOWN};
+  XrSwapchain mSwapchain {XR_NULL_HANDLE};
+  std::vector<winrt::com_ptr<ID3D11Texture2D>> mImages;
+  uint32_t mWidth {0};
+  uint32_t mHeight {0};
+  bool mNeedsRecreate {false};
+  uint64_t mShownKey {0};
+  uint64_t mImagesReleased {0};
+};
+
+}// namespace OpenDesktopVR::Layer

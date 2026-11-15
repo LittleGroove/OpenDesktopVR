@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: LicenseRef-Proprietary
+# Copyright (c) 2026 Robert McGough. All rights reserved.
+#
+# Build every target and run the tests (doc 11 "CI"). No binaries are
+# published from CI until release signing exists.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [release, debug]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache third-party downloads
+        uses: actions/cache@v4
+        with:
+          path: build/_deps/*-subbuild/*-populate-prefix/src
+          key: deps-${{ hashFiles('cmake/OdvrThirdParty.cmake') }}
+
+      - name: Configure
+        run: cmake --preset default
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.config }} -- /m /v:minimal
+
+      - name: Unit tests
+        run: ctest --preset ${{ matrix.config }}
+
+      - name: Hand render test (hardware or WARP)
+        if: matrix.config == 'release'
+        run: build/bin/Release/hand-render-test.exe render-output
+
+      - name: Publish test output
+        if: always() && matrix.config == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output
+          path: |
+            render-output/
+            build/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore

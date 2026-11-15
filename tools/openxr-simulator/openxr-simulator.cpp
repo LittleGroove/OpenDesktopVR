@@ -1,0 +1,1798 @@
+// SPDX-License-Identifier: LicenseRef-Proprietary
+// Copyright (c) 2026 Robert McGough. All rights reserved.
+// Provenance: the author's own prototype code, imported at handover v2 (2026-11-15).
+//
+// End-to-end test of hand tracking without a headset.
+//
+// This program is both a fake OpenXR game and a fake OpenXR runtime with
+// scripted hands. It loads the real OpenXR API layer between them, exactly as
+// the OpenXR loader would. With the host app running, the scripted hand
+// points at the real panel and taps it; the layer turns that into finger
+// events for the host app, which clicks whatever the panel shows.
+//
+// Usage:
+//   openxr-simulator [--negotiate-export <name>] [--layer-name <name>]
+//     [--early-lookups-fail] [--no-hand-tracking]
+//     <layer DLL> <output folder>
+//     [click log | --watch <s> | --type-keys ... | --bench <s> [hover]]
+//
+// --negotiate-export: the layer DLL's loader negotiation export (default
+//   xrNegotiateLoaderApiLayerInterface).
+// --layer-name: the layer name passed to it (default XR_APILAYER_TEST_layer).
+// --early-lookups-fail: behave like an API layer below ours that can't
+//   resolve functions until its instance exists (some capture/mirror layers
+//   answer "unsupported" before then).
+// --no-hand-tracking: a runtime without XR_EXT_hand_tracking; only instance
+//   creation is checked.
+// --bench <s> [hover]: measure the layer's GPU time per frame and what it
+//   hands the runtime to composite, optionally with a pointing hand hovering
+//   in front of the panel. No read-backs.
+//
+// The click log is from click-target-test, shown in a panel with input
+// enabled; if given, the clicks are checked too.
+
+#include "save-png.hpp"
+#include "synthetic-hands.hpp"
+
+#include <winrt/base.h>
+
+#include <Windows.h>
+
+#include <d3d11.h>
+
+#define XR_USE_GRAPHICS_API_D3D11
+#include <openxr/openxr.h>
+#include <openxr/openxr_platform.h>
+
+#include <loader_interfaces.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <format>
+#include <fstream>
+#include <map>
+#include <optional>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <vector>
+
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "ole32.lib")
+
+using namespace OpenDesktopVR;
+using namespace OpenDesktopVR::SyntheticHands;
+
+namespace {
+
+template <class T>
+T ToHandle(uint64_t value) {
+  return reinterpret_cast<T>(value);
+}
+
+template <class T>
+uint64_t FromHandle(T handle) {
+  return reinterpret_cast<uint64_t>(handle);
+}
+
+struct RigidPose {
+  Vector3 mPosition {};
+  Quaternion mOrientation {Quaternion::Identity};
+};
+
+// The simulated headset: 1.2m up, looking down at the panel (about 50
+// degrees), as you would to tap it
+RigidPose MakeHMDPose() {
+  constexpr float pitch = 0.87f;
+  auto orientation = Quaternion::CreateFromAxisAngle(Vector3::UnitX, -pitch);
+  if (Vector3::Transform(-Vector3::UnitZ, orientation).y > 0) {
+    orientation = Quaternion::CreateFromAxisAngle(Vector3::UnitX, pitch);
+  }
+  return {{0, 1.2f, 0}, orientation};
+}
+const RigidPose HMDPose = MakeHMDPose();
+constexpr float IPD = 0.064f;
+
+XrPosef ToXr(const RigidPose& pose) {
+  const auto& p = pose.mPosition;
+  const auto& o = pose.mOrientation;
+  return {{o.x, o.y, o.z, o.w}, {p.x, p.y, p.z}};
+}
+
+struct FakeSwapchain {
+  XrSwapchainCreateInfo mInfo {};
+  DXGI_FORMAT mTextureFormat {};
+  std::vector<winrt::com_ptr<ID3D11Texture2D>> mImages;
+  uint32_t mNextIndex {0};
+  uint32_t mAcquired {0};
+  uint32_t mReleased {0};
+};
+
+struct Runtime {
+  winrt::com_ptr<ID3D11Device> mDevice;
+  winrt::com_ptr<ID3D11DeviceContext> mContext;
+  uint64_t mNextHandle {0x1000};
+
+  std::vector<std::string> mEnabledExtensions;
+  // '--early-lookups-fail': like an API layer below ours that can't resolve
+  // functions until its instance exists
+  bool mEarlyLookupsFail {false};
+  // '--no-hand-tracking': a runtime without XR_EXT_hand_tracking
+  bool mNoHandTracking {false};
+  bool mInstanceCreated {false};
+  std::map<uint64_t, XrReferenceSpaceType> mSpaces;
+  std::map<uint64_t, FakeSwapchain> mSwapchains;
+  std::map<uint64_t, XrHandEXT> mHandTrackers;
+  int mHandTrackersCreated {0};
+
+  // In world (LOCAL) space; [0] = left, [1] = right
+  std::array<HandJoints, 2> mHands {};
+
+  // What the layer submitted in xrEndFrame()
+  std::optional<XrCompositionLayerQuad> mQuad;
+  bool mHandLayerThisFrame {false};
+  int mHandLayerCoverage {0};
+  std::optional<std::filesystem::path> mSaveHandLayerTo;
+  // Frames where the hand layer's views didn't use the game's own pose and
+  // field of view, over their whole image
+  int mHandLayerViewMismatches {0};
+
+  // Panel layers in the last frame
+  int mQuadCount {0};
+  // The virtual keyboard's layer, if
+  // shown: much wider than tall
+  std::optional<XrCompositionLayerQuad> mKeyboardQuad;
+  // Panel layers must be drawn back
+  // to front (a nearer one after a further one); frames where they weren't
+  int mFramesWithMultipleQuads {0};
+  int mFramesOutOfOrder {0};
+
+  // Watching the panel for the click target's orange click marker
+  bool mWatchPanel {false};
+  float mWatchU {};
+  float mWatchV {};
+  std::optional<double> mPanelChangedAt;
+
+  // '--bench': no read-backs, and counts of what a real runtime would have
+  // to composite
+  bool mBench {false};
+  // Swapchain images the layer released (each is a new image a runtime may
+  // copy or re-sample), and their pixels
+  uint64_t mReleases {0};
+  uint64_t mReleasedPixels {0};
+  // Frames with a hand layer, and the sum over those frames of the share of
+  // each eye's field of view it covers (what the compositor has to blend)
+  int mBenchHandFrames {0};
+  double mBenchHandCoverage {0};
+};
+Runtime gRuntime;
+
+double NowMilliseconds() {
+  static const auto frequency = [] {
+    LARGE_INTEGER f {};
+    QueryPerformanceFrequency(&f);
+    return static_cast<double>(f.QuadPart);
+  }();
+  LARGE_INTEGER now {};
+  QueryPerformanceCounter(&now);
+  return static_cast<double>(now.QuadPart) * 1000.0 / frequency;
+}
+
+uint64_t NewHandle() {
+  return gRuntime.mNextHandle++;
+}
+
+RigidPose SpacePose(XrSpace space) {
+  const auto it = gRuntime.mSpaces.find(FromHandle(space));
+  if (it != gRuntime.mSpaces.end() && it->second == XR_REFERENCE_SPACE_TYPE_VIEW) {
+    return HMDPose;
+  }
+  // LOCAL and STAGE are both the world origin here
+  return {};
+}
+
+// `pose` (in world space), relative to `base`
+RigidPose Relative(const RigidPose& pose, const RigidPose& base) {
+  Quaternion inverse;
+  base.mOrientation.Inverse(inverse);
+  Quaternion orientation;
+  DirectX::XMStoreFloat4(
+    &orientation,
+    DirectX::XMQuaternionMultiply(
+      DirectX::XMLoadFloat4(&pose.mOrientation),
+      DirectX::XMLoadFloat4(&inverse)));
+  return {
+    Vector3::Transform(pose.mPosition - base.mPosition, inverse),
+    orientation,
+  };
+}
+
+///// Fake runtime /////
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrEnumerateInstanceExtensionProperties(
+  const char* layerName,
+  uint32_t capacity,
+  uint32_t* count,
+  XrExtensionProperties* properties) {
+  if (layerName) {
+    return XR_ERROR_API_LAYER_NOT_PRESENT;
+  }
+  const std::array<std::pair<const char*, uint32_t>, 2> extensions {{
+    {XR_KHR_D3D11_ENABLE_EXTENSION_NAME, 9},
+    {XR_EXT_HAND_TRACKING_EXTENSION_NAME, 4},
+  }};
+  const auto listed = gRuntime.mNoHandTracking ? 1 : extensions.size();
+  *count = static_cast<uint32_t>(listed);
+  if (capacity == 0) {
+    return XR_SUCCESS;
+  }
+  if (capacity < listed) {
+    return XR_ERROR_SIZE_INSUFFICIENT;
+  }
+  for (std::size_t i = 0; i < listed; ++i) {
+    strcpy_s(properties[i].extensionName, extensions[i].first);
+    properties[i].extensionVersion = extensions[i].second;
+  }
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrCreateApiLayerInstance(
+  const XrInstanceCreateInfo* info,
+  const XrApiLayerCreateInfo*,
+  XrInstance* instance) {
+  std::vector<std::string> enabled;
+  for (uint32_t i = 0; i < info->enabledExtensionCount; ++i) {
+    const std::string_view name {info->enabledExtensionNames[i]};
+    if (
+      name != XR_KHR_D3D11_ENABLE_EXTENSION_NAME
+      && (name != XR_EXT_HAND_TRACKING_EXTENSION_NAME
+          || gRuntime.mNoHandTracking)) {
+      return XR_ERROR_EXTENSION_NOT_PRESENT;
+    }
+    enabled.emplace_back(name);
+  }
+  gRuntime.mEnabledExtensions = std::move(enabled);
+  gRuntime.mInstanceCreated = true;
+  *instance = ToHandle<XrInstance>(NewHandle());
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL
+Fake_xrGetInstanceProperties(XrInstance, XrInstanceProperties* properties) {
+  properties->runtimeVersion = XR_MAKE_VERSION(0, 1, 0);
+  strcpy_s(properties->runtimeName, "Hand tracking simulator");
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrGetSystemProperties(
+  XrInstance,
+  XrSystemId system,
+  XrSystemProperties* properties) {
+  properties->systemId = system;
+  properties->vendorId = 0;
+  strcpy_s(properties->systemName, "Simulated headset");
+  properties->graphicsProperties = {4096, 4096, 16};
+  properties->trackingProperties = {XR_TRUE, XR_TRUE};
+  for (auto next = static_cast<XrBaseOutStructure*>(properties->next); next;
+       next = next->next) {
+    if (next->type == XR_TYPE_SYSTEM_HAND_TRACKING_PROPERTIES_EXT) {
+      reinterpret_cast<XrSystemHandTrackingPropertiesEXT*>(next)
+        ->supportsHandTracking
+        = XR_TRUE;
+    }
+  }
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL
+Fake_xrCreateSession(XrInstance, const XrSessionCreateInfo*, XrSession* session) {
+  *session = ToHandle<XrSession>(NewHandle());
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrDestroySession(XrSession) {
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrDestroyInstance(XrInstance) {
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrCreateReferenceSpace(
+  XrSession,
+  const XrReferenceSpaceCreateInfo* info,
+  XrSpace* space) {
+  const auto handle = NewHandle();
+  gRuntime.mSpaces[handle] = info->referenceSpaceType;
+  *space = ToHandle<XrSpace>(handle);
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrDestroySpace(XrSpace space) {
+  gRuntime.mSpaces.erase(FromHandle(space));
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrLocateSpace(
+  XrSpace space,
+  XrSpace base,
+  XrTime,
+  XrSpaceLocation* location) {
+  location->locationFlags = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT
+    | XR_SPACE_LOCATION_POSITION_VALID_BIT
+    | XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT
+    | XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
+  location->pose = ToXr(Relative(SpacePose(space), SpacePose(base)));
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrEnumerateSwapchainFormats(
+  XrSession,
+  uint32_t capacity,
+  uint32_t* count,
+  int64_t* formats) {
+  const std::array<int64_t, 2> supported {
+    DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+    DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+  };
+  *count = static_cast<uint32_t>(supported.size());
+  if (capacity == 0) {
+    return XR_SUCCESS;
+  }
+  if (capacity < supported.size()) {
+    return XR_ERROR_SIZE_INSUFFICIENT;
+  }
+  std::ranges::copy(supported, formats);
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrCreateSwapchain(
+  XrSession,
+  const XrSwapchainCreateInfo* info,
+  XrSwapchain* swapchain) {
+  // Like real runtimes, use typeless textures so that apps can pick the view
+  // format
+  DXGI_FORMAT format = static_cast<DXGI_FORMAT>(info->format);
+  switch (format) {
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+      format = DXGI_FORMAT_B8G8R8A8_TYPELESS;
+      break;
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+      format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
+      break;
+    default:
+      return XR_ERROR_SWAPCHAIN_FORMAT_UNSUPPORTED;
+  }
+
+  FakeSwapchain fake {.mInfo = *info, .mTextureFormat = format};
+  const D3D11_TEXTURE2D_DESC desc {
+    .Width = info->width,
+    .Height = info->height,
+    .MipLevels = 1,
+    .ArraySize = info->arraySize,
+    .Format = format,
+    .SampleDesc = {1, 0},
+    .Usage = D3D11_USAGE_DEFAULT,
+    .BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
+  };
+  for (int i = 0; i < 3; ++i) {
+    winrt::com_ptr<ID3D11Texture2D> texture;
+    if (FAILED(gRuntime.mDevice->CreateTexture2D(&desc, nullptr, texture.put()))) {
+      return XR_ERROR_RUNTIME_FAILURE;
+    }
+    fake.mImages.push_back(std::move(texture));
+  }
+  const auto handle = NewHandle();
+  gRuntime.mSwapchains[handle] = std::move(fake);
+  *swapchain = ToHandle<XrSwapchain>(handle);
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrDestroySwapchain(XrSwapchain swapchain) {
+  gRuntime.mSwapchains.erase(FromHandle(swapchain));
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrEnumerateSwapchainImages(
+  XrSwapchain swapchain,
+  uint32_t capacity,
+  uint32_t* count,
+  XrSwapchainImageBaseHeader* images) {
+  const auto it = gRuntime.mSwapchains.find(FromHandle(swapchain));
+  if (it == gRuntime.mSwapchains.end()) {
+    return XR_ERROR_HANDLE_INVALID;
+  }
+  const auto& fake = it->second;
+  *count = static_cast<uint32_t>(fake.mImages.size());
+  if (capacity == 0) {
+    return XR_SUCCESS;
+  }
+  if (capacity < fake.mImages.size()) {
+    return XR_ERROR_SIZE_INSUFFICIENT;
+  }
+  auto d3d = reinterpret_cast<XrSwapchainImageD3D11KHR*>(images);
+  for (std::size_t i = 0; i < fake.mImages.size(); ++i) {
+    d3d[i].texture = fake.mImages[i].get();
+  }
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrAcquireSwapchainImage(
+  XrSwapchain swapchain,
+  const XrSwapchainImageAcquireInfo*,
+  uint32_t* index) {
+  auto& fake = gRuntime.mSwapchains.at(FromHandle(swapchain));
+  fake.mAcquired = fake.mNextIndex;
+  fake.mNextIndex = (fake.mNextIndex + 1) % fake.mImages.size();
+  *index = fake.mAcquired;
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL
+Fake_xrWaitSwapchainImage(XrSwapchain, const XrSwapchainImageWaitInfo*) {
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrReleaseSwapchainImage(
+  XrSwapchain swapchain,
+  const XrSwapchainImageReleaseInfo*) {
+  auto& fake = gRuntime.mSwapchains.at(FromHandle(swapchain));
+  fake.mReleased = fake.mAcquired;
+  ++gRuntime.mReleases;
+  gRuntime.mReleasedPixels
+    += static_cast<uint64_t>(fake.mInfo.width) * fake.mInfo.height;
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrCreateHandTrackerEXT(
+  XrSession,
+  const XrHandTrackerCreateInfoEXT* info,
+  XrHandTrackerEXT* tracker) {
+  const auto handle = NewHandle();
+  gRuntime.mHandTrackers[handle] = info->hand;
+  ++gRuntime.mHandTrackersCreated;
+  *tracker = ToHandle<XrHandTrackerEXT>(handle);
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL
+Fake_xrDestroyHandTrackerEXT(XrHandTrackerEXT tracker) {
+  gRuntime.mHandTrackers.erase(FromHandle(tracker));
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrLocateHandJointsEXT(
+  XrHandTrackerEXT tracker,
+  const XrHandJointsLocateInfoEXT* info,
+  XrHandJointLocationsEXT* locations) {
+  const auto it = gRuntime.mHandTrackers.find(FromHandle(tracker));
+  if (it == gRuntime.mHandTrackers.end()) {
+    return XR_ERROR_HANDLE_INVALID;
+  }
+  const auto& hand = gRuntime.mHands[it->second == XR_HAND_LEFT_EXT ? 0 : 1];
+  locations->isActive = hand.mIsTracked ? XR_TRUE : XR_FALSE;
+  const auto base = SpacePose(info->baseSpace);
+  const auto count = std::min<uint32_t>(locations->jointCount, JointCount);
+  for (uint32_t i = 0; i < count; ++i) {
+    auto& out = locations->jointLocations[i];
+    if (!hand.mIsTracked) {
+      out.locationFlags = 0;
+      continue;
+    }
+    const auto& joint = hand.mJoints[i];
+    out.locationFlags = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT
+      | XR_SPACE_LOCATION_POSITION_VALID_BIT
+      | XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT
+      | XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
+    out.pose = ToXr(Relative({joint.mPosition, joint.mOrientation}, base));
+    out.radius = joint.mRadius;
+  }
+  return XR_SUCCESS;
+}
+
+// Reads view 0 of the hand layer: counts drawn pixels, and optionally saves it
+void InspectHandLayer(const XrCompositionLayerProjection& layer) {
+  const auto& view = layer.views[0];
+  const auto& fake
+    = gRuntime.mSwapchains.at(FromHandle(view.subImage.swapchain));
+  const auto& rect = view.subImage.imageRect;
+  const auto width = static_cast<uint32_t>(rect.extent.width);
+  const auto height = static_cast<uint32_t>(rect.extent.height);
+
+  const D3D11_TEXTURE2D_DESC desc {
+    .Width = width,
+    .Height = height,
+    .MipLevels = 1,
+    .ArraySize = 1,
+    .Format = fake.mTextureFormat,
+    .SampleDesc = {1, 0},
+    .Usage = D3D11_USAGE_STAGING,
+    .CPUAccessFlags = D3D11_CPU_ACCESS_READ,
+  };
+  winrt::com_ptr<ID3D11Texture2D> staging;
+  winrt::check_hresult(
+    gRuntime.mDevice->CreateTexture2D(&desc, nullptr, staging.put()));
+  const D3D11_BOX box {
+    .left = static_cast<UINT>(rect.offset.x),
+    .top = static_cast<UINT>(rect.offset.y),
+    .front = 0,
+    .right = static_cast<UINT>(rect.offset.x) + width,
+    .bottom = static_cast<UINT>(rect.offset.y) + height,
+    .back = 1,
+  };
+  gRuntime.mContext->CopySubresourceRegion(
+    staging.get(), 0, 0, 0, 0, fake.mImages.at(fake.mReleased).get(), 0, &box);
+
+  D3D11_MAPPED_SUBRESOURCE mapped {};
+  winrt::check_hresult(
+    gRuntime.mContext->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped));
+  const bool isBGRA = (fake.mTextureFormat == DXGI_FORMAT_B8G8R8A8_TYPELESS);
+  int coverage = 0;
+  std::vector<uint8_t> bgra(static_cast<std::size_t>(width) * height * 4);
+  for (uint32_t y = 0; y < height; ++y) {
+    const auto row = static_cast<const uint8_t*>(mapped.pData)
+      + (static_cast<std::size_t>(y) * mapped.RowPitch);
+    for (uint32_t x = 0; x < width; ++x) {
+      const uint8_t* src = row + (x * 4);
+      const uint8_t b = isBGRA ? src[0] : src[2];
+      const uint8_t g = src[1];
+      const uint8_t r = isBGRA ? src[2] : src[0];
+      const float alpha = src[3] / 255.0f;
+      if (src[3] > 0) {
+        ++coverage;
+      }
+      // Premultiplied, over a dark grey background
+      uint8_t* dst = &bgra[(static_cast<std::size_t>(y) * width + x) * 4];
+      dst[0] = static_cast<uint8_t>(std::min(255.0f, b + (52 * (1 - alpha))));
+      dst[1] = static_cast<uint8_t>(std::min(255.0f, g + (44 * (1 - alpha))));
+      dst[2] = static_cast<uint8_t>(std::min(255.0f, r + (40 * (1 - alpha))));
+      dst[3] = 255;
+    }
+  }
+  gRuntime.mContext->Unmap(staging.get(), 0);
+  gRuntime.mHandLayerCoverage = coverage;
+
+  if (gRuntime.mSaveHandLayerTo) {
+    TestUtilities::SavePNG(*gRuntime.mSaveHandLayerTo, width, height, bgra);
+    std::printf(
+      "  saved what the hand layer shows the left eye: %s\n",
+      gRuntime.mSaveHandLayerTo->string().c_str());
+    gRuntime.mSaveHandLayerTo.reset();
+  }
+}
+
+// Average brightness (0-255) of a small area in the middle of a panel
+std::optional<float> PanelBrightness(const XrCompositionLayerQuad& quad) {
+  const auto it
+    = gRuntime.mSwapchains.find(FromHandle(quad.subImage.swapchain));
+  if (it == gRuntime.mSwapchains.end()) {
+    return std::nullopt;
+  }
+  const auto& fake = it->second;
+  const auto& rect = quad.subImage.imageRect;
+  constexpr UINT boxSize = 16;
+  const auto x
+    = static_cast<UINT>(rect.offset.x + (rect.extent.width / 2) - (boxSize / 2));
+  const auto y = static_cast<UINT>(
+    rect.offset.y + (rect.extent.height / 2) - (boxSize / 2));
+  const D3D11_TEXTURE2D_DESC desc {
+    .Width = boxSize,
+    .Height = boxSize,
+    .MipLevels = 1,
+    .ArraySize = 1,
+    .Format = fake.mTextureFormat,
+    .SampleDesc = {1, 0},
+    .Usage = D3D11_USAGE_STAGING,
+    .CPUAccessFlags = D3D11_CPU_ACCESS_READ,
+  };
+  winrt::com_ptr<ID3D11Texture2D> staging;
+  winrt::check_hresult(
+    gRuntime.mDevice->CreateTexture2D(&desc, nullptr, staging.put()));
+  const D3D11_BOX box {x, y, 0, x + boxSize, y + boxSize, 1};
+  gRuntime.mContext->CopySubresourceRegion(
+    staging.get(), 0, 0, 0, 0, fake.mImages.at(fake.mReleased).get(), 0, &box);
+  D3D11_MAPPED_SUBRESOURCE mapped {};
+  winrt::check_hresult(
+    gRuntime.mContext->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped));
+  float total = 0;
+  for (UINT row = 0; row < boxSize; ++row) {
+    const auto pixels = static_cast<const uint8_t*>(mapped.pData)
+      + (static_cast<std::size_t>(row) * mapped.RowPitch);
+    for (UINT col = 0; col < boxSize; ++col) {
+      const uint8_t* p = pixels + (col * 4);
+      total += (p[0] + p[1] + p[2]) / 3.0f;
+    }
+  }
+  gRuntime.mContext->Unmap(staging.get(), 0);
+  return total / (boxSize * boxSize);
+}
+
+// Has the click target's orange click marker appeared on the panel?
+bool PanelShowsClickMarker(const XrCompositionLayerQuad& quad) {
+  const auto it
+    = gRuntime.mSwapchains.find(FromHandle(quad.subImage.swapchain));
+  if (it == gRuntime.mSwapchains.end()) {
+    return false;
+  }
+  const auto& fake = it->second;
+  const auto& rect = quad.subImage.imageRect;
+  constexpr UINT boxSize = 5;
+  const auto x = static_cast<UINT>(
+    rect.offset.x + (gRuntime.mWatchU * rect.extent.width) - (boxSize / 2));
+  const auto y = static_cast<UINT>(
+    rect.offset.y + (gRuntime.mWatchV * rect.extent.height) - (boxSize / 2));
+
+  const D3D11_TEXTURE2D_DESC desc {
+    .Width = boxSize,
+    .Height = boxSize,
+    .MipLevels = 1,
+    .ArraySize = 1,
+    .Format = fake.mTextureFormat,
+    .SampleDesc = {1, 0},
+    .Usage = D3D11_USAGE_STAGING,
+    .CPUAccessFlags = D3D11_CPU_ACCESS_READ,
+  };
+  winrt::com_ptr<ID3D11Texture2D> staging;
+  winrt::check_hresult(
+    gRuntime.mDevice->CreateTexture2D(&desc, nullptr, staging.put()));
+  const D3D11_BOX box {x, y, 0, x + boxSize, y + boxSize, 1};
+  gRuntime.mContext->CopySubresourceRegion(
+    staging.get(), 0, 0, 0, 0, fake.mImages.at(fake.mReleased).get(), 0, &box);
+  D3D11_MAPPED_SUBRESOURCE mapped {};
+  winrt::check_hresult(
+    gRuntime.mContext->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped));
+  const bool isBGRA = (fake.mTextureFormat == DXGI_FORMAT_B8G8R8A8_TYPELESS);
+  int orange = 0;
+  for (UINT row = 0; row < boxSize; ++row) {
+    const auto pixels = static_cast<const uint8_t*>(mapped.pData)
+      + (static_cast<std::size_t>(row) * mapped.RowPitch);
+    for (UINT col = 0; col < boxSize; ++col) {
+      const uint8_t* p = pixels + (col * 4);
+      const int r = isBGRA ? p[2] : p[0];
+      const int g = p[1];
+      const int b = isBGRA ? p[0] : p[2];
+      // By hue rather than brightness, so a panel's tint or brightness
+      // setting doesn't hide it; the marker is RGB(255, 120, 60) at full
+      // brightness
+      if (r >= 60 && r * 10 > g * 16 && r * 10 > b * 25 && g > b) {
+        ++orange;
+      }
+    }
+  }
+  gRuntime.mContext->Unmap(staging.get(), 0);
+  return orange >= (boxSize * boxSize) / 2;
+}
+
+// Share of the game's field of view (both eyes, in tangent space) that a
+// projection layer covers
+double ProjectionCoverage(
+  const XrCompositionLayerProjection& layer,
+  const XrFovf& gameFov) {
+  const auto area = [](const XrFovf& fov) {
+    return (std::tan(fov.angleRight) - std::tan(fov.angleLeft))
+      * (std::tan(fov.angleUp) - std::tan(fov.angleDown));
+  };
+  double total = 0;
+  for (uint32_t i = 0; i < layer.viewCount; ++i) {
+    const auto& fov = layer.views[i].fov;
+    const XrFovf clipped {
+      std::max(fov.angleLeft, gameFov.angleLeft),
+      std::min(fov.angleRight, gameFov.angleRight),
+      std::min(fov.angleUp, gameFov.angleUp),
+      std::max(fov.angleDown, gameFov.angleDown),
+    };
+    if (
+      clipped.angleRight > clipped.angleLeft
+      && clipped.angleUp > clipped.angleDown) {
+      total += area(clipped) / area(gameFov);
+    }
+  }
+  return layer.viewCount ? total / layer.viewCount : 0;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL
+Fake_xrEndFrame(XrSession, const XrFrameEndInfo* info) {
+  if (gRuntime.mBench) {
+    const XrFovf gameFov {-0.9f, 0.9f, 0.9f, -0.9f};
+    for (uint32_t i = 0; i < info->layerCount; ++i) {
+      const auto layer = info->layers[i];
+      if (layer->type == XR_TYPE_COMPOSITION_LAYER_QUAD) {
+        gRuntime.mQuad = *reinterpret_cast<const XrCompositionLayerQuad*>(layer);
+        continue;
+      }
+      if (layer->type != XR_TYPE_COMPOSITION_LAYER_PROJECTION) {
+        continue;
+      }
+      const auto& projection
+        = *reinterpret_cast<const XrCompositionLayerProjection*>(layer);
+      if (gRuntime.mSwapchains.contains(
+            FromHandle(projection.views[0].subImage.swapchain))) {
+        ++gRuntime.mBenchHandFrames;
+        gRuntime.mBenchHandCoverage += ProjectionCoverage(projection, gameFov);
+      }
+    }
+    return XR_SUCCESS;
+  }
+  if (
+    gRuntime.mWatchPanel && gRuntime.mQuad
+    && !gRuntime.mPanelChangedAt
+    && PanelShowsClickMarker(*gRuntime.mQuad)) {
+    gRuntime.mPanelChangedAt = NowMilliseconds();
+  }
+  gRuntime.mHandLayerThisFrame = false;
+  gRuntime.mQuadCount = 0;
+  gRuntime.mKeyboardQuad.reset();
+  {
+    std::optional<float> previous;
+    bool outOfOrder = false;
+    int quads = 0;
+    for (uint32_t i = 0; i < info->layerCount; ++i) {
+      if (info->layers[i]->type != XR_TYPE_COMPOSITION_LAYER_QUAD) {
+        continue;
+      }
+      ++quads;
+      const auto& quad
+        = *reinterpret_cast<const XrCompositionLayerQuad*>(info->layers[i]);
+      const HandInteraction::Panel panel {
+        .mPosition = {quad.pose.position.x, quad.pose.position.y, quad.pose.position.z},
+        .mOrientation = {quad.pose.orientation.x, quad.pose.orientation.y, quad.pose.orientation.z, quad.pose.orientation.w},
+        .mSize = {quad.size.width, quad.size.height},
+      };
+      const auto distance
+        = HandInteraction::DistanceToPanel(HMDPose.mPosition, panel);
+      if (previous && distance > *previous + 0.001f) {
+        outOfOrder = true;
+      }
+      previous = distance;
+    }
+    if (quads > 1) {
+      ++gRuntime.mFramesWithMultipleQuads;
+      if (outOfOrder) {
+        ++gRuntime.mFramesOutOfOrder;
+      }
+    }
+  }
+  for (uint32_t i = 0; i < info->layerCount; ++i) {
+    const auto layer = info->layers[i];
+    if (layer->type == XR_TYPE_COMPOSITION_LAYER_QUAD) {
+      ++gRuntime.mQuadCount;
+      if (!gRuntime.mQuad) {
+        const auto& quad
+          = *reinterpret_cast<const XrCompositionLayerQuad*>(layer);
+        std::printf(
+          "Panel layer: %.2fm x %.2fm at (%.2f, %.2f, %.2f)\n",
+          quad.size.width,
+          quad.size.height,
+          quad.pose.position.x,
+          quad.pose.position.y,
+          quad.pose.position.z);
+      }
+      gRuntime.mQuad = *reinterpret_cast<const XrCompositionLayerQuad*>(layer);
+      if (gRuntime.mQuad->size.width > 2.2f * gRuntime.mQuad->size.height) {
+        gRuntime.mKeyboardQuad = gRuntime.mQuad;
+      }
+      continue;
+    }
+    if (layer->type == XR_TYPE_COMPOSITION_LAYER_PROJECTION) {
+      const auto& projection
+        = *reinterpret_cast<const XrCompositionLayerProjection*>(layer);
+      // The game's own layer uses a swapchain we didn't create
+      if (gRuntime.mSwapchains.contains(
+            FromHandle(projection.views[0].subImage.swapchain))) {
+        gRuntime.mHandLayerThisFrame = true;
+        // Virtual Desktop (VDXR) applies one projection layer's field of view
+        // to the others, so the hand layer must use exactly the game's, over
+        // its whole image
+        const XrCompositionLayerProjection* game = nullptr;
+        for (uint32_t j = 0; j < info->layerCount; ++j) {
+          const auto other = info->layers[j];
+          if (
+            other->type == XR_TYPE_COMPOSITION_LAYER_PROJECTION
+            && other != layer) {
+            game = reinterpret_cast<const XrCompositionLayerProjection*>(other);
+            break;
+          }
+        }
+        const auto& fake = gRuntime.mSwapchains.at(
+          FromHandle(projection.views[0].subImage.swapchain));
+        bool matches = game && game->viewCount == projection.viewCount;
+        for (uint32_t v = 0; matches && v < projection.viewCount; ++v) {
+          const auto& ours = projection.views[v];
+          const auto& theirs = game->views[v];
+          matches = std::memcmp(&ours.fov, &theirs.fov, sizeof(XrFovf)) == 0
+            && std::memcmp(&ours.pose, &theirs.pose, sizeof(XrPosef)) == 0
+            && ours.subImage.imageRect.extent.width
+              == static_cast<int32_t>(fake.mInfo.width / projection.viewCount)
+            && ours.subImage.imageRect.extent.height
+              == static_cast<int32_t>(fake.mInfo.height);
+        }
+        if (!matches) {
+          ++gRuntime.mHandLayerViewMismatches;
+        }
+        InspectHandLayer(projection);
+      }
+    }
+  }
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrGetInstanceProcAddr(
+  XrInstance,
+  const char* name,
+  PFN_xrVoidFunction* function);
+
+const std::map<std::string_view, PFN_xrVoidFunction>& FakeFunctions() {
+#define FN(x) {#x, reinterpret_cast<PFN_xrVoidFunction>(&Fake_##x)}
+  static const std::map<std::string_view, PFN_xrVoidFunction> functions {
+    FN(xrGetInstanceProcAddr),
+    FN(xrEnumerateInstanceExtensionProperties),
+    FN(xrGetInstanceProperties),
+    FN(xrGetSystemProperties),
+    FN(xrCreateSession),
+    FN(xrDestroySession),
+    FN(xrDestroyInstance),
+    FN(xrCreateReferenceSpace),
+    FN(xrDestroySpace),
+    FN(xrLocateSpace),
+    FN(xrEnumerateSwapchainFormats),
+    FN(xrCreateSwapchain),
+    FN(xrDestroySwapchain),
+    FN(xrEnumerateSwapchainImages),
+    FN(xrAcquireSwapchainImage),
+    FN(xrWaitSwapchainImage),
+    FN(xrReleaseSwapchainImage),
+    FN(xrEndFrame),
+    FN(xrCreateHandTrackerEXT),
+    FN(xrDestroyHandTrackerEXT),
+    FN(xrLocateHandJointsEXT),
+  };
+#undef FN
+  return functions;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrGetInstanceProcAddr(
+  XrInstance,
+  const char* name,
+  PFN_xrVoidFunction* function) {
+  if (gRuntime.mEarlyLookupsFail && !gRuntime.mInstanceCreated) {
+    *function = nullptr;
+    return XR_ERROR_FUNCTION_UNSUPPORTED;
+  }
+  const auto& functions = FakeFunctions();
+  const auto it = functions.find(name);
+  if (it == functions.end()) {
+    *function = nullptr;
+    return XR_ERROR_FUNCTION_UNSUPPORTED;
+  }
+  *function = it->second;
+  return XR_SUCCESS;
+}
+
+///// The script /////
+
+struct Checks {
+  int mFailures {0};
+  void Check(bool ok, const std::string& what) {
+    std::printf("  %s %s\n", ok ? "ok:  " : "FAIL:", what.c_str());
+    if (!ok) {
+      ++mFailures;
+    }
+  }
+};
+
+struct Stats {
+  int mFrames {0};
+  int mHandLayerFrames {0};
+};
+
+enum class Step {
+  Waiting,
+  NoHands,
+  FlatHand,
+  Pointing,
+  PokeIn,
+  Touching,
+  PullBack,
+  Hovering,
+  FlatSweep,
+  ScrollHover,
+  ScrollTouch,
+  ScrollDrag,
+  ScrollRelease,
+  Done,
+};
+
+const char* StepName(Step step) {
+  switch (step) {
+    case Step::Waiting:
+      return "waiting for the panel";
+    case Step::NoHands:
+      return "no hands";
+    case Step::FlatHand:
+      return "flat hand in front of the panel";
+    case Step::Pointing:
+      return "pointing, 8cm in front";
+    case Step::PokeIn:
+      return "poking in";
+    case Step::Touching:
+      return "touching (1.5cm through)";
+    case Step::PullBack:
+      return "pulling back";
+    case Step::Hovering:
+      return "hovering, 8cm in front";
+    case Step::FlatSweep:
+      return "flat hand sweeping through the panel";
+    case Step::ScrollHover:
+      return "two fingers out, 8cm in front";
+    case Step::ScrollTouch:
+      return "two fingers touching";
+    case Step::ScrollDrag:
+      return "two fingers dragging down (scrolling)";
+    case Step::ScrollRelease:
+      return "two fingers pulling back";
+    case Step::Done:
+      return "done";
+  }
+  return "?";
+}
+
+struct Timeline {
+  Step mStep;
+  double mStart;
+  double mEnd;
+};
+
+constexpr std::array<Timeline, 13> Script {{
+  {Step::NoHands, 0.0, 1.0},
+  {Step::FlatHand, 1.0, 2.0},
+  {Step::Pointing, 2.0, 3.0},
+  {Step::PokeIn, 3.0, 3.4},
+  {Step::Touching, 3.4, 3.7},
+  {Step::PullBack, 3.7, 4.1},
+  {Step::Hovering, 4.1, 5.0},
+  {Step::FlatSweep, 5.0, 6.0},
+  {Step::ScrollHover, 6.0, 6.5},
+  {Step::ScrollTouch, 6.5, 6.8},
+  {Step::ScrollDrag, 6.8, 7.4},
+  {Step::ScrollRelease, 7.4, 7.7},
+  {Step::Done, 7.7, 8.5},
+}};
+
+// Where the fingertip goes: (u, v) across the panel, and how far in front
+Vector3 OnPanel(
+  const XrCompositionLayerQuad& quad,
+  float u,
+  float v,
+  float distance,
+  Vector3* normalOut = nullptr,
+  Vector3* upOut = nullptr) {
+  const auto& o = quad.pose.orientation;
+  const Quaternion orientation {o.x, o.y, o.z, o.w};
+  const Vector3 center {
+    quad.pose.position.x, quad.pose.position.y, quad.pose.position.z};
+  const auto right = Vector3::Transform(Vector3::UnitX, orientation);
+  const auto up = Vector3::Transform(Vector3::UnitY, orientation);
+  auto normal = Vector3::Transform(Vector3::UnitZ, orientation);
+  if ((HMDPose.mPosition - center).Dot(normal) < 0) {
+    normal = -normal;
+  }
+  if (normalOut) {
+    *normalOut = normal;
+  }
+  if (upOut) {
+    *upOut = up;
+  }
+  return center + (right * ((u - 0.5f) * quad.size.width))
+    + (up * ((0.5f - v) * quad.size.height)) + (normal * distance);
+}
+
+HandJoints HandAt(
+  Pose pose,
+  const XrCompositionLayerQuad& quad,
+  float u,
+  float v,
+  float distance) {
+  Vector3 normal;
+  Vector3 up;
+  const auto tip = OnPanel(quad, u, v, distance, &normal, &up);
+  // Fingers into the panel, back of the hand toward its top edge
+  const Vector3 forward = -normal;
+  const Vector3 back = up;
+  const HandBasis basis {back.Cross(forward), forward, back};
+  auto hand = MakeHand(pose, basis, tip);
+  if (pose == Pose::TwoFingers) {
+    // Scrolling touches between the two fingertips
+    const auto midpoint
+      = (hand[Joint::IndexTip].mPosition + hand[Joint::MiddleTip].mPosition)
+      * 0.5f;
+    for (auto& joint: hand.mJoints) {
+      joint.mPosition += tip - midpoint;
+    }
+  }
+  return hand;
+}
+
+// The click target's position on the panel
+constexpr float TargetU = 0.5f;
+constexpr float TargetV = 0.55f;
+
+void ScriptHands(Step step, double progress, const XrCompositionLayerQuad& quad) {
+  auto& right = gRuntime.mHands[1];
+  gRuntime.mHands[0] = {};
+  const auto lerp = [&](float a, float b) {
+    return a + ((b - a) * static_cast<float>(progress));
+  };
+  switch (step) {
+    case Step::Waiting:
+    case Step::NoHands:
+    case Step::Done:
+      right = {};
+      return;
+    case Step::FlatHand:
+      right = HandAt(Pose::Flat, quad, TargetU, TargetV, 0.12f);
+      return;
+    case Step::Pointing:
+    case Step::Hovering:
+      right = HandAt(Pose::Point, quad, TargetU, TargetV, 0.08f);
+      return;
+    case Step::PokeIn:
+      right = HandAt(Pose::Point, quad, TargetU, TargetV, lerp(0.08f, -0.015f));
+      return;
+    case Step::Touching:
+      right = HandAt(Pose::Point, quad, TargetU, TargetV, -0.015f);
+      return;
+    case Step::PullBack:
+      right = HandAt(Pose::Point, quad, TargetU, TargetV, lerp(-0.015f, 0.08f));
+      return;
+    case Step::FlatSweep:
+      right = HandAt(
+        Pose::Flat, quad, lerp(0.2f, 0.8f), TargetV, lerp(0.06f, -0.04f));
+      return;
+    // Drag down 40% of the panel's height
+    case Step::ScrollHover:
+      right = HandAt(Pose::TwoFingers, quad, TargetU, 0.4f, 0.08f);
+      return;
+    case Step::ScrollTouch:
+      right = HandAt(Pose::TwoFingers, quad, TargetU, 0.4f, lerp(0.08f, -0.005f));
+      return;
+    case Step::ScrollDrag:
+      right = HandAt(Pose::TwoFingers, quad, TargetU, lerp(0.4f, 0.8f), -0.005f);
+      return;
+    case Step::ScrollRelease:
+      right = HandAt(Pose::TwoFingers, quad, TargetU, 0.8f, lerp(-0.005f, 0.08f));
+      return;
+  }
+}
+
+std::vector<std::string> ReadLines(const std::filesystem::path& path) {
+  std::vector<std::string> lines;
+  std::ifstream f(path);
+  std::string line;
+  while (std::getline(f, line)) {
+    lines.push_back(line);
+  }
+  return lines;
+}
+
+int CountPrefix(const std::vector<std::string>& lines, std::string_view prefix) {
+  return static_cast<int>(std::ranges::count_if(
+    lines, [prefix](const auto& line) { return line.starts_with(prefix); }));
+}
+
+}// namespace
+
+int main(int rawArgc, char** rawArgv) {
+  // Named options can go anywhere; what's left is positional
+  std::string negotiateExport {"xrNegotiateLoaderApiLayerInterface"};
+  std::string layerName {"XR_APILAYER_TEST_layer"};
+  std::vector<char*> positional;
+  for (int i = 0; i < rawArgc; ++i) {
+    const std::string_view arg {rawArgv[i]};
+    if (arg == "--negotiate-export" && i + 1 < rawArgc) {
+      negotiateExport = rawArgv[++i];
+    } else if (arg == "--layer-name" && i + 1 < rawArgc) {
+      layerName = rawArgv[++i];
+    } else if (arg == "--early-lookups-fail") {
+      gRuntime.mEarlyLookupsFail = true;
+    } else if (arg == "--no-hand-tracking") {
+      gRuntime.mNoHandTracking = true;
+    } else {
+      positional.push_back(rawArgv[i]);
+    }
+  }
+  const int argc = static_cast<int>(positional.size());
+  char** argv = positional.data();
+  if (argc < 3) {
+    std::printf(
+      "Usage: openxr-simulator [--negotiate-export <name>] "
+      "[--layer-name <name>] [--early-lookups-fail] [--no-hand-tracking] "
+      "<layer DLL> <output folder> "
+      "[click log | --watch <s> | --type-keys ... | --bench <s> [hover]]\n");
+    return 1;
+  }
+  const std::filesystem::path layerPath {argv[1]};
+  const std::filesystem::path outputDir {argv[2]};
+  // '--watch <seconds>': no hands; report changes to the panel layers
+  std::optional<double> watchSeconds;
+  // '--bench <seconds> [hover]': measure the layer's GPU time per frame, and
+  // what it gives the runtime to composite; optionally with a pointing hand
+  // hovering in front of the panel
+  std::optional<double> benchSeconds;
+  bool benchHover = false;
+  std::optional<std::filesystem::path> clickLog;
+  // '--type-keys u,v;u,v;...': the right
+  // index fingertip presses these points on the virtual keyboard, which must
+  // already be showing (tap a text field first)
+  std::vector<std::pair<float, float>> typeKeys;
+  if (argc > 4 && std::string_view {argv[3]} == "--type-keys") {
+    std::stringstream list {argv[4]};
+    std::string item;
+    while (std::getline(list, item, ';')) {
+      float u {}, v {};
+      if (sscanf_s(item.c_str(), "%f,%f", &u, &v) == 2) {
+        typeKeys.emplace_back(u, v);
+      }
+    }
+  } else if (argc > 4 && std::string_view {argv[3]} == "--watch") {
+    watchSeconds = std::atof(argv[4]);
+  } else if (argc > 4 && std::string_view {argv[3]} == "--bench") {
+    benchSeconds = std::atof(argv[4]);
+    benchHover = (argc > 5 && std::string_view {argv[5]} == "hover");
+  } else if (argc > 3) {
+    clickLog = std::filesystem::path {argv[3]};
+  }
+  std::filesystem::create_directories(outputDir);
+  winrt::check_hresult(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
+
+  Checks checks;
+
+  // Hardware first; WARP on machines without a GPU (CI). Added in the port.
+  HRESULT created = E_FAIL;
+  for (const auto driver: {D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP}) {
+    gRuntime.mDevice = nullptr;
+    gRuntime.mContext = nullptr;
+    created = D3D11CreateDevice(
+      nullptr,
+      driver,
+      nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+      nullptr,
+      0,
+      D3D11_SDK_VERSION,
+      gRuntime.mDevice.put(),
+      nullptr,
+      gRuntime.mContext.put());
+    if (SUCCEEDED(created)) {
+      break;
+    }
+  }
+  winrt::check_hresult(created);
+
+  // Load the layer, as the OpenXR loader would
+  const auto layer = LoadLibraryW(layerPath.wstring().c_str());
+  if (!layer) {
+    std::printf("Failed to load %s\n", layerPath.string().c_str());
+    return 1;
+  }
+  const auto negotiate = reinterpret_cast<PFN_xrNegotiateLoaderApiLayerInterface>(
+    GetProcAddress(layer, negotiateExport.c_str()));
+  if (!negotiate) {
+    std::printf("The layer has no negotiation function\n");
+    return 1;
+  }
+  XrNegotiateLoaderInfo loaderInfo {
+    .structType = XR_LOADER_INTERFACE_STRUCT_LOADER_INFO,
+    .structVersion = XR_LOADER_INFO_STRUCT_VERSION,
+    .structSize = sizeof(XrNegotiateLoaderInfo),
+    .minInterfaceVersion = 1,
+    .maxInterfaceVersion = XR_CURRENT_LOADER_API_LAYER_VERSION,
+    .minApiVersion = XR_MAKE_VERSION(1, 0, 0),
+    .maxApiVersion = XR_MAKE_VERSION(1, 0x3ff, 0xfff),
+  };
+  XrNegotiateApiLayerRequest layerRequest {
+    .structType = XR_LOADER_INTERFACE_STRUCT_API_LAYER_REQUEST,
+    .structVersion = XR_API_LAYER_INFO_STRUCT_VERSION,
+    .structSize = sizeof(XrNegotiateApiLayerRequest),
+  };
+  if (XR_FAILED(negotiate(&loaderInfo, layerName.c_str(), &layerRequest))) {
+    std::printf("Layer negotiation failed\n");
+    return 1;
+  }
+
+  XrApiLayerNextInfo nextInfo {
+    .structType = XR_LOADER_INTERFACE_STRUCT_API_LAYER_NEXT_INFO,
+    .structVersion = XR_API_LAYER_NEXT_INFO_STRUCT_VERSION,
+    .structSize = sizeof(XrApiLayerNextInfo),
+    .nextGetInstanceProcAddr = &Fake_xrGetInstanceProcAddr,
+    .nextCreateApiLayerInstance = &Fake_xrCreateApiLayerInstance,
+    .next = nullptr,
+  };
+  strcpy_s(nextInfo.layerName, layerName.c_str());
+  XrApiLayerCreateInfo apiLayerInfo {
+    .structType = XR_LOADER_INTERFACE_STRUCT_API_LAYER_CREATE_INFO,
+    .structVersion = XR_API_LAYER_CREATE_INFO_STRUCT_VERSION,
+    .structSize = sizeof(XrApiLayerCreateInfo),
+    .nextInfo = &nextInfo,
+  };
+  // The game only asks for D3D11; the layer should add hand tracking
+  const char* gameExtensions[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
+  XrInstanceCreateInfo instanceInfo {
+    .type = XR_TYPE_INSTANCE_CREATE_INFO,
+    .enabledExtensionCount = 1,
+    .enabledExtensionNames = gameExtensions,
+  };
+  strcpy_s(instanceInfo.applicationInfo.applicationName, "Simulated game");
+  instanceInfo.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 0);
+  XrInstance instance {};
+  if (XR_FAILED(layerRequest.createApiLayerInstance(
+        &instanceInfo, &apiLayerInfo, &instance))) {
+    std::printf("xrCreateApiLayerInstance failed\n");
+    return 1;
+  }
+
+  std::printf("Startup\n");
+  if (gRuntime.mEarlyLookupsFail) {
+    std::printf(
+      "  (the next layer can't resolve functions before its instance "
+      "exists)\n");
+  }
+  if (gRuntime.mNoHandTracking) {
+    checks.Check(
+      !std::ranges::contains(
+        gRuntime.mEnabledExtensions, XR_EXT_HAND_TRACKING_EXTENSION_NAME),
+      "without runtime hand tracking, the instance was still created, "
+      "without XR_EXT_hand_tracking");
+    return checks.mFailures == 0 ? 0 : 1;
+  }
+  checks.Check(
+    std::ranges::contains(
+      gRuntime.mEnabledExtensions, XR_EXT_HAND_TRACKING_EXTENSION_NAME),
+    "the layer turned on XR_EXT_hand_tracking for a game that didn't ask for "
+    "it");
+
+  const auto layerFunction = [&](const char* name) {
+    PFN_xrVoidFunction fn {nullptr};
+    layerRequest.getInstanceProcAddr(instance, name, &fn);
+    return fn;
+  };
+  const auto layerCreateSession
+    = reinterpret_cast<PFN_xrCreateSession>(layerFunction("xrCreateSession"));
+  const auto layerEndFrame
+    = reinterpret_cast<PFN_xrEndFrame>(layerFunction("xrEndFrame"));
+  const auto layerDestroySession
+    = reinterpret_cast<PFN_xrDestroySession>(layerFunction("xrDestroySession"));
+  const auto layerDestroyInstance = reinterpret_cast<PFN_xrDestroyInstance>(
+    layerFunction("xrDestroyInstance"));
+
+  XrGraphicsBindingD3D11KHR binding {
+    .type = XR_TYPE_GRAPHICS_BINDING_D3D11_KHR,
+    .device = gRuntime.mDevice.get(),
+  };
+  const XrSessionCreateInfo sessionInfo {
+    .type = XR_TYPE_SESSION_CREATE_INFO,
+    .next = &binding,
+    .systemId = 1,
+  };
+  XrSession session {};
+  if (XR_FAILED(layerCreateSession(instance, &sessionInfo, &session))) {
+    std::printf("xrCreateSession failed\n");
+    return 1;
+  }
+
+  // The game's own reference space
+  XrSpace gameSpace {};
+  const XrReferenceSpaceCreateInfo spaceInfo {
+    .type = XR_TYPE_REFERENCE_SPACE_CREATE_INFO,
+    .referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL,
+    .poseInReferenceSpace = ToXr({}),
+  };
+  Fake_xrCreateReferenceSpace(session, &spaceInfo, &gameSpace);
+
+  std::array<XrCompositionLayerProjectionView, 2> gameViews {};
+  for (int eye = 0; eye < 2; ++eye) {
+    RigidPose eyePose = HMDPose;
+    eyePose.mPosition += Vector3::Transform(
+      Vector3 {(eye == 0 ? -IPD : IPD) / 2, 0, 0}, HMDPose.mOrientation);
+    gameViews[eye] = {
+      .type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW,
+      .pose = ToXr(eyePose),
+      .fov = {-0.9f, 0.9f, 0.9f, -0.9f},
+      .subImage = {
+        .swapchain = ToHandle<XrSwapchain>(0xDEAD),
+        .imageRect = {{0, 0}, {2000, 2000}},
+      },
+    };
+  }
+  const XrCompositionLayerProjection gameLayer {
+    .type = XR_TYPE_COMPOSITION_LAYER_PROJECTION,
+    .space = gameSpace,
+    .viewCount = 2,
+    .views = gameViews.data(),
+  };
+  const auto gameLayerHeader
+    = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&gameLayer);
+
+  // Typing on the virtual keyboard
+  if (!typeKeys.empty()) {
+    using Clock = std::chrono::steady_clock;
+    const auto start = Clock::now();
+    std::optional<Clock::time_point> typingStart;
+    // Per key: hover 5cm in front, poke 8mm through, hold, pull back
+    constexpr double perKey = 0.75;
+    int keyboardFrames = 0;
+    int handLayerFrames = 0;
+    std::optional<XrCompositionLayerQuad> keyboard;
+    while (true) {
+      const auto now = Clock::now();
+      const double sinceStart
+        = std::chrono::duration<double>(now - start).count();
+      if (gRuntime.mKeyboardQuad) {
+        keyboard = gRuntime.mKeyboardQuad;
+        ++keyboardFrames;
+        if (!typingStart) {
+          typingStart = now;
+          std::printf(
+            "Keyboard layer: %.2fm x %.2fm; pressing %zu keys\n",
+            keyboard->size.width,
+            keyboard->size.height,
+            typeKeys.size());
+        }
+      }
+      if (!typingStart && sinceStart > 15) {
+        std::printf(
+          "FAIL: no keyboard layer after 15 seconds; tap a text field in a "
+          "captured window first\n");
+        return 1;
+      }
+      gRuntime.mHands = {};
+      if (typingStart && keyboard) {
+        const double t
+          = std::chrono::duration<double>(now - *typingStart).count();
+        const auto index = static_cast<size_t>(t / perKey);
+        if (index >= typeKeys.size()) {
+          if (t > (typeKeys.size() * perKey) + 0.5) {
+            break;
+          }
+        } else {
+          const double phase = (t - (index * perKey)) / perKey;
+          const auto [u, v] = typeKeys.at(index);
+          float distance = 0.05f;
+          if (phase < 0.45) {
+            distance = 0.05f;
+          } else if (phase < 0.6) {
+            distance = 0.05f
+              + ((-0.008f - 0.05f) * static_cast<float>((phase - 0.45) / 0.15));
+          } else if (phase < 0.7) {
+            distance = -0.008f;
+          } else {
+            distance = -0.008f
+              + ((0.05f + 0.008f) * static_cast<float>((phase - 0.7) / 0.3));
+          }
+          gRuntime.mHands[1] = HandAt(Pose::Point, *keyboard, u, v, distance);
+        }
+      }
+      const XrFrameEndInfo frameEndInfo {
+        .type = XR_TYPE_FRAME_END_INFO,
+        .displayTime
+        = std::chrono::duration_cast<std::chrono::nanoseconds>(now - start)
+            .count()
+          + 1'000'000'000,
+        .environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE,
+        .layerCount = 1,
+        .layers = &gameLayerHeader,
+      };
+      layerEndFrame(session, &frameEndInfo);
+      if (gRuntime.mHandLayerThisFrame) {
+        ++handLayerFrames;
+      }
+      std::this_thread::sleep_until(now + std::chrono::microseconds(11111));
+    }
+    std::printf(
+      "Typed; the keyboard was shown in %d frames, and hands were drawn in "
+      "%d\n",
+      keyboardFrames,
+      handLayerFrames);
+    std::printf(
+      "Panel layers back to front: %d of %d frames with several layers "
+      "were out of order\n",
+      gRuntime.mFramesOutOfOrder,
+      gRuntime.mFramesWithMultipleQuads);
+    layerDestroySession(session);
+    layerDestroyInstance(instance);
+    return 0;
+  }
+
+  if (benchSeconds) {
+    gRuntime.mBench = true;
+    std::printf(
+      "Benchmarking the layer for %.0fs%s\n",
+      *benchSeconds,
+      benchHover ? ", with a pointing hand hovering" : "");
+    auto device = gRuntime.mDevice.get();
+    auto context = gRuntime.mContext.get();
+    constexpr size_t Ring = 8;
+    struct Queries {
+      winrt::com_ptr<ID3D11Query> mDisjoint;
+      winrt::com_ptr<ID3D11Query> mBegin;
+      winrt::com_ptr<ID3D11Query> mEnd;
+      bool mPending {false};
+    };
+    std::array<Queries, Ring> queries;
+    for (auto& q: queries) {
+      D3D11_QUERY_DESC desc {D3D11_QUERY_TIMESTAMP_DISJOINT};
+      winrt::check_hresult(device->CreateQuery(&desc, q.mDisjoint.put()));
+      desc.Query = D3D11_QUERY_TIMESTAMP;
+      winrt::check_hresult(device->CreateQuery(&desc, q.mBegin.put()));
+      winrt::check_hresult(device->CreateQuery(&desc, q.mEnd.put()));
+    }
+    std::vector<double> gpuMs;
+    const auto collect = [&](Queries& q) {
+      if (!q.mPending) {
+        return;
+      }
+      q.mPending = false;
+      D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint {};
+      while (context->GetData(q.mDisjoint.get(), &disjoint, sizeof(disjoint), 0)
+             == S_FALSE) {
+        std::this_thread::yield();
+      }
+      uint64_t begin {}, end {};
+      while (context->GetData(q.mBegin.get(), &begin, sizeof(begin), 0)
+             == S_FALSE) {
+        std::this_thread::yield();
+      }
+      while (context->GetData(q.mEnd.get(), &end, sizeof(end), 0) == S_FALSE) {
+        std::this_thread::yield();
+      }
+      if (disjoint.Disjoint || disjoint.Frequency == 0 || end < begin) {
+        return;
+      }
+      gpuMs.push_back(
+        static_cast<double>(end - begin) * 1000.0 / disjoint.Frequency);
+    };
+
+    using Clock = std::chrono::steady_clock;
+    const auto start = Clock::now();
+    std::optional<Clock::time_point> measureStart;
+    uint64_t frames = 0;
+    uint64_t releasesAtStart = 0;
+    uint64_t pixelsAtStart = 0;
+    size_t frameIndex = 0;
+    while (true) {
+      const auto now = Clock::now();
+      const double t = std::chrono::duration<double>(now - start).count();
+      // A few seconds to settle (swapchains created, host app connected)
+      if (!measureStart && t > 3 && gRuntime.mQuad) {
+        measureStart = now;
+        releasesAtStart = gRuntime.mReleases;
+        pixelsAtStart = gRuntime.mReleasedPixels;
+        gRuntime.mBenchHandFrames = 0;
+        gRuntime.mBenchHandCoverage = 0;
+        gpuMs.clear();
+        frames = 0;
+      }
+      if (
+        measureStart
+        && (now - *measureStart)
+          > std::chrono::duration<double>(*benchSeconds)) {
+        break;
+      }
+      if (t > 20 && !gRuntime.mQuad) {
+        std::printf(
+          "FAIL: no panel after 20 seconds; is the host app running, with a "
+          "panel enabled in VR?\n");
+        return 1;
+      }
+      gRuntime.mHands = {};
+      if (benchHover && gRuntime.mQuad) {
+        gRuntime.mHands[1]
+          = HandAt(Pose::Point, *gRuntime.mQuad, 0.5f, 0.55f, 0.08f);
+      }
+      const XrFrameEndInfo frameEndInfo {
+        .type = XR_TYPE_FRAME_END_INFO,
+        .displayTime
+        = std::chrono::duration_cast<std::chrono::nanoseconds>(now - start)
+            .count()
+          + 1'000'000'000,
+        .environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE,
+        .layerCount = 1,
+        .layers = &gameLayerHeader,
+      };
+      auto& q = queries[frameIndex % Ring];
+      collect(q);
+      context->Begin(q.mDisjoint.get());
+      context->End(q.mBegin.get());
+      layerEndFrame(session, &frameEndInfo);
+      context->End(q.mEnd.get());
+      context->End(q.mDisjoint.get());
+      q.mPending = true;
+      context->Flush();
+      ++frameIndex;
+      if (measureStart) {
+        ++frames;
+      }
+      std::this_thread::sleep_until(now + std::chrono::microseconds(11111));
+    }
+    for (auto& q: queries) {
+      collect(q);
+    }
+    std::ranges::sort(gpuMs);
+    double sum = 0;
+    for (const auto ms: gpuMs) {
+      sum += ms;
+    }
+    const auto seconds = *benchSeconds;
+    std::printf(
+      "Layer GPU time per frame: avg %.3fms, median %.3fms, p95 %.3fms (%zu "
+      "frames)\n",
+      gpuMs.empty() ? 0.0 : sum / gpuMs.size(),
+      gpuMs.empty() ? 0.0 : gpuMs[gpuMs.size() / 2],
+      gpuMs.empty() ? 0.0 : gpuMs[(gpuMs.size() * 95) / 100],
+      gpuMs.size());
+    std::printf(
+      "Swapchain images released: %.1f/s (%.1f Mpx/s); %llu frames\n",
+      (gRuntime.mReleases - releasesAtStart) / seconds,
+      (gRuntime.mReleasedPixels - pixelsAtStart) / seconds / 1e6,
+      static_cast<unsigned long long>(frames));
+    std::printf(
+      "Hand layer: in %d of %llu frames, covering %.1f%% of each eye's view "
+      "on average when shown\n",
+      gRuntime.mBenchHandFrames,
+      static_cast<unsigned long long>(frames),
+      gRuntime.mBenchHandFrames
+        ? 100.0 * gRuntime.mBenchHandCoverage / gRuntime.mBenchHandFrames
+        : 0.0);
+    layerDestroySession(session);
+    layerDestroyInstance(instance);
+    return 0;
+  }
+
+  if (watchSeconds) {
+    std::printf("Watching the panel layers for %.0fs\n", *watchSeconds);
+    using Clock = std::chrono::steady_clock;
+    const auto start = Clock::now();
+    struct Seen {
+      int mCount {-1};
+      float mWidth {};
+      float mBrightness {-1};
+    } last;
+    while (true) {
+      const auto now = Clock::now();
+      const double t = std::chrono::duration<double>(now - start).count();
+      if (t > *watchSeconds) {
+        break;
+      }
+      const XrFrameEndInfo frameEndInfo {
+        .type = XR_TYPE_FRAME_END_INFO,
+        .displayTime
+        = std::chrono::duration_cast<std::chrono::nanoseconds>(now - start)
+            .count()
+          + 1'000'000'000,
+        .environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE,
+        .layerCount = 1,
+        .layers = &gameLayerHeader,
+      };
+      layerEndFrame(session, &frameEndInfo);
+
+      Seen seen {.mCount = gRuntime.mQuadCount};
+      if (seen.mCount > 0 && gRuntime.mQuad) {
+        seen.mWidth = gRuntime.mQuad->size.width;
+        seen.mBrightness = PanelBrightness(*gRuntime.mQuad).value_or(-1);
+      }
+      const bool changed = seen.mCount != last.mCount
+        || std::abs(seen.mWidth - last.mWidth) > 0.01f
+        || std::abs(seen.mBrightness - last.mBrightness) > 6;
+      if (changed) {
+        if (seen.mCount > 0) {
+          std::printf(
+            "  %5.2fs: %d panel layer(s), %.2fm wide, brightness %.0f\n",
+            t,
+            seen.mCount,
+            seen.mWidth,
+            seen.mBrightness);
+        } else {
+          std::printf("  %5.2fs: no panel layers\n", t);
+        }
+        last = seen;
+      }
+      std::this_thread::sleep_until(now + std::chrono::microseconds(11111));
+    }
+    layerDestroySession(session);
+    layerDestroyInstance(instance);
+    return 0;
+  }
+
+  std::printf(
+    "Running the script; the host app must be running with a panel in VR\n");
+  using Clock = std::chrono::steady_clock;
+  const auto start = Clock::now();
+  std::optional<Clock::time_point> scriptStart;
+  std::map<Step, Stats> stats;
+  Step lastStep = Step::Waiting;
+  bool savedTouching = false;
+  bool savedHovering = false;
+  int maxCoverageWhilePointing = 0;
+
+  while (true) {
+    const auto now = Clock::now();
+    const double sinceStart
+      = std::chrono::duration<double>(now - start).count();
+    if (gRuntime.mQuad && !scriptStart) {
+      scriptStart = now;
+    }
+    if (!scriptStart && sinceStart > 15) {
+      std::printf(
+        "FAIL: no panel after 15 seconds; is the host app running, with "
+        "a panel enabled in VR?\n");
+      return 1;
+    }
+
+    Step step = Step::Waiting;
+    double progress = 0;
+    if (scriptStart) {
+      const double t = std::chrono::duration<double>(now - *scriptStart).count();
+      if (t >= Script.back().mEnd) {
+        break;
+      }
+      for (const auto& entry: Script) {
+        if (t >= entry.mStart && t < entry.mEnd) {
+          step = entry.mStep;
+          progress = (t - entry.mStart) / (entry.mEnd - entry.mStart);
+        }
+      }
+      ScriptHands(step, progress, *gRuntime.mQuad);
+    }
+    if (step != lastStep) {
+      std::printf("  ... %s\n", StepName(step));
+      lastStep = step;
+    }
+
+    if (step == Step::PokeIn && !gRuntime.mWatchPanel) {
+      gRuntime.mWatchU = TargetU;
+      gRuntime.mWatchV = TargetV;
+      gRuntime.mWatchPanel = true;
+    }
+    if (step == Step::Touching && progress > 0.5 && !savedTouching) {
+      gRuntime.mSaveHandLayerTo = outputDir / "sim-hand-touching.png";
+      savedTouching = true;
+    }
+    if (step == Step::Hovering && progress > 0.5 && !savedHovering) {
+      gRuntime.mSaveHandLayerTo = outputDir / "sim-hand-hovering.png";
+      savedHovering = true;
+    }
+
+    const XrFrameEndInfo frameEndInfo {
+      .type = XR_TYPE_FRAME_END_INFO,
+      .displayTime = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                       now - start)
+                       .count()
+        + 1'000'000'000,
+      .environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE,
+      .layerCount = 1,
+      .layers = &gameLayerHeader,
+    };
+    layerEndFrame(session, &frameEndInfo);
+
+    auto& s = stats[step];
+    ++s.mFrames;
+    if (gRuntime.mHandLayerThisFrame) {
+      ++s.mHandLayerFrames;
+      if (step == Step::Pointing || step == Step::Hovering) {
+        maxCoverageWhilePointing
+          = std::max(maxCoverageWhilePointing, gRuntime.mHandLayerCoverage);
+      }
+    }
+    std::this_thread::sleep_until(now + std::chrono::microseconds(11111));
+  }
+
+  std::printf("\nResults\n");
+  checks.Check(
+    gRuntime.mHandTrackersCreated == 2,
+    std::format(
+      "the layer started tracking both hands ({} trackers); if 0, is "
+      "tapping panels with your index finger on in the host app's settings?",
+      gRuntime.mHandTrackersCreated));
+  checks.Check(
+    stats[Step::FlatHand].mHandLayerFrames == 0,
+    std::format(
+      "a flat hand stays hidden ({} of {} frames showed a hand)",
+      stats[Step::FlatHand].mHandLayerFrames,
+      stats[Step::FlatHand].mFrames));
+  const auto& pointing = stats[Step::Pointing];
+  checks.Check(
+    pointing.mHandLayerFrames > pointing.mFrames / 2,
+    std::format(
+      "a pointing hand is shown ({} of {} frames)",
+      pointing.mHandLayerFrames,
+      pointing.mFrames));
+  checks.Check(
+    maxCoverageWhilePointing > 500,
+    std::format(
+      "the hand layer has a visible hand in it ({} pixels drawn)",
+      maxCoverageWhilePointing));
+  checks.Check(
+    stats[Step::Touching].mHandLayerFrames > 0,
+    "the hand stays visible while touching");
+  checks.Check(
+    gRuntime.mHandLayerViewMismatches == 0,
+    std::format(
+      "the hand layer always uses the game's own eye poses and field of view, "
+      "over its whole image ({} frames didn't)",
+      gRuntime.mHandLayerViewMismatches));
+
+  if (clickLog) {
+    // Give the app time to deliver the last events
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    const auto lines = ReadLines(*clickLog);
+    const auto downs = CountPrefix(lines, "DOWN");
+    const auto ups = CountPrefix(lines, "UP");
+    checks.Check(
+      downs == 1 && ups == 1,
+      std::format(
+        "the click target got exactly one click ({} down, {} up); the flat "
+        "hand sweep added none",
+        downs,
+        ups));
+    for (const auto& line: lines) {
+      if (line.starts_with("DOWN")) {
+        std::printf("  click target: %s (window is 800x600)\n", line.c_str());
+      }
+    }
+    checks.Check(
+      CountPrefix(lines, "MOVES") > 0, "the cursor moved over the window");
+
+    int wheelMessages = 0;
+    int wheelTotal = 0;
+    for (const auto& line: lines) {
+      if (line.starts_with("WHEEL ")) {
+        ++wheelMessages;
+        wheelTotal += std::atoi(line.c_str() + 6);
+      }
+    }
+    checks.Check(
+      wheelMessages > 0 && wheelTotal > 0,
+      std::format(
+        "dragging two fingers down scrolled the window up ({} wheel messages, "
+        "{} notches), without clicking",
+        wheelMessages,
+        wheelTotal / 120));
+
+    // From the click reaching the window, to the panel showing the
+    // window's reaction (its orange click marker) in what the layer submits
+    for (const auto& line: lines) {
+      if (!line.starts_with("DOWN ")) {
+        continue;
+      }
+      std::istringstream fields(line.substr(5));
+      int x {}, y {};
+      double clickedAt {};
+      if (!(fields >> x >> y >> clickedAt)) {
+        break;
+      }
+      if (gRuntime.mPanelChangedAt) {
+        std::printf(
+          "  click -> window reacts -> visible in the panel layer: %.1fms\n",
+          *gRuntime.mPanelChangedAt - clickedAt);
+      } else {
+        std::printf("  (the click marker wasn't seen on the panel)\n");
+      }
+      break;
+    }
+  }
+
+  layerDestroySession(session);
+  layerDestroyInstance(instance);
+
+  std::printf(
+    "\n%s (%d failed)\n",
+    checks.mFailures == 0 ? "PASSED" : "FAILED",
+    checks.mFailures);
+  return checks.mFailures == 0 ? 0 : 1;
+}

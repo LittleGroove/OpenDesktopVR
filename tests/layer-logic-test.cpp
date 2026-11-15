@@ -1,0 +1,245 @@
+// SPDX-License-Identifier: LicenseRef-Proprietary
+// Copyright (c) 2026 Robert McGough. All rights reserved.
+//
+// The layer's pure logic: layer room (XR-9), composition order and limits,
+// the hand-tracking extension policy (XR-7), the per-game off list (VR-8),
+// the test card, and the OpenXR helpers (XR-10).
+
+#include "check.hpp"
+
+#include <OpenDesktopVR/Layer/Composition.hpp>
+#include <OpenDesktopVR/Layer/ExtensionPolicy.hpp>
+#include <OpenDesktopVR/Layer/LayerConfig.hpp>
+#include <OpenDesktopVR/Layer/TestPattern.hpp>
+#include <OpenDesktopVR/Product.hpp>
+#include <OpenDesktopVR/XrUtil.hpp>
+
+#include <cmath>
+#include <cstring>
+#include <format>
+#include <limits>
+#include <map>
+#include <numbers>
+#include <string>
+#include <vector>
+
+using namespace OpenDesktopVR;
+using namespace OpenDesktopVR::Layer;
+using namespace OpenDesktopVR::Testing;
+
+namespace {
+
+// ---- A fake "next layer" for the extension probe -----------------------------
+enum class FakeNext { HasHands, NoHands, LookupFails, EnumerateFails };
+FakeNext gFake = FakeNext::HasHands;
+
+XRAPI_ATTR XrResult XRAPI_CALL
+FakeEnumerate(const char*, uint32_t capacity, uint32_t* count, XrExtensionProperties* properties) {
+  if (gFake == FakeNext::EnumerateFails) {
+    return XR_ERROR_RUNTIME_FAILURE;
+  }
+  std::vector<const char*> names {"XR_KHR_D3D11_enable"};
+  if (gFake == FakeNext::HasHands) {
+    names.push_back(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
+  }
+  *count = static_cast<uint32_t>(names.size());
+  if (capacity == 0) {
+    return XR_SUCCESS;
+  }
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    strcpy_s(properties[i].extensionName, names[i]);
+  }
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL FakeGetProcAddr(XrInstance, const char* name, PFN_xrVoidFunction* function) {
+  if (gFake == FakeNext::LookupFails || std::string_view {name} != "xrEnumerateInstanceExtensionProperties") {
+    *function = nullptr;
+    return XR_ERROR_FUNCTION_UNSUPPORTED;
+  }
+  *function = reinterpret_cast<PFN_xrVoidFunction>(&FakeEnumerate);
+  return XR_SUCCESS;
+}
+
+XrCompositionLayerQuad Quad(float z) {
+  XrCompositionLayerQuad quad {XR_TYPE_COMPOSITION_LAYER_QUAD};
+  quad.pose = {{0, 0, 0, 1}, {0, 0, z}};
+  quad.size = {0.3f, 0.2f};
+  return quad;
+}
+
+bool Near(float a, float b, float tolerance = 1e-4f) {
+  return std::abs(a - b) <= tolerance;
+}
+
+}// namespace
+
+int main() {
+  Scenario("Layer room never underflows (XR-9)", [] {
+    Check(LayerRoom(16, 1) == 15, "16 max, 1 game layer: 15");
+    Check(LayerRoom(16, 16) == 0, "the game at the limit: 0");
+    Check(LayerRoom(16, 20) == 0, "the game over the limit: 0, not 4 billion");
+    Check(LayerRoom(0, 0) == 0, "a zero maximum: 0");
+  });
+
+  Scenario("Composition: game layers first, panels back to front, hands last", [] {
+    FrameComposer composer {16, 8};
+    XrCompositionLayerProjection game {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    const XrCompositionLayerBaseHeader* gameLayers[] {reinterpret_cast<const XrCompositionLayerBaseHeader*>(&game)};
+    auto nearQuad = Quad(-0.4f);
+    auto farQuad = Quad(-0.9f);
+    auto midQuad = Quad(-0.6f);
+    XrCompositionLayerProjection hands {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    ComposedPanel panels[] {{&nearQuad, 0.4f}, {&farQuad, 0.9f}, {&midQuad, 0.6f}};
+    const auto result
+      = composer.Compose(gameLayers, panels, reinterpret_cast<const XrCompositionLayerBaseHeader*>(&hands), 16);
+    Check(result.mLayers.size() == 5, "1 game + 3 panels + hands");
+    Check(result.mLayers[0] == gameLayers[0], "the game's layer is first, unchanged");
+    Check(
+      result.mLayers[1] == reinterpret_cast<const XrCompositionLayerBaseHeader*>(&farQuad)
+        && result.mLayers[2] == reinterpret_cast<const XrCompositionLayerBaseHeader*>(&midQuad)
+        && result.mLayers[3] == reinterpret_cast<const XrCompositionLayerBaseHeader*>(&nearQuad),
+      "panels back to front (far, mid, near)");
+    Check(result.mLayers[4] == reinterpret_cast<const XrCompositionLayerBaseHeader*>(&hands), "hands last");
+  });
+
+  Scenario("No room: the farthest panels are dropped; hands keep their slot", [] {
+    FrameComposer composer {16, 8};
+    std::vector<XrCompositionLayerProjection> game(14, {XR_TYPE_COMPOSITION_LAYER_PROJECTION});
+    std::vector<const XrCompositionLayerBaseHeader*> gameLayers;
+    for (const auto& layer: game) {
+      gameLayers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer));
+    }
+    auto nearQuad = Quad(-0.4f);
+    auto farQuad = Quad(-0.9f);
+    XrCompositionLayerProjection hands {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    ComposedPanel panels[] {{&nearQuad, 0.4f}, {&farQuad, 0.9f}};
+    const auto result
+      = composer.Compose(gameLayers, panels, reinterpret_cast<const XrCompositionLayerBaseHeader*>(&hands), 16);
+    Check(result.mLayers.size() == 16, "exactly at the runtime's limit");
+    Check(result.mPanelsDropped == 1 && result.mPanelsComposed == 1, "one panel dropped");
+    Check(result.mLayers[14] == reinterpret_cast<const XrCompositionLayerBaseHeader*>(&nearQuad), "the nearer one kept");
+    Check(result.mHandLayerComposed, "the hand layer kept its slot");
+
+    std::vector<XrCompositionLayerProjection> full(16, {XR_TYPE_COMPOSITION_LAYER_PROJECTION});
+    std::vector<const XrCompositionLayerBaseHeader*> fullLayers;
+    for (const auto& layer: full) {
+      fullLayers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer));
+    }
+    const auto atLimit = composer.Compose(fullLayers, panels, nullptr, 16);
+    Check(atLimit.mLayers.size() == 16 && atLimit.mPanelsComposed == 0, "the game alone at the limit: nothing added");
+  });
+
+  Scenario("A focused panel wins a distance tie", [] {
+    FrameComposer composer {16, 8};
+    XrCompositionLayerProjection game {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    const XrCompositionLayerBaseHeader* gameLayers[] {reinterpret_cast<const XrCompositionLayerBaseHeader*>(&game)};
+    auto a = Quad(-0.5f);
+    auto b = Quad(-0.5f);
+    ComposedPanel panels[] {{&a, 0.5f, true}, {&b, 0.5f, false}};
+    const auto result = composer.Compose(gameLayers, panels, nullptr, 16);
+    Check(result.mLayers[2] == reinterpret_cast<const XrCompositionLayerBaseHeader*>(&a), "the focused one is drawn on top");
+  });
+
+  Scenario("Hand-tracking probe is three-state (XR-7)", [] {
+    gFake = FakeNext::HasHands;
+    Check(ProbeInstanceExtension(&FakeGetProcAddr, XR_EXT_HAND_TRACKING_EXTENSION_NAME) == Support::Supported, "listed: supported");
+    gFake = FakeNext::NoHands;
+    Check(ProbeInstanceExtension(&FakeGetProcAddr, XR_EXT_HAND_TRACKING_EXTENSION_NAME) == Support::Unsupported, "not listed: unsupported");
+    gFake = FakeNext::LookupFails;
+    Check(ProbeInstanceExtension(&FakeGetProcAddr, XR_EXT_HAND_TRACKING_EXTENSION_NAME) == Support::Unknown, "lookup failed: unknown, not 'no'");
+    gFake = FakeNext::EnumerateFails;
+    Check(ProbeInstanceExtension(&FakeGetProcAddr, XR_EXT_HAND_TRACKING_EXTENSION_NAME) == Support::Unknown, "enumeration failed: unknown");
+    Check(ProbeInstanceExtension(nullptr, XR_EXT_HAND_TRACKING_EXTENSION_NAME) == Support::Unknown, "no next layer: unknown");
+  });
+
+  Scenario("Extension plans: added once, never when unsupported", [] {
+    const char* game[] {"XR_KHR_D3D11_enable"};
+    auto plan = PlanExtensions(game, Support::Supported);
+    Check(plan.mNames.size() == 2 && plan.mLayerAddsHandTracking && plan.Who() == "the layer", "supported: the layer adds it");
+    plan = PlanExtensions(game, Support::Unknown);
+    Check(plan.mLayerAddsHandTracking, "unknown: requested anyway");
+    plan = PlanExtensions(game, Support::Unsupported);
+    Check(plan.mNames.size() == 1 && !plan.mLayerAddsHandTracking, "unsupported: not added");
+    const char* gameWithHands[] {"XR_KHR_D3D11_enable", XR_EXT_HAND_TRACKING_EXTENSION_NAME};
+    plan = PlanExtensions(gameWithHands, Support::Supported);
+    Check(plan.mNames.size() == 2 && plan.Who() == "the game", "the game enabled it: never added twice");
+    plan = WithoutLayerAdditions(game);
+    Check(plan.mNames.size() == 1 && !plan.mLayerAddsHandTracking, "the retry uses only the game's list");
+  });
+
+  Scenario("Layer settings: on/off, per-game list, test panel (VR-8)", [] {
+    auto config = ParseLayerConfig(R"({"layer": {"disabledGames": ["Sim.EXE", 42, ""], "testPanel": true}})");
+    Check(config.mEnabled && config.mTestPanel, "enabled, test panel on");
+    Check(config.mDisabledGames.size() == 1, "bad entries skipped");
+    Check(config.IsDisabledFor(L"sim.exe") && !config.IsDisabledFor(L"Elite.exe"), "matched by name, any case");
+    config = ParseLayerConfig(R"({"layer": {"enabled": false}})");
+    Check(config.IsDisabledFor(L"anything.exe"), "globally off");
+    config = ParseLayerConfig("{garbage");
+    Check(config.mEnabled && !config.mTestPanel, "unreadable settings: defaults");
+
+    config = {};
+    std::map<std::string, std::string> environment {
+      {std::string {Product::LayerDisableEnvVar}, "1"}, {std::string {Product::TestPanelEnvVar}, "1"}};
+    ApplyEnvironment(config, [&](std::string_view name) -> std::optional<std::string> {
+      const auto it = environment.find(std::string {name});
+      return it == environment.end() ? std::nullopt : std::optional {it->second};
+    });
+    Check(config.mDisabledByEnvironment && config.IsDisabledFor(L"game.exe"), "the disable variable turns it off");
+    Check(config.mTestPanel, "the test-panel variable turns the panel on");
+  });
+
+  Scenario("Test card: corners say which way up it is", [] {
+    TestPatternOptions options {.mWidth = 256, .mHeight = 160, .mGridSpacing = 32, .mCornerSize = 24, .mOrder = PixelOrder::RGBA};
+    const auto pixels = MakeTestPattern(options);
+    const auto at = [&](uint32_t x, uint32_t y) {
+      const auto p = pixels[y * options.mWidth + x];
+      return ((p & 0xFF) << 16) | (p & 0xFF00) | ((p >> 16) & 0xFF);// RGBA bytes -> 0xRRGGBB
+    };
+    Check(pixels.size() == 256u * 160u, "one pixel per texel");
+    Check(at(5, 5) == TestPatternColors::TopLeft, "top-left is red");
+    Check(at(250, 5) == TestPatternColors::TopRight, "top-right is green");
+    Check(at(5, 155) == TestPatternColors::BottomLeft, "bottom-left is blue");
+    Check(at(250, 155) == TestPatternColors::BottomRight, "bottom-right is white");
+    Check(at(128, 80) == TestPatternColors::Target, "the touch target is in the middle");
+    Check((pixels[0] >> 24) == 0xFF, "opaque");
+  });
+
+  Scenario("OpenXR helpers: names, validation, poses (XR-10)", [] {
+    Check(XrUtil::ResultName(XR_ERROR_EXTENSION_NOT_PRESENT) == "XR_ERROR_EXTENSION_NOT_PRESENT", "own result names");
+    Check(XrUtil::ResultName(static_cast<XrResult>(-999999)) == "XR_UNKNOWN_FAILURE", "unknown codes don't crash");
+
+    XrSpaceLocation location {XR_TYPE_SPACE_LOCATION};
+    location.locationFlags = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+    location.pose = XrUtil::IdentityPose;
+    Check(XrUtil::IsUsable(location), "a valid pose is usable");
+    location.pose.position.y = std::numeric_limits<float>::quiet_NaN();
+    Check(!XrUtil::IsUsable(location), "a NaN is dropped");
+    location.pose.position.y = std::numeric_limits<float>::infinity();
+    Check(!XrUtil::IsUsable(location), "an infinity is dropped");
+    location.pose = XrUtil::IdentityPose;
+    location.locationFlags = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+    Check(!XrUtil::IsUsable(location), "no valid position: not usable");
+
+    // Head 1.2 m up, turned 90 degrees left, looking down 50 degrees
+    const auto yaw = XrUtil::FromYaw(std::numbers::pi_v<float> / 2);
+    const XrQuaternionf pitch {std::sin(-0.87f / 2), 0, 0, std::cos(-0.87f / 2)};
+    const XrPosef head {XrUtil::Multiply(yaw, pitch), {0, 1.2f, 0}};
+    const auto placed = XrUtil::PlaceInFront(head, 0.5f, 0.2f);
+    Check(
+      Near(placed.position.x, -0.5f) && Near(placed.position.y, 1.0f) && Near(placed.position.z, 0),
+      std::format("placed 0.5 m ahead, level, 0.2 m down ({:.2f}, {:.2f}, {:.2f})", placed.position.x, placed.position.y, placed.position.z));
+    const auto facing = XrUtil::Rotate(placed.orientation, {0, 0, 1});
+    Check(Near(facing.x, 1) && Near(facing.y, 0), "the panel faces back toward the head, and stays level");
+
+    const XrPosef panel {{0, 0, 0, 1}, {0, 1, -1}};
+    Check(Near(XrUtil::DistanceToRect(panel, {0.4f, 0.2f}, {0, 1, 0}), 1), "straight in front: the plane distance");
+    Check(Near(XrUtil::DistanceToRect(panel, {0.4f, 0.2f}, {0.5f, 1, -1}), 0.3f), "beside it: to the nearest edge");
+
+    const XrPosef base {XrUtil::FromYaw(std::numbers::pi_v<float>), {1, 0, 0}};
+    const auto composed = XrUtil::Compose(base, {{0, 0, 0, 1}, {0, 0, -1}});
+    Check(Near(composed.position.x, 1) && Near(composed.position.z, 1), "composing poses rotates then translates");
+  });
+
+  return Finish();
+}
