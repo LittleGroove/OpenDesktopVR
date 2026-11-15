@@ -53,3 +53,11 @@ add_test(NAME layer-dll-test COMMAND layer-dll-test $<TARGET_FILE:${ODVR_LAYER_F
 # Shared-memory ABI and panel policies (M2)
 odvr_test(shared-abi-test SOURCES shared-abi-test.cpp DEPS odvr::xrshared)
 odvr_test(panels-test SOURCES panels-test.cpp DEPS odvr::panels)
+
+# M2 end to end: the real host (child processes) and the real layer DLL
+odvr_executable(host-layer-test SOURCES host-layer-test.cpp DEPS odvr::xrshared odvr::core odvr::openxr_headers odvr::cppwinrt d3d11 winmm)
+target_include_directories(host-layer-test PRIVATE "${PROJECT_SOURCE_DIR}/tests/support")
+set_target_properties(host-layer-test PROPERTIES FOLDER "tests")
+add_dependencies(host-layer-test ${ODVR_LAYER_FILE_STEM} OpenDesktopVR)
+add_test(NAME host-layer-test COMMAND host-layer-test $<TARGET_FILE:${ODVR_LAYER_FILE_STEM}> $<TARGET_FILE:OpenDesktopVR>)
+set_tests_properties(host-layer-test PROPERTIES TIMEOUT 180)

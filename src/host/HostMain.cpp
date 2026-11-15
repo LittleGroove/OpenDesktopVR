@@ -4,12 +4,13 @@
 // Open Desktop VR host app (doc 02): a tray app, single instance, that
 // renders panels and shares them with the layer in each game.
 //
-//   OpenDesktopVR.exe [--no-register] [--exit-after <s>] [--fence-delay-ms <n>] [--warp]
+//   OpenDesktopVR.exe [--no-register] [--exit-after <s>] [--fence-delay-ms <n>] [--static-panels] [--warp]
 //
 // --no-register      don't register the layer (tests, side-by-side builds)
 // --exit-after <s>   quit after this many seconds (tests)
 // --fence-delay-ms   test only: announce frames before their GPU work is
 //                    signalled, to exercise the layer's bounded staleness
+// --static-panels    test panels that never change (the idle bench gate)
 // --warp             allow software rendering if there's no GPU (CI)
 
 #include "TrayIcon.hpp"
@@ -41,6 +42,7 @@ struct Options {
   double mExitAfterSeconds {0};
   int mFenceDelayMs {0};
   bool mAllowWarp {false};
+  bool mStaticPanels {false};
 };
 
 Options ParseOptions() {
@@ -55,6 +57,8 @@ Options ParseOptions() {
       options.mExitAfterSeconds = std::wcstod(argv[++i], nullptr);
     } else if (arg == L"--fence-delay-ms" && i + 1 < argc) {
       options.mFenceDelayMs = std::max(0, _wtoi(argv[++i]));
+    } else if (arg == L"--static-panels") {
+      options.mStaticPanels = true;
     } else if (arg == L"--warp") {
       options.mAllowWarp = true;
     }
@@ -114,7 +118,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     }
     Host::RenderLoop renderer {loopOptions};
     for (const auto& definition: Host::DefaultTestPanels()) {
-      const bool animated = definition.mID == Host::DefaultTestPanels().front().mID;
+      const bool animated = !options.mStaticPanels && definition.mID == Host::DefaultTestPanels().front().mID;
       renderer.AddPanel(definition, [definition, animated](Render::GpuDevice& gpu) {
         return std::make_unique<Render::TestPatternSource>(
           gpu, Render::TestPatternOptions {.mTitle = definition.mName, .mAnimated = animated});
