@@ -30,3 +30,9 @@ odvr_executable(
 
 # The packaged self-test (names from cmake/OdvrProduct.cmake)
 configure_file(self-test/self-test.cmd.in "${CMAKE_CURRENT_BINARY_DIR}/self-test.cmd" @ONLY NEWLINE_STYLE CRLF)
+
+# Test-build install helpers, copied with Windows line endings (cmd can
+# misread labels in LF-only batch files)
+foreach(script install uninstall command-prompt)
+  configure_file(package/${script}.cmd "${CMAKE_CURRENT_BINARY_DIR}/${script}.cmd" @ONLY NEWLINE_STYLE CRLF)
+endforeach()

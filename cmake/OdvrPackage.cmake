@@ -9,6 +9,7 @@
 # Layout (inside the OpenDesktopVR/ folder of the zip):
 #   OpenDesktopVR-Layer.dll, OpenDesktopVR-Layer.json   the OpenXR layer
 #   odvr-layer.exe                                       registration and settings
+#   install.cmd, uninstall.cmd, command-prompt.cmd       test-build helpers
 #   BUILD-INFO.txt                                       version, commit, date
 #   LICENSE, THIRD_PARTY_NOTICES, licenses/
 #   tools/self-test.cmd and test tools                   (component "testtools")
@@ -23,6 +24,16 @@ install(
   COMPONENT product
 )
 install(TARGETS odvr-layer RUNTIME DESTINATION . COMPONENT product)
+# Until the real installer (M7): double-click install, uninstall and a
+# command prompt opened in the install folder
+install(
+  FILES
+  "${CMAKE_BINARY_DIR}/tools/install.cmd"
+  "${CMAKE_BINARY_DIR}/tools/uninstall.cmd"
+  "${CMAKE_BINARY_DIR}/tools/command-prompt.cmd"
+  DESTINATION .
+  COMPONENT product
+)
 install(FILES LICENSE THIRD_PARTY_NOTICES DESTINATION . COMPONENT product)
 install(DIRECTORY licenses/ DESTINATION licenses COMPONENT product)
 install(TARGETS openxr-simulator click-target RUNTIME DESTINATION tools COMPONENT testtools)
