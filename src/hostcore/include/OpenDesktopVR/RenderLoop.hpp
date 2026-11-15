@@ -7,11 +7,12 @@
 //   cap (RN-5); structural changes bypass the cap but never the ring's
 //   safety floor (SY-5);
 // - draws into the next ring slot, signals, flushes (SY-3), then publishes;
-// - about once a second, reads what the layer reports and follows the game:
-//   its adapter (device re-created, generation bumped) and its panel format
-//   (rings re-created);
-// - creates the shared block, and retries every few seconds if it can't
-//   (SY-8);
+// - draws nothing while no viewer (a layer, the mirror) is watching, and
+//   tells sources to stop producing frames (CP-5);
+// - about once a second: follows the game's adapter and panel format,
+//   maintains sources (re-finding windows), retries shared memory (SY-8);
+// - panels can be replaced at any time from any thread (SetPanels); a panel
+//   whose content is unchanged keeps its source;
 // - writes a stats line every 60 s (LG-2).
 #pragma once
 
@@ -42,10 +43,16 @@ struct RenderLoopOptions {
   // while rendering continues (a host whose GPU work is starved), to
   // exercise the layer's bounded staleness (ADR-012, ADR-024)
   std::chrono::milliseconds mFenceDelay {0};
+  // Test only: draw even with nobody watching
+  bool mRenderWithoutViewers {false};
   bool mAllowWarp {false};
 };
 
-using SourceFactory = std::function<std::unique_ptr<Render::ContentSource>(Render::GpuDevice&)>;
+// Makes the content for a panel, on the render thread, once the GPU exists
+using SourceFactory = std::function<std::unique_ptr<Render::ContentSource>(
+  const PanelDefinition& definition,
+  Render::GpuDevice& gpu,
+  Render::MarkDirty markDirty)>;
 
 struct RenderStats {
   uint64_t mFrames {0};
@@ -53,18 +60,20 @@ struct RenderStats {
   uint64_t mPublishes {0};
   uint64_t mDeviceCreations {0};
   bool mBlockCreated {false};
+  bool mHasViewers {false};
   uint32_t mLayerProcessID {0};
 };
 
 class RenderLoop {
  public:
-  explicit RenderLoop(RenderLoopOptions options = {});
+  explicit RenderLoop(RenderLoopOptions options, SourceFactory factory);
   ~RenderLoop();
   RenderLoop(const RenderLoop&) = delete;
   RenderLoop& operator=(const RenderLoop&) = delete;
 
-  // Before Start(): sources are made on the render thread, once the GPU exists
-  void AddPanel(PanelDefinition definition, SourceFactory makeSource);
+  // The panels to show (enabled ones only); safe from any thread, applied
+  // on the render thread's next frame
+  void SetPanels(std::vector<PanelDefinition> panels);
 
   void Start();
   void Stop() noexcept;

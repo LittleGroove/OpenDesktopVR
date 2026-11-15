@@ -4,15 +4,18 @@
 // Open Desktop VR host app (doc 02): a tray app, single instance, that
 // renders panels and shares them with the layer in each game.
 //
-//   OpenDesktopVR.exe [--no-register] [--exit-after <s>] [--fence-delay-ms <n>] [--static-panels] [--warp]
+//   OpenDesktopVR.exe [--no-register] [--exit-after <s>] [--fence-delay-ms <n>] [--static-panels]
+//                     [--window <title>] [--warp]
 //
 // --no-register      don't register the layer (tests, side-by-side builds)
 // --exit-after <s>   quit after this many seconds (tests)
 // --fence-delay-ms   test only: announce frames before their GPU work is
 //                    signalled, to exercise the layer's bounded staleness
 // --static-panels    test panels that never change (the idle bench gate)
+// --window <title>   test instances: one window panel, matching this title
 // --warp             allow software rendering if there's no GPU (CI)
 
+#include "PanelManager.hpp"
 #include "TrayIcon.hpp"
 
 #include <OpenDesktopVR/LayerRegistration.hpp>
@@ -24,6 +27,7 @@
 #include <OpenDesktopVR/SharedMemory.hpp>
 #include <OpenDesktopVR/StringUtil.hpp>
 #include <OpenDesktopVR/TestPatternSource.hpp>
+#include <OpenDesktopVR/WindowCaptureSource.hpp>
 #include <OpenDesktopVR/ThreadUtil.hpp>
 
 #include <Windows.h>
@@ -43,6 +47,8 @@ struct Options {
   int mFenceDelayMs {0};
   bool mAllowWarp {false};
   bool mStaticPanels {false};
+  bool mTestInstance {false};
+  std::wstring mTestWindowTitle;
 };
 
 Options ParseOptions() {
@@ -57,6 +63,8 @@ Options ParseOptions() {
       options.mExitAfterSeconds = std::wcstod(argv[++i], nullptr);
     } else if (arg == L"--fence-delay-ms" && i + 1 < argc) {
       options.mFenceDelayMs = std::max(0, _wtoi(argv[++i]));
+    } else if (arg == L"--window" && i + 1 < argc) {
+      options.mTestWindowTitle = argv[++i];
     } else if (arg == L"--static-panels") {
       options.mStaticPanels = true;
     } else if (arg == L"--warp") {
@@ -67,6 +75,7 @@ Options ParseOptions() {
   // A test instance never touches the real registration
   if (const auto instance = ProcessUtil::GetEnvironment("OPENDESKTOPVR_INSTANCE"); instance && !instance->empty()) {
     options.mRegister = false;
+    options.mTestInstance = true;// built-in test panels; the user's settings untouched
   }
   return options;
 }
@@ -89,6 +98,8 @@ void RegisterLayer() {
 }// namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+  // Window rectangles and capture crops in physical pixels (doc 04 "DPI")
+  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   const auto options = ParseOptions();
 
   // Single instance (doc 02)
@@ -116,17 +127,34 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     if (options.mFenceDelayMs > 0) {
       Log::Warning("Test mode: frames are announced {} ms before their GPU work is signalled", options.mFenceDelayMs);
     }
-    Host::RenderLoop renderer {loopOptions};
-    for (const auto& definition: Host::DefaultTestPanels()) {
-      const bool animated = !options.mStaticPanels && definition.mID == Host::DefaultTestPanels().front().mID;
-      renderer.AddPanel(definition, [definition, animated](Render::GpuDevice& gpu) {
+    // What each kind of panel shows
+    const bool staticPanels = options.mStaticPanels;
+    Host::RenderLoop renderer {loopOptions,
+      [staticPanels](const Host::PanelDefinition& definition, Render::GpuDevice& gpu, Render::MarkDirty markDirty)
+        -> std::unique_ptr<Render::ContentSource> {
+        if (definition.mKind == Host::PanelKind::Window) {
+          return std::make_unique<Capture::WindowCaptureSource>(
+            gpu, Capture::WindowCaptureOptions {definition.mWindow, definition.mName}, std::move(markDirty));
+        }
         return std::make_unique<Render::TestPatternSource>(
-          gpu, Render::TestPatternOptions {.mTitle = definition.mName, .mAnimated = animated});
-      });
+          gpu, Render::TestPatternOptions {.mTitle = definition.mName, .mAnimated = definition.mAnimated && !staticPanels});
+      }};
+    if (!Capture::IsCaptureSupported()) {
+      Log::Warning("Windows.Graphics.Capture isn't available here: window panels can't show");
     }
+    std::vector<Host::PanelDefinition> testPanels;
+    if (!options.mTestWindowTitle.empty()) {
+      WindowUtil::WindowInfo match {nullptr, options.mTestWindowTitle};
+      auto panel = Host::NewWindowPanel(match, 0);
+      panel.mWindow = {L"", L"", options.mTestWindowTitle, WindowMatch::TitleMode::Contains};
+      panel.mPosition[0] = 0;
+      testPanels.push_back(std::move(panel));
+    }
+    Host::PanelManager panels {renderer, !options.mTestInstance, std::move(testPanels)};
+    panels.Load();
     renderer.Start();
 
-    Host::TrayIcon tray {instance, renderer};
+    Host::TrayIcon tray {instance, renderer, panels};
     if (options.mExitAfterSeconds > 0) {
       tray.QuitAfter(options.mExitAfterSeconds);
     }

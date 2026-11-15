@@ -9,9 +9,11 @@ odvr_module(
   SOURCES
   Publisher.cpp
   HostPanel.cpp
+  PanelConfig.cpp
   RenderLoop.cpp
   DEPS
   odvr::render
+  odvr::capture
   odvr::panels
   odvr::xrshared
   odvr::core

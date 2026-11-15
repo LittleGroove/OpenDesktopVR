@@ -133,6 +133,10 @@ void Client::Update(TimeUtil::TimePoint now) noexcept {
       return;
     }
   }
+  if (now >= mNextHeartbeat) {
+    mNextHeartbeat = now + mOptions.mHostCheckInterval;
+    std::atomic_ref<uint64_t> {Block()->mHeader.mViewerHeartbeat}.store(GetTickCount64(), std::memory_order_relaxed);
+  }
   const auto generation = std::atomic_ref<uint64_t> {Block()->mHeader.mSessionGeneration}.load();
   if (generation != mGeneration) {
     mGeneration = generation;

@@ -9,8 +9,11 @@ odvr_executable(
   SOURCES
   HostMain.cpp
   TrayIcon.cpp
+  PanelManager.cpp
   DEPS
   odvr::hostcore
+  odvr::capture
+  odvr::settings
   odvr::registration
   shell32
 )

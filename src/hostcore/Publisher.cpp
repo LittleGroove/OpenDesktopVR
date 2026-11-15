@@ -60,6 +60,11 @@ void Publisher::PublishPanels(std::span<const SharedAbi::PanelEntry> panels) noe
   });
 }
 
+bool Publisher::HasViewers(uint64_t windowMilliseconds) const noexcept {
+  const auto beat = std::atomic_ref<uint64_t> {Block().mHeader.mViewerHeartbeat}.load(std::memory_order_relaxed);
+  return beat != 0 && GetTickCount64() - beat < windowMilliseconds;
+}
+
 std::optional<SharedAbi::LayerStatus> Publisher::ReadStatus() const noexcept {
   SharedAbi::LayerStatus status {};
   if (!Seqlock::ReadSection(Block().mStatus, Block().mStatus.mSequence, status)) {

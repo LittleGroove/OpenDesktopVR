@@ -22,7 +22,8 @@
 namespace OpenDesktopVR::SharedAbi {
 
 inline constexpr uint32_t Magic = 0x5244444F;// "ODDR" little-endian: Open Desktop, data region
-inline constexpr uint32_t AbiVersion = 1;
+// 2: the header's viewer heartbeat
+inline constexpr uint32_t AbiVersion = 2;
 inline constexpr uint32_t MaxPanels = 16;
 inline constexpr uint32_t RingSlots = 3;
 
@@ -39,7 +40,10 @@ struct Header {
   uint64_t mSessionGeneration;
   uint32_t mPanelEntrySize;// sizeof(PanelEntry)
   uint32_t mStatusSize;    // sizeof(LayerStatus)
-  uint8_t mReserved[32];
+  // GetTickCount64() of the last time any viewer (a layer, the mirror) was
+  // looking. The host draws nothing while nobody watches.
+  uint64_t mViewerHeartbeat;
+  uint8_t mReserved[24];
 };
 static_assert(sizeof(Header) == 64);
 

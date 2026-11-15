@@ -6,15 +6,20 @@
 // asks for a frame.
 #pragma once
 
+#include "PanelManager.hpp"
+
 #include <OpenDesktopVR/RenderLoop.hpp>
+#include <OpenDesktopVR/WindowUtil.hpp>
 
 #include <Windows.h>
+
+#include <vector>
 
 namespace OpenDesktopVR::Host {
 
 class TrayIcon {
  public:
-  TrayIcon(HINSTANCE instance, RenderLoop& renderer);
+  TrayIcon(HINSTANCE instance, RenderLoop& renderer, PanelManager& panels);
   ~TrayIcon();
   TrayIcon(const TrayIcon&) = delete;
   TrayIcon& operator=(const TrayIcon&) = delete;
@@ -31,6 +36,10 @@ class TrayIcon {
 
   HINSTANCE mInstance {nullptr};
   RenderLoop& mRenderer;
+  PanelManager& mPanels;
+  // What the open menu listed, so a command maps back to it
+  std::vector<WindowUtil::WindowInfo> mMenuWindows;
+  std::vector<uint64_t> mMenuPanels;
   HWND mWindow {nullptr};
   UINT mTaskbarCreated {0};
   bool mIconAdded {false};

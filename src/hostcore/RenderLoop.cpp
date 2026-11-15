@@ -11,6 +11,8 @@
 
 #include <Windows.h>
 
+#include <winrt/base.h>
+
 #include <array>
 #include <format>
 #include <mutex>
@@ -39,12 +41,16 @@ DXGI_FORMAT RingFormatFor(uint32_t preferredPanelFormat) {
 
 struct RenderLoop::Impl {
   RenderLoopOptions mOptions;
-  std::vector<std::pair<PanelDefinition, SourceFactory>> mDefinitions;
-  std::vector<HostPanel> mPanels;
+  SourceFactory mFactory;
+  std::vector<std::unique_ptr<HostPanel>> mPanels;
   std::unique_ptr<Render::GpuDevice> mGpu;
   std::optional<Publisher> mPublisher;
   DXGI_FORMAT mRingFormat {DXGI_FORMAT_B8G8R8A8_UNORM};
   bool mLastVisible {true};
+  bool mLastViewers {false};
+
+  std::mutex mPendingMutex;
+  std::optional<std::vector<PanelDefinition>> mPendingPanels;
 
   std::thread mThread;
   HANDLE mStop {CreateEventW(nullptr, TRUE, FALSE, nullptr)};
@@ -53,7 +59,7 @@ struct RenderLoop::Impl {
   mutable std::mutex mStatsMutex;
   RenderStats mStats;
   TimeUtil::PeriodicTimer mStatsTimer {60s};
-  TimeUtil::PeriodicTimer mStatusTimer {1s};
+  TimeUtil::PeriodicTimer mSecondTimer {1s};
   TimeUtil::TimePoint mNextPublisherAttempt {};
   SharedMemory::Status mLastBlockStatus {SharedMemory::Status::Ok};
   uint64_t mRendersSinceStats {0};
@@ -68,7 +74,6 @@ struct RenderLoop::Impl {
   };
   static constexpr std::size_t MaxPendingSignals = 64;
   std::vector<PendingSignal> mPendingSignals;
-  void IssueDueSignals(TimeUtil::TimePoint now);
 
   ~Impl() {
     CloseHandle(mStop);
@@ -76,25 +81,33 @@ struct RenderLoop::Impl {
   }
 
   void Main(const std::atomic<bool>& visible);
+  void ApplyPendingPanels();
+  void MakeSource(HostPanel& panel);
   bool EnsureGpu(std::optional<LUID> adapter);
   void EnsurePublisher(TimeUtil::TimePoint now);
   void FollowLayer();
   bool RenderPanel(HostPanel& panel, TimeUtil::TimePoint now);
   void Publish(bool visible);
   SharedAbi::PanelEntry EntryFor(const HostPanel& panel, bool visible) const;
+  void IssueDueSignals(TimeUtil::TimePoint now);
   void WriteStatsLine();
 };
 
-RenderLoop::RenderLoop(RenderLoopOptions options) : mImpl(std::make_unique<Impl>()) {
+RenderLoop::RenderLoop(RenderLoopOptions options, SourceFactory factory) : mImpl(std::make_unique<Impl>()) {
   mImpl->mOptions = options;
+  mImpl->mFactory = std::move(factory);
 }
 
 RenderLoop::~RenderLoop() {
   Stop();
 }
 
-void RenderLoop::AddPanel(PanelDefinition definition, SourceFactory makeSource) {
-  mImpl->mDefinitions.emplace_back(std::move(definition), std::move(makeSource));
+void RenderLoop::SetPanels(std::vector<PanelDefinition> panels) {
+  {
+    std::scoped_lock lock(mImpl->mPendingMutex);
+    mImpl->mPendingPanels = std::move(panels);
+  }
+  FrameWakeup::RequestFrameSoon();
 }
 
 void RenderLoop::Start() {
@@ -103,7 +116,10 @@ void RenderLoop::Start() {
   }
   mImpl->mThread = std::thread([this] {
     ThreadUtil::SetCurrentThreadName(L"Panel renderer");
-    ThreadUtil::CatchAll("panel render thread", [this] { mImpl->Main(mPanelsVisible); });
+    ThreadUtil::CatchAll("panel render thread", [this] {
+      winrt::init_apartment(winrt::apartment_type::multi_threaded);// capture uses WinRT
+      mImpl->Main(mPanelsVisible);
+    });
   });
 }
 
@@ -125,6 +141,65 @@ RenderStats RenderLoop::Stats() const noexcept {
   return mImpl->mStats;
 }
 
+void RenderLoop::Impl::MakeSource(HostPanel& panel) {
+  panel.mSource.reset();
+  panel.mRing.reset();
+  panel.mActive = false;
+  if (!mGpu || !mFactory) {
+    return;
+  }
+  // The callback may run on a capture thread after the panel is gone: it
+  // holds the dirty flag, never the panel
+  std::weak_ptr<Panels::DirtyFlag> dirty = panel.mDirty;
+  panel.mSource = mFactory(panel.mDefinition, *mGpu, [dirty] {
+    if (auto flag = dirty.lock()) {
+      flag->Mark(Panels::Dirty::Content);
+      FrameWakeup::RequestFrameSoon();// at most every 8 ms (CP-2)
+    }
+  });
+  panel.mDirty->Mark(Panels::Dirty::Structural);
+}
+
+void RenderLoop::Impl::ApplyPendingPanels() {
+  std::optional<std::vector<PanelDefinition>> pending;
+  {
+    std::scoped_lock lock(mPendingMutex);
+    pending = std::exchange(mPendingPanels, std::nullopt);
+  }
+  if (!pending) {
+    return;
+  }
+  std::vector<std::unique_ptr<HostPanel>> next;
+  for (auto& definition: *pending) {
+    if (next.size() >= SharedAbi::MaxPanels) {
+      Log::Warning("More than {} panels: the rest aren't shown", SharedAbi::MaxPanels);
+      break;
+    }
+    std::unique_ptr<HostPanel> panel;
+    for (auto& existing: mPanels) {
+      if (existing && existing->mDefinition.mID == definition.mID) {
+        panel = std::move(existing);
+        break;
+      }
+    }
+    const bool newContent = !panel || !panel->mDefinition.SameContent(definition);
+    if (!panel) {
+      panel = std::make_unique<HostPanel>();
+    }
+    panel->mDefinition = std::move(definition);
+    panel->mLimiter.SetRate(panel->mDefinition.mMaxUpdatesPerSecond, mOptions.mGlobalMaxUpdatesPerSecond);
+    if (newContent) {
+      MakeSource(*panel);
+    }
+    panel->mDirty->Mark(Panels::Dirty::Structural);
+    next.push_back(std::move(panel));
+  }
+  // Removed panels (and their sources) go here
+  mPendingSignals.clear();
+  mPanels = std::move(next);
+  Publish(mLastVisible);
+}
+
 bool RenderLoop::Impl::EnsureGpu(std::optional<LUID> adapter) {
   if (mGpu && (!adapter || Render::SameLuid(mGpu->AdapterLuid(), *adapter))) {
     return true;
@@ -136,14 +211,13 @@ bool RenderLoop::Impl::EnsureGpu(std::optional<LUID> adapter) {
   // Everything shared is re-created on the new device: layers drop and
   // re-open it all when the generation changes
   for (auto& panel: mPanels) {
-    panel.mRing.reset();
-    panel.mSource.reset();
+    panel->mSource.reset();
+    panel->mRing.reset();
   }
   mPendingSignals.clear();
   mGpu = std::move(gpu);
-  for (std::size_t i = 0; i < mPanels.size(); ++i) {
-    mPanels[i].mSource = mDefinitions[i].second(*mGpu);
-    mPanels[i].mDirty.Mark(Panels::Dirty::Structural);
+  for (auto& panel: mPanels) {
+    MakeSource(*panel);
   }
   if (mPublisher) {
     mPublisher->BumpGeneration();
@@ -162,7 +236,7 @@ void RenderLoop::Impl::EnsurePublisher(TimeUtil::TimePoint now) {
   if (mPublisher) {
     Log::Info("Shared memory created; layers can attach");
     for (auto& panel: mPanels) {
-      panel.mDirty.Mark(Panels::Dirty::Structural);
+      panel->mDirty->Mark(Panels::Dirty::Structural);
     }
     std::scoped_lock lock(mStatsMutex);
     mStats.mBlockCreated = true;
@@ -175,8 +249,7 @@ void RenderLoop::Impl::EnsurePublisher(TimeUtil::TimePoint now) {
     mLastBlockStatus = status;
     if (status == SharedMemory::Status::AccessDenied || status == SharedMemory::Status::AlreadyExists) {
       Log::Error(
-        "Shared memory {}: another program holds it, usually a game running as administrator. "
-        "If a game runs as administrator, restart it normally. Retrying",
+        "Shared memory {}: another program holds it. If a game runs as administrator, restart it normally. Retrying",
         SharedMemory::StatusName(status));
     } else {
       Log::Error("Shared memory couldn't be created ({}); retrying every 5 s", SharedMemory::StatusName(status));
@@ -216,8 +289,8 @@ void RenderLoop::Impl::FollowLayer() {
       Log::Info("Panel textures follow the game's format: DXGI {}", static_cast<int>(format));
       mRingFormat = format;
       for (auto& panel: mPanels) {
-        panel.mRing.reset();
-        panel.mDirty.Mark(Panels::Dirty::Structural);
+        panel->mRing.reset();
+        panel->mDirty->Mark(Panels::Dirty::Structural);
       }
     }
   }
@@ -227,8 +300,8 @@ SharedAbi::PanelEntry RenderLoop::Impl::EntryFor(const HostPanel& panel, bool vi
   SharedAbi::PanelEntry entry {};
   const auto& definition = panel.mDefinition;
   entry.mPanelID = definition.mID;
-  const bool ready = panel.mRing && panel.mContentVersion > 0;
-  entry.mFlags = (visible && panel.mVisible && ready) ? SharedAbi::PanelFlags::Visible : 0;
+  const bool ready = panel.mRing && panel.mSource && panel.mContentVersion > 0;
+  entry.mFlags = (visible && ready) ? SharedAbi::PanelFlags::Visible : 0;
   if (!ready) {
     return entry;
   }
@@ -244,13 +317,12 @@ SharedAbi::PanelEntry RenderLoop::Impl::EntryFor(const HostPanel& panel, bool vi
   for (int i = 0; i < 4; ++i) {
     entry.mPose[3 + i] = orientation[i];
   }
-  const auto size = panel.mSource->Size();
   entry.mSizeMeters[0] = definition.mWidthMeters;
-  entry.mSizeMeters[1] = definition.mWidthMeters * static_cast<float>(size.mHeight) / static_cast<float>(size.mWidth);
+  entry.mSizeMeters[1] = definition.mWidthMeters * static_cast<float>(ring.Height()) / static_cast<float>(ring.Width());
   entry.mTextureWidth = ring.Width();
   entry.mTextureHeight = ring.Height();
-  entry.mContentWidth = size.mWidth;
-  entry.mContentHeight = size.mHeight;
+  entry.mContentWidth = ring.Width();
+  entry.mContentHeight = ring.Height();
   entry.mTextureGeneration = panel.mTextureGeneration;
   entry.mTextureFormat = static_cast<uint32_t>(ring.Format());
   for (uint32_t slot = 0; slot < SharedAbi::RingSlots; ++slot) {
@@ -267,7 +339,7 @@ void RenderLoop::Impl::Publish(bool visible) {
   std::array<SharedAbi::PanelEntry, SharedAbi::MaxPanels> entries {};
   const auto count = std::min<std::size_t>(mPanels.size(), entries.size());
   for (std::size_t i = 0; i < count; ++i) {
-    entries[i] = EntryFor(mPanels[i], visible);
+    entries[i] = EntryFor(*mPanels[i], visible);
   }
   mPublisher->PublishPanels({entries.data(), count});
   std::scoped_lock lock(mStatsMutex);
@@ -276,7 +348,7 @@ void RenderLoop::Impl::Publish(bool visible) {
 
 bool RenderLoop::Impl::RenderPanel(HostPanel& panel, TimeUtil::TimePoint now) {
   const auto size = panel.mSource->Size();
-  if (size.mWidth == 0 || size.mHeight == 0) {
+  if (size.mWidth == 0 || size.mHeight == 0 || size.mWidth > 16384 || size.mHeight > 16384) {
     return false;
   }
   if (!panel.mRing || panel.mRing->Width() != size.mWidth || panel.mRing->Height() != size.mHeight
@@ -343,7 +415,7 @@ void RenderLoop::Impl::IssueDueSignals(TimeUtil::TimePoint now) {
 void RenderLoop::Impl::WriteStatsLine() {
   std::string perPanel;
   for (const auto& panel: mPanels) {
-    perPanel += std::format(" '{}' {}", StringUtil::Narrow(panel.mDefinition.mName), panel.mRenders);
+    perPanel += std::format(" '{}' {}", StringUtil::Narrow(panel->mDefinition.mName), panel->mRenders);
   }
   RenderStats stats;
   {
@@ -351,11 +423,12 @@ void RenderLoop::Impl::WriteStatsLine() {
     stats = mStats;
   }
   Log::Info(
-    "Host stats (60 s): {} frames, {} panel renders ({:.1f}/s); total renders per panel:{}; layer process {}",
+    "Host stats (60 s): {} frames, {} panel renders ({:.1f}/s); total renders per panel:{}; viewers {}; layer process {}",
     mFramesSinceStats,
     mRendersSinceStats,
     static_cast<double>(mRendersSinceStats) / 60.0,
     perPanel,
+    stats.mHasViewers ? "yes" : "none",
     stats.mLayerProcessID);
   mFramesSinceStats = 0;
   mRendersSinceStats = 0;
@@ -363,12 +436,6 @@ void RenderLoop::Impl::WriteStatsLine() {
 
 void RenderLoop::Impl::Main(const std::atomic<bool>& visible) {
   FrameWakeup::SetTimer(mTimer);
-  // HostPanel holds atomics (not movable): build the vector at its final size
-  mPanels = std::vector<HostPanel>(mDefinitions.size());
-  for (std::size_t i = 0; i < mDefinitions.size(); ++i) {
-    mPanels[i].mDefinition = mDefinitions[i].first;
-    mPanels[i].mLimiter.SetRate(mDefinitions[i].first.mMaxUpdatesPerSecond, mOptions.mGlobalMaxUpdatesPerSecond);
-  }
   EnsurePublisher(TimeUtil::Now());
   std::optional<LUID> adapter;
   if (mPublisher) {
@@ -381,7 +448,8 @@ void RenderLoop::Impl::Main(const std::atomic<bool>& visible) {
 
   const HANDLE handles[] {mStop, mTimer};
   for (;;) {
-    // The 1 s timeout keeps the layer report and shared-memory retries going
+    // The 1 s timeout keeps the layer report, window re-finding and
+    // shared-memory retries going
     const auto woke = WaitForMultipleObjects(2, handles, FALSE, 1000);
     if (woke == WAIT_OBJECT_0) {
       break;
@@ -395,48 +463,78 @@ void RenderLoop::Impl::Main(const std::atomic<bool>& visible) {
     }
 
     EnsurePublisher(now);
+    ApplyPendingPanels();
     IssueDueSignals(now);
-    if (mStatusTimer.Due(now)) {
+    if (mSecondTimer.Due(now)) {
       FollowLayer();
+      for (auto& panel: mPanels) {
+        if (panel->mSource) {
+          ThreadUtil::CatchAll("source maintenance", [&] { panel->mSource->Maintain(now); });
+        }
+      }
     }
     if (!mGpu && !EnsureGpu(std::nullopt)) {
       continue;
     }
 
+    // Nobody watching: draw nothing and let sources stop producing frames
+    const bool viewers = mOptions.mRenderWithoutViewers || (mPublisher && mPublisher->HasViewers());
+    if (viewers != mLastViewers) {
+      Log::Info("{}", viewers ? "A viewer is watching: drawing panels" : "Nobody is watching: panels paused");
+      mLastViewers = viewers;
+      std::scoped_lock lock(mStatsMutex);
+      mStats.mHasViewers = viewers;
+    }
     const bool showing = visible.load();
     bool publish = showing != mLastVisible;
-    if (showing && !mLastVisible) {
-      for (auto& panel: mPanels) {
-        panel.mDirty.Mark(Panels::Dirty::Structural);
+    mLastVisible = showing;
+    for (auto& panel: mPanels) {
+      const bool active = showing && viewers && panel->mSource;
+      if (active != panel->mActive) {
+        panel->mActive = active;
+        if (panel->mSource) {
+          panel->mSource->SetActive(active);// hidden or unwatched: idle (CP-5)
+        }
+        if (active) {
+          panel->mDirty->Mark(Panels::Dirty::Structural);
+        }
       }
     }
-    mLastVisible = showing;
+    if (!viewers) {
+      if (publish) {
+        Publish(showing);
+      }
+      continue;
+    }
 
-    for (auto& panel: mPanels) {
+    for (auto& owned: mPanels) {
+      auto& panel = *owned;
       if (!mGpu) {
         break;// lost mid-frame; re-created next frame
       }
-      if (!showing || !panel.mVisible || !panel.mSource || !panel.mDirty.IsSet()) {
+      if (!panel.mActive || !panel.mDirty->IsSet()) {
         continue;// hidden means idle; the request waits until shown
       }
-      const auto kind = panel.mDirty.Take();
+      const auto kind = panel.mDirty->Take();
       const bool structural = kind & Panels::Dirty::Structural;
       const auto floor = panel.mLastPublish + mOptions.mRingSafetyFloor;
       if (!panel.mLimiter.MayRender(now, structural) || (panel.mContentVersion > 0 && now < floor)) {
-        panel.mDirty.Restore(kind);// postponed, never dropped
+        panel.mDirty->Restore(kind);// postponed, never dropped
         FrameWakeup::ScheduleNextFrame(std::max(panel.mLimiter.NextAllowed(), floor));
         continue;
       }
-      if (RenderPanel(panel, now)) {
+      bool rendered = false;
+      ThreadUtil::CatchAll("panel render", [&] { rendered = RenderPanel(panel, now); });
+      if (rendered) {
         publish = true;
         ++mRendersSinceStats;
         std::scoped_lock lock(mStatsMutex);
         ++mStats.mRenders;
       } else if (mGpu) {
-        panel.mDirty.Restore(kind);
+        panel.mDirty->Restore(kind & Panels::Dirty::Content);
       }
       if (panel.mSource && panel.mSource->IsAnimated()) {
-        panel.mDirty.Mark(Panels::Dirty::Content);
+        panel.mDirty->Mark(Panels::Dirty::Content);
         FrameWakeup::ScheduleNextFrame(panel.mLimiter.NextAllowed());
       }
     }
@@ -450,6 +548,8 @@ void RenderLoop::Impl::Main(const std::atomic<bool>& visible) {
       WriteStatsLine();
     }
   }
+  // Sources (capture sessions) stop before the GPU goes
+  mPanels.clear();
   FrameWakeup::SetTimer(nullptr);
 }
 

@@ -30,6 +30,9 @@ class Publisher {
 
   void PublishPanels(std::span<const SharedAbi::PanelEntry> panels) noexcept;
 
+  // True if a layer or the mirror looked within `window`
+  bool HasViewers(uint64_t windowMilliseconds = 3000) const noexcept;
+
   // The layer's latest report; nullopt if none is consistent right now
   std::optional<SharedAbi::LayerStatus> ReadStatus() const noexcept;
 

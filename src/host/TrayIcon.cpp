@@ -23,13 +23,28 @@ enum MenuCommand : UINT {
   ToggleVisible = 100,
   OpenLogs,
   Exit,
+  AddWindowFirst = 1000,// + index into the listed windows
+  RemovePanelFirst = 2000,// + index into the listed panels
 };
+constexpr UINT MaxListed = 40;
+
+std::wstring MenuText(std::wstring text) {
+  // '&' marks a menu accelerator; show it literally
+  for (std::size_t at = text.find(L'&'); at != std::wstring::npos; at = text.find(L'&', at + 2)) {
+    text.insert(at, 1, L'&');
+  }
+  if (text.size() > 60) {
+    text = text.substr(0, 57) + L"...";
+  }
+  return text;
+}
 
 constexpr wchar_t WindowClass[] = L"OpenDesktopVR.Host";
 
 }// namespace
 
-TrayIcon::TrayIcon(HINSTANCE instance, RenderLoop& renderer) : mInstance(instance), mRenderer(renderer) {
+TrayIcon::TrayIcon(HINSTANCE instance, RenderLoop& renderer, PanelManager& panels)
+  : mInstance(instance), mRenderer(renderer), mPanels(panels) {
   WNDCLASSEXW windowClass {sizeof(windowClass)};
   windowClass.lpfnWndProc = &TrayIcon::WindowProc;
   windowClass.hInstance = instance;
@@ -85,6 +100,36 @@ void TrayIcon::ShowMenu() {
   const auto title = std::format(L"{}: {}", Product::DisplayName, Product::Tagline);
   AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, title.c_str());
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  // Show a window in VR: every window that can be captured, right now
+  HMENU windows = CreatePopupMenu();
+  mMenuWindows = WindowUtil::ListCaptureCandidates();
+  if (mMenuWindows.size() > MaxListed) {
+    mMenuWindows.resize(MaxListed);
+  }
+  for (UINT i = 0; i < mMenuWindows.size(); ++i) {
+    const auto& window = mMenuWindows[i];
+    const auto text = MenuText(std::format(L"{}   ({})", window.mTitle, WindowUtil::ExecutableName(window)));
+    AppendMenuW(windows, MF_STRING, AddWindowFirst + i, text.c_str());
+  }
+  if (mMenuWindows.empty()) {
+    AppendMenuW(windows, MF_STRING | MF_GRAYED, 0, L"No windows to show");
+  }
+  AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(windows), L"Show a window in VR");
+
+  HMENU remove = CreatePopupMenu();
+  mMenuPanels.clear();
+  for (const auto& panel: mPanels.Panels()) {
+    if (mMenuPanels.size() >= MaxListed) {
+      break;
+    }
+    AppendMenuW(remove, MF_STRING, RemovePanelFirst + static_cast<UINT>(mMenuPanels.size()), MenuText(panel.mName).c_str());
+    mMenuPanels.push_back(panel.mID);
+  }
+  if (mMenuPanels.empty()) {
+    AppendMenuW(remove, MF_STRING | MF_GRAYED, 0, L"No panels");
+  }
+  AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(remove), L"Remove a panel");
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, ToggleVisible, mRenderer.PanelsVisible() ? L"Hide panels" : L"Show panels");
   AppendMenuW(menu, MF_STRING, OpenLogs, L"Open logs folder");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -120,8 +165,17 @@ LRESULT TrayIcon::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         ShowMenu();
       }
       return 0;
-    case WM_COMMAND:
-      switch (LOWORD(wParam)) {
+    case WM_COMMAND: {
+      const UINT command = LOWORD(wParam);
+      if (command >= AddWindowFirst && command < AddWindowFirst + mMenuWindows.size()) {
+        mPanels.AddWindow(mMenuWindows[command - AddWindowFirst]);
+        return 0;
+      }
+      if (command >= RemovePanelFirst && command < RemovePanelFirst + mMenuPanels.size()) {
+        mPanels.Remove(mMenuPanels[command - RemovePanelFirst]);
+        return 0;
+      }
+      switch (command) {
         case ToggleVisible:
           mRenderer.SetPanelsVisible(!mRenderer.PanelsVisible());
           Log::Info("Panels {}", mRenderer.PanelsVisible() ? "shown" : "hidden");
@@ -136,6 +190,7 @@ LRESULT TrayIcon::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
           return 0;
       }
       break;
+    }
     case WM_TIMER:
       if (wParam == QuitTimer) {
         PostQuitMessage(0);

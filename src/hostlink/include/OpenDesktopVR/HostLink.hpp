@@ -118,6 +118,7 @@ class Client {
   std::array<PanelResources, SharedAbi::MaxPanels> mResources {};
   TimeUtil::TimePoint mNextAttempt {};
   TimeUtil::TimePoint mNextHostCheck {};
+  TimeUtil::TimePoint mNextHeartbeat {};
   SharedMemory::Status mLastOpenStatus {SharedMemory::Status::NotFound};
   bool mLoggedMismatch {false};
   bool mOwnsStatus {false};
