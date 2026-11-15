@@ -8,6 +8,7 @@
 #
 # Layout (inside the OpenDesktopVR/ folder of the zip):
 #   OpenDesktopVR-Layer.dll, OpenDesktopVR-Layer.json   the OpenXR layer
+#   OpenDesktopVR.exe                                    the host app (tray)
 #   odvr-layer.exe                                       registration and settings
 #   install.cmd, uninstall.cmd, command-prompt.cmd       test-build helpers
 #   BUILD-INFO.txt                                       version, commit, date
@@ -23,7 +24,7 @@ install(
   DESTINATION .
   COMPONENT product
 )
-install(TARGETS odvr-layer RUNTIME DESTINATION . COMPONENT product)
+install(TARGETS odvr-layer OpenDesktopVR RUNTIME DESTINATION . COMPONENT product)
 # Until the real installer (M7): double-click install, uninstall and a
 # command prompt opened in the install folder
 install(
@@ -36,7 +37,7 @@ install(
 )
 install(FILES LICENSE THIRD_PARTY_NOTICES DESTINATION . COMPONENT product)
 install(DIRECTORY licenses/ DESTINATION licenses COMPONENT product)
-install(TARGETS openxr-simulator click-target RUNTIME DESTINATION tools COMPONENT testtools)
+install(TARGETS openxr-simulator click-target odvr-mirror RUNTIME DESTINATION tools COMPONENT testtools)
 install(FILES "${CMAKE_BINARY_DIR}/tools/self-test.cmd" DESTINATION tools COMPONENT testtools)
 
 # BUILD-INFO.txt is written when the package is made, so the commit is the

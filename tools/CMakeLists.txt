@@ -36,3 +36,12 @@ configure_file(self-test/self-test.cmd.in "${CMAKE_CURRENT_BINARY_DIR}/self-test
 foreach(script install uninstall command-prompt)
   configure_file(package/${script}.cmd "${CMAKE_CURRENT_BINARY_DIR}/${script}.cmd" @ONLY NEWLINE_STYLE CRLF)
 endforeach()
+
+# Shows the panel images a layer receives, in a desktop window (doc 02)
+odvr_executable(
+  odvr-mirror
+  WIN32
+  SOURCES mirror/odvr-mirror.cpp
+  DEPS odvr::hostlink odvr::render odvr::core windowscodecs shell32
+)
+target_include_directories(odvr-mirror PRIVATE "${PROJECT_SOURCE_DIR}/tests/support")

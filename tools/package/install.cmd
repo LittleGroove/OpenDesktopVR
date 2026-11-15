@@ -4,7 +4,7 @@ rem Copyright (c) 2026 Robert McGough. All rights reserved.
 rem
 rem Installs this test build for the current Windows user, with no admin
 rem rights (ADR-009): copies it to %LOCALAPPDATA%\Programs\OpenDesktopVR,
-rem registers the OpenXR layer and turns the test card on. Running it again
+rem registers the OpenXR layer and turns the layer's test card off. Running it again
 rem from a newer package updates the installation.
 setlocal
 set "SRC=%~dp0"
@@ -52,8 +52,8 @@ if errorlevel 1 (
 )
 echo.
 
-echo Turning the test card on ...
-"%DEST%\odvr-layer.exe" test-panel on
+echo Turning the layer's own test card off (the host app's panels replace it) ...
+"%DEST%\odvr-layer.exe" test-panel off
 echo.
 
 echo OpenXR layers registered on this PC:
