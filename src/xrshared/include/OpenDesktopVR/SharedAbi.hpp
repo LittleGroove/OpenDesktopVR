@@ -65,7 +65,11 @@ struct PanelEntry {
   uint32_t mContentHeight;
   // Bumped when the ring's textures are re-created; layers re-open them
   uint32_t mTextureGeneration;
-  uint32_t mPad0[2];// explicit: the handles below start on 8 bytes
+  // DXGI_FORMAT of the ring textures (B8G8R8A8_UNORM or R8G8B8A8_UNORM).
+  // The host matches the layer's preferred family, so the game process only
+  // ever copies, never converts.
+  uint32_t mTextureFormat;
+  uint32_t mPad0;// explicit: the handles below start on 8 bytes
   // NT handle values, valid in the host process
   uint64_t mTextureHandles[RingSlots];
   uint64_t mFenceHandle;
@@ -101,7 +105,11 @@ struct LayerStatus {
   char mExecutable[128];   // UTF-8 file name, zero-terminated
   char mApplication[128];  // XrApplicationInfo::applicationName
   char mRuntime[128];      // XrInstanceProperties::runtimeName
-  uint8_t mReserved[56];
+  // DXGI_FORMAT of the layer's panel swapchains: the host draws panels in
+  // the same channel order
+  uint32_t mPreferredPanelFormat;
+  uint32_t mPad0;
+  uint8_t mReserved[48];
 };
 static_assert(sizeof(LayerStatus) == 512);
 

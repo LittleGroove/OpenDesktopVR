@@ -25,10 +25,11 @@ add_library(
   Session.cpp
   PanelSwapchain.cpp
   TestPanel.cpp
+  HostPanels.cpp
 )
 target_link_libraries(
   ${ODVR_LAYER_TARGET}
-  PRIVATE odvr::layerlogic odvr::xrutil odvr::gfx odvr::core odvr::cppwinrt d3d11
+  PRIVATE odvr::layerlogic odvr::hostlink odvr::xrutil odvr::gfx odvr::core odvr::cppwinrt d3d11 dxgi
 )
 target_compile_options(${ODVR_LAYER_TARGET} PRIVATE ${ODVR_NEW_CODE_WARNINGS})
 set_target_properties(${ODVR_LAYER_TARGET} PROPERTIES FOLDER "layer")

@@ -310,6 +310,7 @@ Hook_xrCreateApiLayerInstance(const XrInstanceCreateInfo* info, const XrApiLayer
     if (state->mNext.xrGetInstanceProperties) {
       XrInstanceProperties properties {XR_TYPE_INSTANCE_PROPERTIES};
       if (XR_SUCCEEDED(state->mNext.xrGetInstanceProperties(*instance, &properties))) {
+        state->mRuntimeName = properties.runtimeName;
         Log::Info(
           "Runtime: {} {}.{}.{}",
           properties.runtimeName,

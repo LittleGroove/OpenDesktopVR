@@ -4,9 +4,13 @@
 #include "Session.hpp"
 
 #include <OpenDesktopVR/Log.hpp>
+#include <OpenDesktopVR/ProcessUtil.hpp>
+#include <OpenDesktopVR/StringUtil.hpp>
 #include <OpenDesktopVR/ThreadUtil.hpp>
 #include <OpenDesktopVR/TimeUtil.hpp>
 #include <OpenDesktopVR/XrUtil.hpp>
+
+#include <dxgi.h>
 
 #include <algorithm>
 #include <vector>
@@ -120,6 +124,15 @@ bool Session::Initialize(const XrSessionCreateInfo& info) {
 
   mComposer = std::make_unique<FrameComposer>(std::max<uint32_t>(mMaxLayers, 16) + 8, MaxPanels);
 
+  // The host's panels, and the report the host reads (filled once here, so
+  // the once-a-second report never allocates)
+  mHostPanels = std::make_unique<HostPanels>(
+    mNext, mSession, mLocalSpace, mDevice.get(), mContext.get(), *mContextState, mPanelFormat, mStats);
+  if (!mHostPanels->IsUsable()) {
+    Log::Warning("Host panels are unavailable on this device (shared fences need Windows 10 1703 or later)");
+  }
+  PrepareReport();
+
   if (mInstance.mConfig.mTestPanel) {
     mTestPanel = std::make_unique<TestPanel>(mNext, mSession, mLocalSpace, mDevice.get(), mPanelFormat);
     Log::Info("The built-in test panel is on");
@@ -134,11 +147,33 @@ Session::~Session() {
     mStats.TotalFrames(),
     mStats.AverageCpuMs());
   // Children before the session itself; the game destroys the session after
+  mHostPanels.reset();
   mTestPanel.reset();
   for (const auto space: {mLocalSpace, mViewSpace}) {
     if (space != XR_NULL_HANDLE) {
       mNext.xrDestroySpace(space);
     }
+  }
+}
+
+void Session::PrepareReport() noexcept {
+  auto& report = mReport;
+  report = {};
+  StringUtil::CopyTruncated(StringUtil::Narrow(ProcessUtil::ExecutablePath().filename().wstring()), report.mExecutable);
+  StringUtil::CopyTruncated(mInstance.mApplicationName, report.mApplication);
+  StringUtil::CopyTruncated(mInstance.mRuntimeName, report.mRuntime);
+  report.mGraphicsApi = static_cast<uint32_t>(SharedAbi::GraphicsApi::D3D11);
+  report.mMaxLayerCount = mMaxLayers;
+  report.mHandTrackingAvailable = mInstance.mHandTrackingEnabled ? 1 : 0;
+  // The host renders on the game's adapter, or shared textures won't open
+  winrt::com_ptr<IDXGIDevice> dxgiDevice;
+  winrt::com_ptr<IDXGIAdapter> adapter;
+  DXGI_ADAPTER_DESC desc {};
+  if (
+    SUCCEEDED(mDevice->QueryInterface(dxgiDevice.put())) && SUCCEEDED(dxgiDevice->GetAdapter(adapter.put()))
+    && SUCCEEDED(adapter->GetDesc(&desc))) {
+    report.mAdapterLuidLow = desc.AdapterLuid.LowPart;
+    report.mAdapterLuidHigh = desc.AdapterLuid.HighPart;
   }
 }
 
@@ -162,6 +197,13 @@ XrFrameEndInfo Session::Compose(const XrFrameEndInfo& game) noexcept {
   if (!mPassthrough && !zeroLayers) {
     try {
       std::size_t panelCount = 0;
+      if (mHostPanels) {
+        panelCount += mHostPanels->Compose(start, {mPanels.data(), mPanels.size()});
+        if (mReportTimer.Due(start)) {
+          mReport.mFramesSinceAttach = mStats.TotalFrames();
+          mHostPanels->Report(mReport);
+        }
+      }
       std::optional<XrPosef> head;
       if (mTestPanel && mTestPanel->NeedsHeadPose()) {
         head = LocateHead(game.displayTime);
@@ -173,7 +215,7 @@ XrFrameEndInfo Session::Compose(const XrFrameEndInfo& game) noexcept {
             mStats.ImageReleased();
           }
         }
-        if (const auto* quad = mTestPanel->Quad()) {
+        if (const auto* quad = mTestPanel->Quad(); quad && panelCount < mPanels.size()) {
           mPanels[panelCount++] = {quad, 0, false};
         }
       }

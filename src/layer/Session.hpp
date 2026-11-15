@@ -8,6 +8,7 @@
 #pragma once
 
 #include "Dispatch.hpp"
+#include "HostPanels.hpp"
 #include "LayerStats.hpp"
 #include "TestPanel.hpp"
 
@@ -52,6 +53,7 @@ class Session {
   Session(const InstanceState& instance, XrSession session);
   bool Initialize(const XrSessionCreateInfo& info);
   std::optional<XrPosef> LocateHead(XrTime time) noexcept;
+  void PrepareReport() noexcept;
 
   static constexpr std::size_t MaxPanels = 16;
 
@@ -71,6 +73,9 @@ class Session {
   std::unique_ptr<FrameComposer> mComposer;
   std::array<ComposedPanel, MaxPanels> mPanels {};
   std::unique_ptr<TestPanel> mTestPanel;
+  std::unique_ptr<HostPanels> mHostPanels;
+  SharedAbi::LayerStatus mReport {};
+  TimeUtil::PeriodicTimer mReportTimer {std::chrono::seconds(1)};
 
   LayerStats mStats;
   bool mPassthrough {false};
@@ -85,6 +90,7 @@ struct InstanceState {
   bool mPassthrough {false};
   bool mHandTrackingEnabled {false};
   std::string mApplicationName;
+  std::string mRuntimeName;
 };
 
 }// namespace OpenDesktopVR::Layer
