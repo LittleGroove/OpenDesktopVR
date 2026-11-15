@@ -55,3 +55,86 @@ std::wstring ExecutableStem() noexcept {
 }
 
 }// namespace OpenDesktopVR::ProcessUtil
+
+namespace OpenDesktopVR::ProcessUtil {
+
+namespace {
+
+Elevation TokenElevationOf(HANDLE process) noexcept {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(process, TOKEN_QUERY, &token)) {
+    return Elevation::Unknown;
+  }
+  TOKEN_ELEVATION elevation {};
+  DWORD size = 0;
+  const bool ok = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size);
+  CloseHandle(token);
+  if (!ok) {
+    return Elevation::Unknown;
+  }
+  return elevation.TokenIsElevated ? Elevation::Elevated : Elevation::NotElevated;
+}
+
+}// namespace
+
+std::string_view ElevationName(Elevation elevation) noexcept {
+  switch (elevation) {
+    case Elevation::Elevated:
+      return "elevated";
+    case Elevation::NotElevated:
+      return "not elevated";
+    case Elevation::Unknown:
+      return "unknown (probably elevated)";
+  }
+  return "unknown";
+}
+
+Elevation CurrentProcessElevation() noexcept {
+  return TokenElevationOf(GetCurrentProcess());
+}
+
+Elevation ProcessElevation(unsigned long processID) noexcept {
+  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processID);
+  if (!process) {
+    return Elevation::Unknown;
+  }
+  const auto elevation = TokenElevationOf(process);
+  CloseHandle(process);
+  return elevation;
+}
+
+std::string_view CurrentElevationType() noexcept {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+    return "unknown";
+  }
+  TOKEN_ELEVATION_TYPE type {};
+  DWORD size = 0;
+  const bool ok = GetTokenInformation(token, TokenElevationType, &type, sizeof(type), &size);
+  CloseHandle(token);
+  if (!ok) {
+    return "unknown";
+  }
+  switch (type) {
+    case TokenElevationTypeFull:
+      return "full (elevated)";
+    case TokenElevationTypeLimited:
+      return "limited (an administrator, filtered by UAC)";
+    case TokenElevationTypeDefault:
+      return "default (a standard user, or UAC off)";
+  }
+  return "unknown";
+}
+
+std::optional<bool> UacEnabled() noexcept {
+  DWORD value = 0;
+  DWORD size = sizeof(value);
+  if (RegGetValueW(HKEY_LOCAL_MACHINE, LR"(SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System)", L"EnableLUA",
+        RRF_RT_REG_DWORD, nullptr, &value, &size)
+      != ERROR_SUCCESS) {
+    return std::nullopt;
+  }
+  return value != 0;
+}
+
+}// namespace OpenDesktopVR::ProcessUtil

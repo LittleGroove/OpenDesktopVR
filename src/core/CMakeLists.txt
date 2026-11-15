@@ -16,4 +16,5 @@ odvr_module(
   DEPS
   odvr::cppwinrt
   shell32
+  advapi32
 )

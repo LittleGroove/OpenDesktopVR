@@ -115,6 +115,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   }
   Log::Start(logConfig);
 
+  // Elevation and UAC are the top cause of support requests (CMP-8)
+  const auto uac = ProcessUtil::UacEnabled();
+  Log::Info(
+    "Host process: {}; token: {}; UAC: {}",
+    ProcessUtil::ElevationName(ProcessUtil::CurrentProcessElevation()),
+    ProcessUtil::CurrentElevationType(),
+    uac ? (*uac ? "on" : "off") : "unknown");
+
   int exitCode = 0;
   ThreadUtil::CatchAll("host main", [&] {
     if (options.mRegister) {

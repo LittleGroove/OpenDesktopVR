@@ -5,6 +5,7 @@
 // Win32 interop interfaces.
 
 #include <OpenDesktopVR/Log.hpp>
+#include <OpenDesktopVR/ProcessUtil.hpp>
 #include <OpenDesktopVR/StringUtil.hpp>
 #include <OpenDesktopVR/ThreadUtil.hpp>
 #include <OpenDesktopVR/WindowCaptureSource.hpp>
@@ -337,7 +338,11 @@ void WindowCaptureSource::Maintain(TimeUtil::TimePoint now) {
     }
     if (state.Start(window->mWindow)) {
       state.mStatus = L"Capturing";
-      Log::Info("Capture: started on '{}'", StringUtil::Narrow(window->mTitle));
+      // Elevated windows are a top support topic (CMP-8): log what we saw
+      Log::Info(
+        "Capture: started on '{}' (its process: {})",
+        StringUtil::Narrow(window->mTitle),
+        ProcessUtil::ElevationName(ProcessUtil::ProcessElevation(window->mProcessID)));
     } else {
       state.mStatus = L"The window isn't ready yet. Retrying...";// CP-7
     }

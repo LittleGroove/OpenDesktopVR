@@ -22,4 +22,27 @@ std::filesystem::path ExecutablePath() noexcept;
 // The executable's file name without its extension, for per-game log names
 std::wstring ExecutableStem() noexcept;
 
+// ---- Elevation (CMP-8: the top cause of support requests) ----------------
+
+enum class Elevation {
+  Elevated,       // running with administrator rights
+  NotElevated,    // a standard user, or an administrator with UAC filtering
+  Unknown,        // couldn't be read: for another process, usually means
+                  // it's elevated and we aren't
+};
+
+// "elevated", "not elevated", "unknown (probably elevated)"
+std::string_view ElevationName(Elevation elevation) noexcept;
+
+Elevation CurrentProcessElevation() noexcept;
+Elevation ProcessElevation(unsigned long processID) noexcept;
+
+// What kind of token this process has: "full" (elevated), "limited" (an
+// administrator running filtered by UAC), "default" (a standard user, or UAC
+// off), or "unknown"
+std::string_view CurrentElevationType() noexcept;
+
+// UAC on (EnableLUA): nullopt if the setting can't be read
+std::optional<bool> UacEnabled() noexcept;
+
 }// namespace OpenDesktopVR::ProcessUtil
