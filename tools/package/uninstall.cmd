@@ -12,7 +12,7 @@ set "DATA=%LOCALAPPDATA%\OpenDesktopVR"
 echo Open Desktop VR: uninstall
 echo.
 echo This removes the test build for this Windows user.
-echo Close every VR game first.
+echo Close every VR game, and exit Open Desktop VR from its tray icon, first.
 echo.
 set "ANSWER="
 set /p "ANSWER=Uninstall now? Type Y and press Enter: "

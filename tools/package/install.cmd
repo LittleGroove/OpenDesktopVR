@@ -36,7 +36,8 @@ if /i "%SRC%"=="%DEST%\" (
   if errorlevel 8 (
     echo.
     echo INSTALL FAILED: some files couldn't be copied.
-    echo Close every VR game, then run install.cmd again.
+    echo Close every VR game, and exit Open Desktop VR from its tray icon,
+    echo then run install again.
     exit /b 1
   )
   echo Copied.
