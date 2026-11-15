@@ -27,3 +27,6 @@ odvr_executable(
   SOURCES odvr-layer/odvr-layer.cpp
   DEPS odvr::registration odvr::settings odvr::core
 )
+
+# The packaged self-test (names from cmake/OdvrProduct.cmake)
+configure_file(self-test/self-test.cmd.in "${CMAKE_CURRENT_BINARY_DIR}/self-test.cmd" @ONLY NEWLINE_STYLE CRLF)

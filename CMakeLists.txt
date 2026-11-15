@@ -6,6 +6,7 @@
 #   cmake --preset default
 #   cmake --build --preset release
 #   ctest --preset release
+#   cpack --preset test-zip      (build/package/OpenDesktopVR.zip)
 #
 # Offline builds: point FetchContent at local copies of the pinned releases
 # (see cmake/OdvrThirdParty.cmake), for example
@@ -31,3 +32,5 @@ enable_testing()
 add_subdirectory(src)
 add_subdirectory(tools)
 add_subdirectory(tests)
+
+include(OdvrPackage)

@@ -1,0 +1,29 @@
+@echo off
+rem SPDX-License-Identifier: LicenseRef-Proprietary
+rem Copyright (c) 2026 Robert McGough. All rights reserved.
+rem
+rem Open Desktop VR self-test: loads the layer into a simulated game and a
+rem simulated headset. No headset, registration or settings change needed.
+setlocal
+set OPENDESKTOPVR_TEST_PANEL=1
+set "OUT=%TEMP%\OpenDesktopVR-self-test"
+set "LOG=%OUT%\self-test.txt"
+if not exist "%OUT%" mkdir "%OUT%"
+
+echo Open Desktop VR self-test (about 10 seconds)
+echo.
+"%~dp0openxr-simulator.exe" --layer-name @ODVR_LAYER_NAME@ "%~dp0..\@ODVR_LAYER_FILE_STEM@.dll" "%OUT%" --bench 5 > "%LOG%" 2>&1
+type "%LOG%"
+echo.
+
+findstr /C:"FAIL" "%LOG%" >nul && goto failed
+findstr /C:"Layer GPU time per frame" "%LOG%" >nul || goto failed
+echo SELF-TEST PASSED
+goto done
+
+:failed
+echo SELF-TEST FAILED. The output above is saved in %LOG%
+
+:done
+echo.
+pause
