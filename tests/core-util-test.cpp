@@ -70,6 +70,10 @@ int main() {
   Scenario("Small string helpers", [] {
     Check(StringUtil::EqualsIgnoreCase(L"EliteDangerous64.exe", L"elitedangerous64.EXE"), "case-insensitive match");
     Check(!StringUtil::EqualsIgnoreCase(L"a.exe", L"b.exe"), "different names differ");
+    Check(StringUtil::ContainsIgnoreCase(L"Untitled - Notepad", L"NOTEPAD"), "contains, ignoring case");
+    Check(StringUtil::ContainsIgnoreCase(L"Discord", L""), "an empty search is found");
+    Check(!StringUtil::ContainsIgnoreCase(L"note", L"notepad"), "longer than the text: not found");
+    Check(!StringUtil::ContainsIgnoreCase(L"Spotify", L"chrome"), "absent: not found");
     Check(StringUtil::FileNamePart(L"C:\\Games\\Elite\\Game.exe") == L"Game.exe", "file name of a path");
   });
 

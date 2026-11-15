@@ -13,11 +13,11 @@
 
 #include <OpenDesktopVR/GpuDevice.hpp>
 #include <OpenDesktopVR/HostLink.hpp>
+#include <OpenDesktopVR/ImageFile.hpp>
 #include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/Product.hpp>
 #include <OpenDesktopVR/TimeUtil.hpp>
 
-#include "save-png.hpp"
 
 #include <Windows.h>
 
@@ -121,30 +121,9 @@ class Mirror {
   void SaveScreenshot(const std::filesystem::path& path) {
     winrt::com_ptr<ID3D11Texture2D> back;
     mSwapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), back.put_void());
-    D3D11_TEXTURE2D_DESC desc {};
-    back->GetDesc(&desc);
-    desc.Usage = D3D11_USAGE_STAGING;
-    desc.BindFlags = 0;
-    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    desc.MiscFlags = 0;
-    winrt::com_ptr<ID3D11Texture2D> staging;
-    mGpu->Device()->CreateTexture2D(&desc, nullptr, staging.put());
-    mGpu->Context()->CopyResource(staging.get(), back.get());
-    D3D11_MAPPED_SUBRESOURCE mapped {};
-    if (FAILED(mGpu->Context()->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped))) {
-      return;
+    if (const auto image = ImageFile::ReadTexture(mGpu->Device(), mGpu->Context(), back.get())) {
+      ImageFile::SavePng(path, *image);
     }
-    std::vector<uint8_t> pixels(static_cast<std::size_t>(desc.Width) * desc.Height * 4);
-    for (UINT y = 0; y < desc.Height; ++y) {
-      std::memcpy(pixels.data() + static_cast<std::size_t>(y) * desc.Width * 4,
-        static_cast<const uint8_t*>(mapped.pData) + static_cast<std::size_t>(y) * mapped.RowPitch, desc.Width * 4);
-    }
-    mGpu->Context()->Unmap(staging.get(), 0);
-    for (std::size_t i = 3; i < pixels.size(); i += 4) {
-      pixels[i] = 0xFF;// the window has no alpha
-    }
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    TestUtilities::SavePNG(path, desc.Width, desc.Height, pixels);
   }
 
  private:

@@ -29,6 +29,9 @@ std::string_view TrimIncompleteUtf8Tail(std::string_view utf8) noexcept;
 std::size_t CopyTruncated(std::string_view utf8, std::span<char> out) noexcept;
 
 bool EqualsIgnoreCase(std::wstring_view a, std::wstring_view b) noexcept;
+// `part` appears in `text`, ignoring case (ordinal, like EqualsIgnoreCase).
+// An empty `part` is found everywhere.
+bool ContainsIgnoreCase(std::wstring_view text, std::wstring_view part) noexcept;
 
 // The file name part of a path, for example the game executable's name
 std::wstring_view FileNamePart(std::wstring_view path) noexcept;

@@ -5,7 +5,8 @@
 // renders panels and shares them with the layer in each game.
 //
 //   OpenDesktopVR.exe [--no-register] [--exit-after <s>] [--fence-delay-ms <n>] [--static-panels]
-//                     [--window <title>] [--warp]
+//                     [--window <title>] [--warp] [--settings] [--settings-screenshot <png>]
+//                     [--picker-screenshot <png>]
 //
 // --no-register      don't register the layer (tests, side-by-side builds)
 // --exit-after <s>   quit after this many seconds (tests)
@@ -14,8 +15,14 @@
 // --static-panels    test panels that never change (the idle bench gate)
 // --window <title>   test instances: one window panel, matching this title
 // --warp             allow software rendering if there's no GPU (CI)
+// --settings         open the settings window at start
+// --settings-screenshot <png>, --picker-screenshot <png>
+//                    tests: open the settings window (with the window
+//                    picker), save it as a PNG, check that it stops
+//                    painting when idle, then quit (SettingsWindow.hpp)
 
 #include "PanelManager.hpp"
+#include "SettingsWindow.hpp"
 #include "TrayIcon.hpp"
 
 #include <OpenDesktopVR/LayerRegistration.hpp>
@@ -49,6 +56,9 @@ struct Options {
   bool mStaticPanels {false};
   bool mTestInstance {false};
   std::wstring mTestWindowTitle;
+  bool mOpenSettings {false};
+  std::wstring mScreenshot;
+  bool mScreenshotPicker {false};
 };
 
 Options ParseOptions() {
@@ -69,6 +79,12 @@ Options ParseOptions() {
       options.mStaticPanels = true;
     } else if (arg == L"--warp") {
       options.mAllowWarp = true;
+    } else if (arg == L"--settings") {
+      options.mOpenSettings = true;
+    } else if ((arg == L"--settings-screenshot" || arg == L"--picker-screenshot") && i + 1 < argc) {
+      options.mScreenshotPicker = arg == L"--picker-screenshot";
+      options.mScreenshot = argv[++i];
+      options.mOpenSettings = true;
     }
   }
   LocalFree(argv);
@@ -162,9 +178,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     panels.Load();
     renderer.Start();
 
-    Host::TrayIcon tray {instance, renderer, panels};
+    Host::SettingsWindow settings {instance, renderer, panels};
+    Host::TrayIcon tray {instance, renderer, panels, settings};
     if (options.mExitAfterSeconds > 0) {
       tray.QuitAfter(options.mExitAfterSeconds);
+    }
+    if (!options.mScreenshot.empty()) {
+      settings.RequestScreenshot(options.mScreenshot, options.mScreenshotPicker);
+    }
+    if (options.mOpenSettings) {
+      settings.Show();
     }
     exitCode = tray.Run();
     renderer.Stop();

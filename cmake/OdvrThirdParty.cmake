@@ -11,6 +11,8 @@
 #   odvr::openxr_headers  Khronos OpenXR SDK headers (Apache-2.0)
 #   odvr::json            nlohmann/json (MIT), settings files
 #   odvr::cppwinrt        C++/WinRT headers from the Windows SDK (MIT)
+#   odvr::imgui           Dear ImGui with its Win32 and Direct3D 11 backends (MIT;
+#                         ADR-020: the desktop settings window and in-VR menus)
 # and the variable ODVR_FXC (the Windows SDK's shader compiler).
 
 include(FetchContent)
@@ -33,7 +35,13 @@ FetchContent_Declare(
   URL_HASH "SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d"
   SOURCE_SUBDIR "no-cmake"
 )
-FetchContent_MakeAvailable(directxtk openxr_sdk nlohmann_json)
+FetchContent_Declare(
+  imgui
+  URL "https://github.com/ocornut/imgui/archive/refs/tags/v1.91.5.tar.gz"
+  URL_HASH "SHA256=2aa2d169c569368439e5d5667e0796d09ca5cc6432965ce082e516937d7db254"
+  SOURCE_SUBDIR "no-cmake"
+)
+FetchContent_MakeAvailable(directxtk openxr_sdk nlohmann_json imgui)
 
 # DirectXTK: SimpleMath only
 add_library(odvr_simplemath STATIC "${directxtk_SOURCE_DIR}/Src/SimpleMath.cpp")
@@ -81,3 +89,20 @@ find_program(
   "C:/Program Files (x86)/Windows Kits/10/bin/${CMAKE_SYSTEM_VERSION}/x64"
   REQUIRED
 )
+
+# Dear ImGui: the library and the two backends we use
+add_library(
+  odvr_imgui STATIC
+  "${imgui_SOURCE_DIR}/imgui.cpp"
+  "${imgui_SOURCE_DIR}/imgui_draw.cpp"
+  "${imgui_SOURCE_DIR}/imgui_tables.cpp"
+  "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
+  "${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp"
+  "${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp"
+)
+add_library(odvr::imgui ALIAS odvr_imgui)
+target_include_directories(odvr_imgui SYSTEM PUBLIC "${imgui_SOURCE_DIR}" "${imgui_SOURCE_DIR}/backends")
+# No ini file next to the exe: window layout isn't persisted by ImGui
+target_compile_definitions(odvr_imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
+target_link_libraries(odvr_imgui PUBLIC d3d11 d3dcompiler dxgi dwmapi)
+set_target_properties(odvr_imgui PROPERTIES FOLDER "third-party")

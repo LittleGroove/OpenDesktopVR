@@ -10,11 +10,16 @@ odvr_executable(
   HostMain.cpp
   TrayIcon.cpp
   PanelManager.cpp
+  SettingsWindow.cpp
   DEPS
   odvr::hostcore
   odvr::capture
   odvr::settings
   odvr::registration
+  odvr::ui
+  odvr::imgui
+  odvr::gfx
   shell32
+  dwmapi
 )
 set_target_properties(OpenDesktopVR PROPERTIES FOLDER "host")

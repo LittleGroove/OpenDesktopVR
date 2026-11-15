@@ -42,6 +42,5 @@ odvr_executable(
   odvr-mirror
   WIN32
   SOURCES mirror/odvr-mirror.cpp
-  DEPS odvr::hostlink odvr::render odvr::core windowscodecs shell32
+  DEPS odvr::hostlink odvr::render odvr::gfx odvr::core shell32
 )
-target_include_directories(odvr-mirror PRIVATE "${PROJECT_SOURCE_DIR}/tests/support")

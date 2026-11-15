@@ -4,15 +4,21 @@
 // Threading helpers:
 // - naming threads (shows in debuggers and crash dumps);
 // - the catch-all every background thread and callback runs under (TH-8);
-// - mutexes that detect re-entrant and nested-upgrade locking (TH-2).
+// - mutexes that detect re-entrant and nested-upgrade locking (TH-2);
+// - background tasks the UI thread can start and check without waiting
+//   (ADR-020).
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace OpenDesktopVR::ThreadUtil {
 
@@ -38,6 +44,58 @@ bool CatchAll(std::string_view where, Body&& body) noexcept {
     return false;
   }
 }
+
+// ---- Background tasks (ADR-020) ------------------------------------------
+//
+// Slow work the UI thread mustn't do itself (window enumeration, disk I/O),
+// run on a worker thread and checked without waiting. Dropping a task never
+// waits for its worker (a std::async future would): the worker finishes on
+// its own and its result is thrown away.
+template <class T>
+class BackgroundTask {
+ public:
+  BackgroundTask() = default;
+
+  // `work` returns a T and runs under CatchAll; if it throws, the task
+  // finishes with no result. Throws std::system_error if no thread starts.
+  template <class Work>
+  static BackgroundTask Start(std::wstring_view name, Work&& work) {
+    BackgroundTask task;
+    task.mState = std::make_shared<State>();
+    std::thread(
+      [state = task.mState, name = std::wstring {name}, work = std::forward<Work>(work)]() mutable {
+        SetCurrentThreadName(name);
+        CatchAll("background task", [&] { state->mValue.emplace(work()); });
+        state->mDone.store(true, std::memory_order_release);
+      })
+      .detach();
+    return task;
+  }
+
+  // Started and not yet taken
+  bool Started() const noexcept {
+    return mState != nullptr;
+  }
+  bool Running() const noexcept {
+    return mState && !mState->mDone.load(std::memory_order_acquire);
+  }
+  // Once the worker is done: its result (nullopt if it threw), handed over
+  // once, after which the task is empty. nullopt while it's running.
+  std::optional<T> Take() {
+    if (!mState || !mState->mDone.load(std::memory_order_acquire)) {
+      return std::nullopt;
+    }
+    const auto state = std::move(mState);
+    return std::move(state->mValue);
+  }
+
+ private:
+  struct State {
+    std::atomic<bool> mDone {false};
+    std::optional<T> mValue;
+  };
+  std::shared_ptr<State> mState;
+};
 
 // ---- Lock checking (TH-2) -------------------------------------------------
 //

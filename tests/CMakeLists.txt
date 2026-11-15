@@ -67,3 +67,9 @@ odvr_test(capture-test NO_CTEST SOURCES capture-test.cpp DEPS odvr::capture)
 add_dependencies(capture-test click-target)
 add_test(NAME capture-test COMMAND capture-test $<TARGET_FILE:click-target>)
 set_tests_properties(capture-test PROPERTIES TIMEOUT 120)
+
+# M3b: the desktop settings window, in the real host
+odvr_test(settings-window-test NO_CTEST SOURCES settings-window-test.cpp DEPS odvr::gfx odvr::core)
+add_dependencies(settings-window-test OpenDesktopVR)
+add_test(NAME settings-window-test COMMAND settings-window-test $<TARGET_FILE:OpenDesktopVR>)
+set_tests_properties(settings-window-test PROPERTIES TIMEOUT 150)

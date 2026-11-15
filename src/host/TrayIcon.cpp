@@ -17,10 +17,13 @@ namespace {
 
 constexpr UINT TrayMessage = WM_APP + 1;
 constexpr UINT_PTR QuitTimer = 1;
+constexpr UINT_PTR ListingTimer = 2;// polls the worker listing windows for the menu
+constexpr UINT ListingPollMs = 15;
 constexpr UINT TrayID = 1;
 
 enum MenuCommand : UINT {
   ToggleVisible = 100,
+  OpenSettings,
   OpenLogs,
   Exit,
   AddWindowFirst = 1000,// + index into the listed windows
@@ -43,8 +46,8 @@ constexpr wchar_t WindowClass[] = L"OpenDesktopVR.Host";
 
 }// namespace
 
-TrayIcon::TrayIcon(HINSTANCE instance, RenderLoop& renderer, PanelManager& panels)
-  : mInstance(instance), mRenderer(renderer), mPanels(panels) {
+TrayIcon::TrayIcon(HINSTANCE instance, RenderLoop& renderer, PanelManager& panels, SettingsWindow& settings)
+  : mInstance(instance), mRenderer(renderer), mPanels(panels), mSettings(settings) {
   WNDCLASSEXW windowClass {sizeof(windowClass)};
   windowClass.lpfnWndProc = &TrayIcon::WindowProc;
   windowClass.hInstance = instance;
@@ -95,14 +98,31 @@ int TrayIcon::Run() {
   return static_cast<int>(message.wParam);
 }
 
-void TrayIcon::ShowMenu() {
+void TrayIcon::RequestMenu() {
+  if (mListing.Started()) {
+    return;// already on its way
+  }
+  try {
+    mListing = ThreadUtil::BackgroundTask<std::vector<WindowUtil::WindowInfo>>::Start(
+      L"Window list", [] { return WindowUtil::ListCaptureCandidates(); });
+  } catch (...) {
+    ThreadUtil::ReportEscapedException("listing windows");
+    ShowMenu({});
+    return;
+  }
+  SetTimer(mWindow, ListingTimer, ListingPollMs, nullptr);
+}
+
+void TrayIcon::ShowMenu(std::vector<WindowUtil::WindowInfo> listed) {
   HMENU menu = CreatePopupMenu();
   const auto title = std::format(L"{}: {}", Product::DisplayName, Product::Tagline);
   AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, title.c_str());
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  // Show a window in VR: every window that can be captured, right now
+  AppendMenuW(menu, MF_STRING, OpenSettings, L"Settings...");
+  SetMenuDefaultItem(menu, OpenSettings, FALSE);// what a left-click does
+  // Show a window in VR: every window that could be captured a moment ago
   HMENU windows = CreatePopupMenu();
-  mMenuWindows = WindowUtil::ListCaptureCandidates();
+  mMenuWindows = std::move(listed);
   if (mMenuWindows.size() > MaxListed) {
     mMenuWindows.resize(MaxListed);
   }
@@ -149,7 +169,11 @@ LRESULT CALLBACK TrayIcon::WindowProc(HWND window, UINT message, WPARAM wParam, 
   }
   auto* self = reinterpret_cast<TrayIcon*>(GetWindowLongPtrW(window, GWLP_USERDATA));
   if (self && self->mWindow == window) {
-    return self->Handle(message, wParam, lParam);
+    // Nothing may unwind through Windows (TH-8)
+    LRESULT result = 0;
+    if (ThreadUtil::CatchAll("tray icon", [&] { result = self->Handle(message, wParam, lParam); })) {
+      return result;
+    }
   }
   return DefWindowProcW(window, message, wParam, lParam);
 }
@@ -161,24 +185,32 @@ LRESULT TrayIcon::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
   }
   switch (message) {
     case TrayMessage:
-      if (LOWORD(lParam) == WM_RBUTTONUP || LOWORD(lParam) == WM_LBUTTONUP) {
-        ShowMenu();
+      if (LOWORD(lParam) == WM_LBUTTONUP) {
+        mSettings.Show();
+      } else if (LOWORD(lParam) == WM_RBUTTONUP) {
+        RequestMenu();
       }
       return 0;
     case WM_COMMAND: {
       const UINT command = LOWORD(wParam);
       if (command >= AddWindowFirst && command < AddWindowFirst + mMenuWindows.size()) {
         mPanels.AddWindow(mMenuWindows[command - AddWindowFirst]);
+        mSettings.Invalidate();
         return 0;
       }
       if (command >= RemovePanelFirst && command < RemovePanelFirst + mMenuPanels.size()) {
         mPanels.Remove(mMenuPanels[command - RemovePanelFirst]);
+        mSettings.Invalidate();
         return 0;
       }
       switch (command) {
+        case OpenSettings:
+          mSettings.Show();
+          return 0;
         case ToggleVisible:
           mRenderer.SetPanelsVisible(!mRenderer.PanelsVisible());
           Log::Info("Panels {}", mRenderer.PanelsVisible() ? "shown" : "hidden");
+          mSettings.Invalidate();
           return 0;
         case OpenLogs: {
           const auto folder = Product::LogsFolder();
@@ -194,6 +226,13 @@ LRESULT TrayIcon::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_TIMER:
       if (wParam == QuitTimer) {
         PostQuitMessage(0);
+        return 0;
+      }
+      if (wParam == ListingTimer) {
+        if (!mListing.Running()) {
+          KillTimer(mWindow, ListingTimer);
+          ShowMenu(mListing.Take().value_or(std::vector<WindowUtil::WindowInfo> {}));
+        }
         return 0;
       }
       break;

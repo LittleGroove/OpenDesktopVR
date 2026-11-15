@@ -90,6 +90,23 @@ bool EqualsIgnoreCase(std::wstring_view a, std::wstring_view b) noexcept {
     == CSTR_EQUAL;
 }
 
+bool ContainsIgnoreCase(std::wstring_view text, std::wstring_view part) noexcept {
+  if (part.empty()) {
+    return true;
+  }
+  if (part.size() > text.size() || text.size() > INT_MAX) {
+    return false;
+  }
+  // Short strings (titles, file names): compare at each position
+  for (std::size_t at = 0; at + part.size() <= text.size(); ++at) {
+    if (CompareStringOrdinal(text.data() + at, static_cast<int>(part.size()), part.data(), static_cast<int>(part.size()), TRUE)
+        == CSTR_EQUAL) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::wstring_view FileNamePart(std::wstring_view path) noexcept {
   const auto slash = path.find_last_of(L"\\/");
   return slash == std::wstring_view::npos ? path : path.substr(slash + 1);

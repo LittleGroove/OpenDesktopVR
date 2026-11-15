@@ -351,6 +351,11 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
       frame = std::exchange(mPending, nullptr);
       crop = mPendingCrop;
     }
+    if (frame && !mActive) {
+      // Arrived just before the panel went inactive: dropped too (CP-5)
+      frame.Close();
+      frame = nullptr;
+    }
     if (frame) {
       winrt::com_ptr<ID3D11Texture2D> source;
       auto access = frame.Surface().as<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
