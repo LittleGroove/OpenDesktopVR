@@ -1,0 +1,8 @@
+# Build output
+build/
+out/
+CMakeUserPresets.json
+
+# Editor state
+.vs/
+.vscode/
