@@ -49,3 +49,7 @@ target_include_directories(layer-dll-test PRIVATE "${PROJECT_SOURCE_DIR}/tests/s
 set_target_properties(layer-dll-test PROPERTIES FOLDER "tests")
 add_dependencies(layer-dll-test ${ODVR_LAYER_FILE_STEM})
 add_test(NAME layer-dll-test COMMAND layer-dll-test $<TARGET_FILE:${ODVR_LAYER_FILE_STEM}>)
+
+# Shared-memory ABI and panel policies (M2)
+odvr_test(shared-abi-test SOURCES shared-abi-test.cpp DEPS odvr::xrshared)
+odvr_test(panels-test SOURCES panels-test.cpp DEPS odvr::panels)

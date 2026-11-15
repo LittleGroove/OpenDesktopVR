@@ -6,6 +6,8 @@
 add_subdirectory(core)
 add_subdirectory(settings)
 add_subdirectory(xrutil)
+add_subdirectory(xrshared)
+add_subdirectory(panels)
 add_subdirectory(gfx)
 add_subdirectory(interaction)
 add_subdirectory(keyboard)
