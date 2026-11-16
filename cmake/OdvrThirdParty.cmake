@@ -104,5 +104,9 @@ add_library(odvr::imgui ALIAS odvr_imgui)
 target_include_directories(odvr_imgui SYSTEM PUBLIC "${imgui_SOURCE_DIR}" "${imgui_SOURCE_DIR}/backends")
 # No ini file next to the exe: window layout isn't persisted by ImGui
 target_compile_definitions(odvr_imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
+# No debug tools: we use none, and with them every ImGui allocation reports
+# to the current context, which a font atlas built on a worker thread would
+# do on the UI thread's context (SettingsWindow::Prepare)
+target_compile_definitions(odvr_imgui PUBLIC IMGUI_DISABLE_DEBUG_TOOLS)
 target_link_libraries(odvr_imgui PUBLIC d3d11 d3dcompiler dxgi dwmapi)
 set_target_properties(odvr_imgui PROPERTIES FOLDER "third-party")

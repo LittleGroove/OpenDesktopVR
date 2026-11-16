@@ -100,6 +100,13 @@ void Client::TryConnect() noexcept {
     Log::Warning("Host link: can't open the host process ({}); is one of them elevated?", GetLastError());
     return;
   }
+  if (WaitForSingleObject(process, 0) == WAIT_OBJECT_0) {
+    // The block of a host that has exited, kept alive by another viewer that
+    // still has it open: not a host. Connecting to it failed to open every
+    // texture, once a second, until that viewer let go (test round 5).
+    CloseHandle(process);
+    return;
+  }
   mMemory = std::move(memory);
   mHostProcess = process;
   mHostProcessID = header.mHostProcessID;

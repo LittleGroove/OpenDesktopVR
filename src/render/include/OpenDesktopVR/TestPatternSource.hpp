@@ -19,15 +19,16 @@ struct TestPatternOptions {
   std::wstring mTitle {L"Test pattern"};
   bool mAnimated {true};
   PixelSize mSize {960, 600};
+  // Test only: every frame a different size, at most mSize (a window being
+  // resized or trimmed), to check that nothing is re-created (RN-7)
+  bool mResizing {false};
 };
 
 class TestPatternSource final : public ContentSource {
  public:
   TestPatternSource(GpuDevice& gpu, TestPatternOptions options);
 
-  PixelSize Size() const override {
-    return mOptions.mSize;
-  }
+  PixelSize Size() const override;
   bool IsAnimated() const override {
     return mOptions.mAnimated;
   }

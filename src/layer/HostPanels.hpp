@@ -13,6 +13,9 @@
 // The "what's shown" record (SY-4) holds the host generation, texture
 // generation and content version; it's reset on swapchain (re)creation and
 // set only after a successful release.
+// Swapchains are the size of the host's textures, which only grow (RN-7):
+// each frame's own size (per ring slot) sets the copy and the quad's image
+// rectangle, so a panel being resized or trimmed re-creates nothing.
 #pragma once
 
 #include "Dispatch.hpp"
@@ -80,6 +83,10 @@ class HostPanels {
   Counters GetCounters() const noexcept {
     return mCounters;
   }
+  // Where the last Compose's time went (for the stats line)
+  const FrameCosts& LastFrameCosts() const noexcept {
+    return mCosts;
+  }
 
  private:
   struct Record {
@@ -113,6 +120,7 @@ class HostPanels {
   HostLink::Client mLink;
   std::array<Record, SharedAbi::MaxPanels> mRecords;
   Counters mCounters;
+  FrameCosts mCosts;
   bool mWasConnected {false};
   bool mReportDue {false};
 };

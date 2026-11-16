@@ -4,6 +4,7 @@
 #include <OpenDesktopVR/PanelConfig.hpp>
 #include <OpenDesktopVR/StringUtil.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <format>
 
@@ -76,20 +77,31 @@ std::optional<PanelDefinition> FromJson(const Json& json) noexcept {
     }
     panel.mFaceOrigin = JsonUtil::GetOr<bool>(json, "faceOrigin", true);
     panel.mYawDegrees = JsonUtil::GetOr<float>(json, "yawDegrees", 0.0f);
+    panel.mPitchDegrees = JsonUtil::GetOr<float>(json, "pitchDegrees", 0.0f);
     panel.mWidthMeters = JsonUtil::GetOr<float>(json, "widthMeters", 0.4f);
     panel.mMaxUpdatesPerSecond = JsonUtil::GetOr<double>(json, "maxUpdatesPerSecond", 0.0);
     panel.mEnabled = JsonUtil::GetOr<bool>(json, "enabled", true);
-    if (const auto crop = JsonUtil::Get<Json>(json, "crop"); crop && crop->is_array() && crop->size() == 4) {
-      float edges[4] {};
+    // Trims in pixels (left, top, right, bottom). Fractions ("crop", test
+    // rounds 4 and 5) are dropped: their size in pixels isn't known here.
+    panel.mExtra.erase("crop");
+    if (const auto crop = JsonUtil::Get<Json>(json, "cropPixels"); crop && crop->is_array() && crop->size() == 4) {
+      uint32_t edges[4] {};
       for (std::size_t i = 0; i < 4; ++i) {
-        edges[i] = (*crop)[i].is_number() ? (*crop)[i].get<float>() : 0.0f;
+        const auto& edge = (*crop)[i];
+        if (edge.is_number()) {
+          const double value = edge.get<double>();
+          edges[i] = std::isfinite(value) && value > 0
+            ? static_cast<uint32_t>(std::min(value, static_cast<double>(Render::Crop::MaximumEdge)))
+            : 0;
+        }
       }
-      panel.mCrop = Render::Crop {edges[0], edges[1], edges[2], edges[3]}.Clamped();
+      panel.mCrop = Render::Crop {edges[0], edges[1], edges[2], edges[3]};
     }
     // Untrusted (hand-edited files): finite numbers in sensible ranges
     if (!Finite(panel.mPosition[0]) || !Finite(panel.mPosition[1]) || !Finite(panel.mPosition[2])
         || std::abs(panel.mPosition[0]) > 20 || std::abs(panel.mPosition[1]) > 20 || std::abs(panel.mPosition[2]) > 20
-        || !Finite(panel.mYawDegrees) || !Finite(panel.mWidthMeters) || panel.mWidthMeters < 0.02f || panel.mWidthMeters > 10
+        || !Finite(panel.mYawDegrees) || !Finite(panel.mPitchDegrees) || std::abs(panel.mPitchDegrees) > 90
+        || !Finite(panel.mWidthMeters) || panel.mWidthMeters < 0.02f || panel.mWidthMeters > 10
         || !std::isfinite(panel.mMaxUpdatesPerSecond) || panel.mMaxUpdatesPerSecond < 0) {
       return std::nullopt;
     }
@@ -116,11 +128,12 @@ Json ToJson(const PanelDefinition& panel) {
   json["position"] = Json::array({panel.mPosition[0], panel.mPosition[1], panel.mPosition[2]});
   json["faceOrigin"] = panel.mFaceOrigin;
   json["yawDegrees"] = panel.mYawDegrees;
+  json["pitchDegrees"] = panel.mPitchDegrees;
   json["widthMeters"] = panel.mWidthMeters;
   json["maxUpdatesPerSecond"] = panel.mMaxUpdatesPerSecond;
   json["enabled"] = panel.mEnabled;
   const auto& crop = panel.mCrop;
-  json["crop"] = Json::array({crop.mLeft, crop.mTop, crop.mRight, crop.mBottom});
+  json["cropPixels"] = Json::array({crop.mLeft, crop.mTop, crop.mRight, crop.mBottom});
   return json;
 }
 

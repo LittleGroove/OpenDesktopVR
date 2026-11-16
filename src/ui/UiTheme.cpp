@@ -97,7 +97,14 @@ void Apply(float dpiScale) {
 
 Fonts LoadFonts(float dpiScale) {
   auto& io = ImGui::GetIO();
-  io.Fonts->Clear();
+  const auto fonts = LoadFonts(*io.Fonts, dpiScale);
+  // Clear() deleted the old fonts; don't leave ImGui pointing at one
+  io.FontDefault = fonts.mBody;
+  return fonts;
+}
+
+Fonts LoadFonts(ImFontAtlas& atlas, float dpiScale) {
+  atlas.Clear();
   // Window titles come in many scripts: Latin with its extensions, Greek,
   // Cyrillic, and the punctuation and arrows programs put in titles. Others
   // (CJK, emoji) show as '?' for now.
@@ -123,21 +130,19 @@ Fonts LoadFonts(float dpiScale) {
   };
   std::error_code error;
   if (!folder.empty() && std::filesystem::exists(body, error)) {
-    fonts.mBody = io.Fonts->AddFontFromFileTTF(utf8(body).c_str(), 17.0f * dpiScale, nullptr, Ranges);
+    fonts.mBody = atlas.AddFontFromFileTTF(utf8(body).c_str(), 17.0f * dpiScale, nullptr, Ranges);
     if (std::filesystem::exists(heading, error)) {
-      fonts.mHeading = io.Fonts->AddFontFromFileTTF(utf8(heading).c_str(), 24.0f * dpiScale, nullptr, Ranges);
+      fonts.mHeading = atlas.AddFontFromFileTTF(utf8(heading).c_str(), 24.0f * dpiScale, nullptr, Ranges);
     }
   }
   if (!fonts.mBody) {
     ImFontConfig config;
     config.SizePixels = 15.0f * dpiScale;
-    fonts.mBody = io.Fonts->AddFontDefault(&config);
+    fonts.mBody = atlas.AddFontDefault(&config);
   }
   if (!fonts.mHeading) {
     fonts.mHeading = fonts.mBody;
   }
-  // Clear() deleted the old fonts; don't leave ImGui pointing at one
-  io.FontDefault = fonts.mBody;
   return fonts;
 }
 

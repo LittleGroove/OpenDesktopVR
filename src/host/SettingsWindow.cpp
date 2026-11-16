@@ -99,6 +99,45 @@ void Help(const char* text) {
   ImGui::SetItemTooltip("%s", text);
 }
 
+// Drag fields: drag left or right to change the number, hold Shift for 4x
+// faster or Alt for 5x finer, double-click (or Ctrl+click) to type one.
+// Dear ImGui's own modifiers are 10x and 100x; 100x finer was too slow to
+// use, so the speed passed in undoes them (test round 5 asked how precise
+// placement can be before it gets cumbersome).
+float DragSpeed(float speed) {
+  const auto& io = ImGui::GetIO();
+  if (io.KeyAlt) {
+    speed *= 0.2f / 0.01f;
+  }
+  if (io.KeyShift) {
+    speed *= 4.0f / 10.0f;
+  }
+  return speed;
+}
+
+// A length kept in metres, shown and dragged in centimetres
+bool DragCentimetres(const char* label, float* metres, float minimumCm, float maximumCm) {
+  float cm = *metres * 100.0f;
+  if (!ImGui::DragFloat(label, &cm, DragSpeed(0.25f), minimumCm, maximumCm, "%.1f cm", Clamp)) {
+    return false;
+  }
+  *metres = cm / 100.0f;
+  return true;
+}
+
+bool DragDegrees(const char* label, float* degrees, float minimum, float maximum, ImGuiSliderFlags flags = Clamp) {
+  return ImGui::DragFloat(label, degrees, DragSpeed(0.25f), minimum, maximum, "%.1f\xC2\xB0", flags);
+}
+
+bool DragPixels(const char* label, uint32_t* pixels, uint32_t maximum) {
+  int value = static_cast<int>(std::min<uint32_t>(*pixels, static_cast<uint32_t>(INT32_MAX)));
+  if (!ImGui::DragInt(label, &value, DragSpeed(1.0f), 0, static_cast<int>(maximum), "%d px", Clamp)) {
+    return false;
+  }
+  *pixels = static_cast<uint32_t>(std::max(value, 0));
+  return true;
+}
+
 }// namespace
 
 SettingsWindow::SettingsWindow(HINSTANCE instance, RenderLoop& renderer, PanelManager& panels)
@@ -110,13 +149,38 @@ SettingsWindow::SettingsWindow(HINSTANCE instance, RenderLoop& renderer, PanelMa
   windowClass.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
   windowClass.lpszClassName = WindowClass;
   RegisterClassExW(&windowClass);
-  // Making a device takes 30 ms or more (180 ms while the driver loads):
-  // do it now, off this thread, so the window opens quickly
+  // Making a device takes 30 ms or more (180 ms while the driver loads),
+  // and fonts about 10 ms: do them now, off this thread, so the window
+  // opens quickly
   try {
-    mDeviceTask = ThreadUtil::BackgroundTask<Gpu>::Start(L"Settings device", [] { return CreateDevice(); });
+    mPrepareTask = ThreadUtil::BackgroundTask<Prepared>::Start(L"Settings window", [] { return Prepare(); });
   } catch (...) {
-    ThreadUtil::ReportEscapedException("starting the settings device");
+    ThreadUtil::ReportEscapedException("preparing the settings window");
   }
+}
+
+SettingsWindow::Prepared SettingsWindow::Prepare() noexcept {
+  Prepared prepared;
+  prepared.mGpu = CreateDevice();
+  try {
+    // An atlas needs no ImGui context (ADR-020: the context stays on the UI
+    // thread); the main monitor's scale is the usual one
+    prepared.mScale = std::clamp(static_cast<float>(GetDpiForSystem()) / USER_DEFAULT_SCREEN_DPI, 0.5f, 4.0f);
+    auto atlas = std::make_shared<ImFontAtlas>();
+    prepared.mFonts = UiTheme::LoadFonts(*atlas, prepared.mScale);
+    if (atlas->Build()) {
+      // In the texture's format already, for Dear ImGui's first frame
+      unsigned char* pixels = nullptr;
+      int width = 0;
+      int height = 0;
+      atlas->GetTexDataAsRGBA32(&pixels, &width, &height);
+      atlas->ClearInputData();// the font files' copies: only needed to build
+      prepared.mAtlas = std::move(atlas);
+    }
+  } catch (...) {
+    ThreadUtil::ReportEscapedException("preparing the settings window's fonts");
+  }
+  return prepared;
 }
 
 SettingsWindow::~SettingsWindow() {
@@ -150,9 +214,12 @@ void SettingsWindow::Show() {
     return;
   }
   mOpenedAt = TimeUtil::Now();
+  mOpeningMark = mOpenedAt;
+  mOpeningParts.clear();
   mFirstPaintLogged = false;
   // Other programs may have changed the file since it was loaded
   mPanels.Refresh();
+  MarkOpening("settings file");
   bool created = false;
   ThreadUtil::CatchAll("opening the settings window", [&] { created = Create(); });
   if (!created) {
@@ -161,6 +228,16 @@ void SettingsWindow::Show() {
     return;
   }
   Log::Info("Settings window opened ({:.0f}% scale)", mScale * 100);
+}
+
+void SettingsWindow::MarkOpening(const char* part) {
+  if (mFirstPaintLogged) {
+    return;
+  }
+  const auto now = TimeUtil::Now();
+  mOpeningParts += std::format("{}{} {:.0f}", mOpeningParts.empty() ? "" : ", ", part,
+    TimeUtil::ToMilliseconds(now - mOpeningMark));
+  mOpeningMark = now;
 }
 
 void SettingsWindow::Invalidate() {
@@ -204,6 +281,7 @@ bool SettingsWindow::Create() {
   constexpr DWORD UseImmersiveDarkMode = 20;
   const BOOL dark = TRUE;
   DwmSetWindowAttribute(mWindow, UseImmersiveDarkMode, &dark, sizeof(dark));
+  MarkOpening("window");
 
   // Its own device: nothing here can wait on the panel renderer's GPU work.
   // Usually made in the background at start (and kept), so opening the
@@ -212,13 +290,20 @@ bool SettingsWindow::Create() {
     mDevice = nullptr;
     mContext = nullptr;
   }
-  if (!mDevice) {
-    if (!mDeviceTask.Running()) {
-      if (auto gpu = mDeviceTask.Take(); gpu && gpu->mDevice) {
-        mDevice = std::move(gpu->mDevice);
-        mContext = std::move(gpu->mContext);
+  if (mPrepareTask.Started() && !mPrepareTask.Running()) {
+    if (auto prepared = mPrepareTask.Take()) {
+      if (!mDevice && prepared->mGpu.mDevice) {
+        mDevice = std::move(prepared->mGpu.mDevice);
+        mContext = std::move(prepared->mGpu.mContext);
+      }
+      if (!mAtlas && prepared->mAtlas) {
+        mAtlas = std::move(prepared->mAtlas);
+        mAtlasScale = prepared->mScale;
+        mFonts = prepared->mFonts;
       }
     }
+  }
+  if (!mDevice) {
     if (!mDevice) {
       auto gpu = CreateDevice();// not ready (or failed): never wait for it
       mDevice = std::move(gpu.mDevice);
@@ -228,6 +313,7 @@ bool SettingsWindow::Create() {
   if (!mDevice) {
     return false;
   }
+  MarkOpening("device");
   HRESULT result = S_OK;
   winrt::com_ptr<IDXGIAdapter> adapter;
   winrt::com_ptr<IDXGIFactory2> factory;
@@ -248,9 +334,14 @@ bool SettingsWindow::Create() {
   if (!CreateTarget()) {
     return false;
   }
+  MarkOpening("swapchain");
 
-  // One ImGui context, for this thread only (ADR-020)
-  mImGui = ImGui::CreateContext();
+  // One ImGui context, for this thread only (ADR-020), with our atlas
+  if (!mAtlas) {
+    mAtlas = std::make_shared<ImFontAtlas>();// built on the first frame
+    mAtlasScale = 0;
+  }
+  mImGui = ImGui::CreateContext(mAtlas.get());
   ImGui::SetCurrentContext(mImGui);
   auto& io = ImGui::GetIO();
   io.IniFilename = nullptr;// nothing written next to the exe
@@ -263,7 +354,12 @@ bool SettingsWindow::Create() {
     Log::Warning("Settings window: Dear ImGui didn't start");
     return false;
   }
+  MarkOpening("Dear ImGui");
 
+  // The first frame before the window shows, so it appears with it.
+  // Showing it waits for Windows to set up text input for this thread
+  // (about 10 ms, the first time), and WM_PAINT comes later still.
+  Paint();
   ShowWindow(mWindow, SW_SHOWNORMAL);
   SetForegroundWindow(mWindow);
   KeepPainting(TailFrames);
@@ -284,7 +380,7 @@ void SettingsWindow::Destroy() {
   }
   mRendererReady = false;
   mPlatformReady = false;
-  mFonts = {};
+  // mFonts stay: they live in mAtlas, which is kept for next time
   mTarget = nullptr;
   mSwapchain = nullptr;// before its window goes
   if (mContext) {
@@ -409,6 +505,13 @@ LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
       KeepPainting(TailFrames);
       return 0;
     }
+    case WM_SYSCOMMAND:
+      // Alt on its own (the fine-drag key) would open the window menu when
+      // released. Alt+Space and Alt+F4 still work.
+      if ((wParam & 0xFFF0) == SC_KEYMENU && lParam == 0) {
+        return 0;
+      }
+      break;
     case WM_GETMINMAXINFO: {
       auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
       info->ptMinTrackSize = {std::lround(MinWidth * mScale), std::lround(MinHeight * mScale)};
@@ -441,13 +544,26 @@ void SettingsWindow::Paint() {
     return;
   }
   ImGui::SetCurrentContext(mImGui);
+  MarkOpening("waiting to paint");
   if (mRebuildFonts) {
     UiTheme::Apply(mScale);
-    mFonts = UiTheme::LoadFonts(mScale);
-    ImGui_ImplDX11_InvalidateDeviceObjects();// the next frame rebuilds the font texture
+    auto& io = ImGui::GetIO();
+    if (mAtlasScale != mScale) {
+      // Another scale than the atlas has (another monitor): rebuilt here
+      mFonts = UiTheme::LoadFonts(*io.Fonts, mScale);
+      mAtlasScale = mScale;
+      ImGui_ImplDX11_InvalidateDeviceObjects();// the next frame rebuilds the font texture
+      MarkOpening("fonts");
+    }
+    io.FontDefault = mFonts.mBody;
     mRebuildFonts = false;
   }
+  if (!ImGui::GetIO().Fonts->IsBuilt()) {
+    ImGui::GetIO().Fonts->Build();// done by the next call anyway; here it's timed
+    MarkOpening("font atlas");
+  }
   ImGui_ImplDX11_NewFrame();
+  MarkOpening("shaders and font texture");
   ImGui_ImplWin32_NewFrame();
   ImGui::NewFrame();
   BuildUi();
@@ -471,12 +587,14 @@ void SettingsWindow::Paint() {
     }
   }
 
+  MarkOpening("drawing");
   const HRESULT result = mSwapchain->Present(1, 0);
   if (!mFirstPaintLogged) {
     // Doc 08: opening the window takes at most 50 ms
+    MarkOpening("present");
     mFirstPaintLogged = true;
-    Log::Info("Settings window: first frame {} ms after opening",
-      std::chrono::duration_cast<std::chrono::milliseconds>(TimeUtil::Now() - mOpenedAt).count());
+    mOpeningMs = std::chrono::duration_cast<std::chrono::milliseconds>(TimeUtil::Now() - mOpenedAt).count();
+    Log::Info("Settings window: first frame {} ms after opening ({})", mOpeningMs, mOpeningParts);
   }
   if (result == DXGI_STATUS_OCCLUDED) {
     mOccluded = true;
@@ -521,8 +639,8 @@ void SettingsWindow::OnScreenshotTimer(UINT_PTR timer) {
       "Settings window: {} paints and {} input messages (last {:#x}) in the idle second", idlePaints, inputs, mLastInput);
     auto report = *mScreenshot;
     report += L".idle.txt";
-    std::ofstream {report} << std::format("idle paints: {}\ninput messages: {} (last {:#x})\n", idlePaints, inputs,
-      mLastInput);
+    std::ofstream {report} << std::format("idle paints: {}\ninput messages: {} (last {:#x})\nopened in: {} ms\n",
+      idlePaints, inputs, mLastInput, mOpeningMs);
     PostQuitMessage(0);
   }
 }
@@ -699,45 +817,66 @@ void SettingsWindow::PanelDetails(PanelDefinition panel) {
   }
 
   ImGui::SeparatorText("Where it is");
-  ImGui::TextDisabled("From where your head was when you last recentered. Ctrl+click a slider to type.");
-  changed |= ImGui::SliderFloat("Left / right", &panel.mPosition[0], -2.0f, 2.0f, "%.2f m", Clamp);
-  changed |= ImGui::SliderFloat("Down / up", &panel.mPosition[1], -1.5f, 1.5f, "%.2f m", Clamp);
+  ImGui::TextDisabled("From where your head was when you last recentered.");
+  ImGui::TextDisabled("Drag a number left or right. Shift: faster. Alt: finer. Double-click: type.");
+  changed |= DragCentimetres("Left / right", &panel.mPosition[0], -500.0f, 500.0f);
+  changed |= DragCentimetres("Down / up", &panel.mPosition[1], -300.0f, 300.0f);
   float distance = -panel.mPosition[2];
-  if (ImGui::SliderFloat("Distance", &distance, 0.2f, 3.0f, "%.2f m", Clamp)) {
+  if (DragCentimetres("Distance", &distance, 10.0f, 1000.0f)) {
     panel.mPosition[2] = -distance;
     changed = true;
   }
-  changed |= ImGui::SliderFloat("Width", &panel.mWidthMeters, 0.1f, 2.0f, "%.2f m", Clamp);
+  changed |= DragCentimetres("Width", &panel.mWidthMeters, 5.0f, 500.0f);
+  Help("Its height follows the window's shape.");
   bool faceMe = panel.mFaceOrigin;
-  if (ImGui::Checkbox("Turn to face me", &faceMe)) {
+  if (ImGui::Checkbox("Face me", &faceMe)) {
     if (!faceMe) {
       // Start from the way it faces now, so it doesn't jump
-      panel.mYawDegrees
-        = std::atan2(-panel.mPosition[0], -panel.mPosition[2]) * 180.0f / std::numbers::pi_v<float>;
+      const auto facing = FacingOrigin(panel.mPosition);
+      panel.mYawDegrees = facing.mYawDegrees;
+      panel.mPitchDegrees = facing.mPitchDegrees;
     }
     panel.mFaceOrigin = faceMe;
     changed = true;
   }
+  Help("Turns and tilts the panel toward your head wherever you put it. Untick it to set the angles yourself.");
   if (!panel.mFaceOrigin) {
-    changed |= ImGui::SliderFloat("Turn", &panel.mYawDegrees, -180.0f, 180.0f, "%.0f\xC2\xB0", Clamp);
+    changed |= DragDegrees("Turn", &panel.mYawDegrees, -180.0f, 180.0f, Clamp | ImGuiSliderFlags_WrapAround);
     Help("Positive turns it to its left.");
+    changed |= DragDegrees("Tilt", &panel.mPitchDegrees, -90.0f, 90.0f);
+    Help("Positive tilts its top away from you, so it faces up: for a panel below your eyes.");
   }
 
   if (isWindow) {
     ImGui::SeparatorText("Trim the edges");
-    float percent[4] {panel.mCrop.mLeft * 100, panel.mCrop.mTop * 100, panel.mCrop.mRight * 100, panel.mCrop.mBottom * 100};
-    constexpr const char* edges[4] {"Left edge", "Top edge", "Right edge", "Bottom edge"};
-    bool cropped = false;
-    for (int i = 0; i < 4; ++i) {
-      cropped |= ImGui::SliderFloat(edges[i], &percent[i], 0.0f, 45.0f, "%.0f%%", Clamp);
-      if (i == 0) {
-        Help("For title bars and toolbars the program draws inside its window. Windows' own frame is already trimmed.");
-      }
+    // In pixels of the window, so a trim stays on the title bar when the
+    // window is resized; each edge can go up to what the others leave
+    const auto window = mRenderer.UntrimmedSize(panel.mID);
+    const uint32_t width = window ? window->mWidth : 4000;
+    const uint32_t height = window ? window->mHeight : 4000;
+    const auto upTo = [](uint32_t size, uint32_t other) {
+      const uint32_t keep = std::min(size, Render::Crop::MinimumLeft);
+      return size > other + keep ? size - other - keep : 0u;
+    };
+    auto& crop = panel.mCrop;
+    changed |= DragPixels("Top edge", &crop.mTop, upTo(height, crop.mBottom));
+    Help("For title bars, tabs and toolbars the program draws inside its window. Windows' own frame is already trimmed.");
+    changed |= DragPixels("Bottom edge", &crop.mBottom, upTo(height, crop.mTop));
+    changed |= DragPixels("Left edge", &crop.mLeft, upTo(width, crop.mRight));
+    changed |= DragPixels("Right edge", &crop.mRight, upTo(width, crop.mLeft));
+    if (window) {
+      const auto kept = crop.Apply(*window);
+      ImGui::TextDisabled("The window is %u x %u pixels; %u x %u are shown.", window->mWidth, window->mHeight,
+        kept.mWidth, kept.mHeight);
+    } else {
+      ImGui::TextDisabled("The window's size shows here once the window is open.");
     }
-    if (cropped) {
-      panel.mCrop = Render::Crop {percent[0] / 100, percent[1] / 100, percent[2] / 100, percent[3] / 100}.Clamped();
+    ImGui::BeginDisabled(crop.IsEmpty());
+    if (ImGui::Button("Don't trim")) {
+      crop = {};
       changed = true;
     }
+    ImGui::EndDisabled();
   }
 
   ImGui::SeparatorText("Updates");

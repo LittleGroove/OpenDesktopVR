@@ -51,6 +51,20 @@ inline void Arm(State& state, Clock::time_point when) {
 }
 }// namespace Detail
 
+// A timer for the frame loop. High resolution where Windows has it (10 1803
+// and later): a default waitable timer fires only on the system tick
+// (15.6 ms), so "again in 2 ms" took a whole tick, and captured video drew
+// at about 17 frames a second against a cap of 30 (test round 5). Null on
+// failure.
+inline HANDLE CreateTimer(bool* highResolution = nullptr) noexcept {
+  constexpr DWORD HighResolution = 0x00000002;// CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+  HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, HighResolution, TIMER_ALL_ACCESS);
+  if (highResolution) {
+    *highResolution = timer != nullptr;
+  }
+  return timer ? timer : CreateWaitableTimerW(nullptr, FALSE, nullptr);
+}
+
 // The frame loop's waitable timer; nullptr when the loop stops
 inline void SetTimer(HANDLE timer) {
   auto& state = Detail::GetState();

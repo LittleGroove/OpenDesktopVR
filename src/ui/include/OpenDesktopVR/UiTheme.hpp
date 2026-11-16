@@ -7,6 +7,7 @@
 #pragma once
 
 struct ImFont;
+struct ImFontAtlas;
 
 namespace OpenDesktopVR::UiTheme {
 
@@ -20,7 +21,11 @@ struct Fonts {
   ImFont* mBody {nullptr};
   ImFont* mHeading {nullptr};
 };
+// Into the current context's atlas, made its default font
 Fonts LoadFonts(float dpiScale);
+// Into `atlas` (cleared first). An atlas needs no ImGui context, so it can
+// be built on another thread and shared with one later.
+Fonts LoadFonts(ImFontAtlas& atlas, float dpiScale);
 
 // Colours as ImGui wants them (0xAABBGGRR)
 unsigned int Color(unsigned int rgb, float alpha = 1.0f) noexcept;

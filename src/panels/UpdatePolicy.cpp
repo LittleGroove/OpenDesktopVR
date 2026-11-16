@@ -21,8 +21,8 @@ UpdateRateLimiter::UpdateRateLimiter(double maxPerSecond) noexcept {
 void UpdateRateLimiter::SetRate(double perSecond, double globalMaximum) noexcept {
   const double global = globalMaximum > 0 ? globalMaximum : DefaultMaxUpdatesPerSecond;
   mRate = std::clamp(perSecond > 0 ? perSecond : global, 0.1, global);
-  const auto period = std::chrono::duration_cast<TimeUtil::Duration>(std::chrono::duration<double>(1.0 / mRate));
-  mInterval = std::max<TimeUtil::Duration>(period - Slack, MinimumInterval);
+  mPeriod = std::chrono::duration_cast<TimeUtil::Duration>(std::chrono::duration<double>(1.0 / mRate));
+  mInterval = std::max<TimeUtil::Duration>(mPeriod - Slack, MinimumInterval);
 }
 
 bool UpdateRateLimiter::MayRender(TimeUtil::TimePoint now, bool structural) const noexcept {
@@ -35,7 +35,7 @@ void UpdateRateLimiter::Rendered(TimeUtil::TimePoint now) noexcept {
 }
 
 TimeUtil::TimePoint UpdateRateLimiter::NextAllowed() const noexcept {
-  return mHasRendered ? mLastRender + mInterval : TimeUtil::TimePoint {};
+  return mHasRendered ? mLastRender + mPeriod : TimeUtil::TimePoint {};
 }
 
 }// namespace OpenDesktopVR::Panels

@@ -76,6 +76,19 @@ PanelRing::~PanelRing() {
   }
 }
 
+PixelSize PanelRing::CapacityFor(PixelSize content, PixelSize current) noexcept {
+  // Direct3D 11's largest texture (16384) is a whole number of steps, so
+  // rounding up never passes it; larger content is refused before this
+  constexpr uint64_t Step = 256;
+  const auto grow = [](uint32_t wanted, uint32_t now) {
+    if (wanted <= now) {
+      return now;
+    }
+    return static_cast<uint32_t>((wanted + Step - 1) / Step * Step);
+  };
+  return {grow(content.mWidth, current.mWidth), grow(content.mHeight, current.mHeight)};
+}
+
 uint64_t PanelRing::Advance(uint32_t slot) noexcept {
   mNewestSlot = slot;
   return ++mFenceValue;

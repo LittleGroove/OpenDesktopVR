@@ -16,7 +16,10 @@
 // - the host's fence 100 ms late: frames keep the previous image, forced
 //   waits are a minority, and the game's CPU never waits (ADR-012);
 // - the host's GPU work never completing: no GPU wait at all (ADR-024);
-// - static panels: nothing copied while nothing changes (bench gate).
+// - static panels: nothing copied while nothing changes (bench gate);
+// - an exited host's block, held open by another viewer: never connected to
+//   (test round 5);
+// - panels resized every frame: no swapchain re-created (RN-7).
 
 #include "check.hpp"
 #include "fake-openxr.hpp"
@@ -33,6 +36,7 @@
 #include <chrono>
 #include <format>
 #include <functional>
+#include <set>
 #include <thread>
 
 using namespace OpenDesktopVR;
@@ -186,6 +190,58 @@ int main(int argc, char** argv) {
     const auto back = RunFrames(game, 10s, [] { return Quads() == 2; });
     Check(Quads() == 2, std::format("host restarted: panels back after {} frames", back.mFrames));
     Check(back.mMaxEndFrameMs < 10, std::format("re-attaching stayed cheap (max {:.2f} ms)", back.mMaxEndFrameMs));
+  });
+
+  Scenario("An exited host's block, held open by another viewer, is never connected to (test round 5)", [&] {
+    RunFrames(game, 3s, [] { return Quads() == 0; });
+    HostProcess host {L""};
+    RunFrames(game, 10s, [] { return Quads() == 2; });
+    // Another viewer (the mirror, in test round 5) keeps the block alive
+    SharedMemory::Status status {};
+    auto viewer = SharedMemory::Open(
+      SharedObjectName(SharedAbi::BlockObject, SharedAbi::AbiVersion), sizeof(SharedAbi::Block), status);
+    Check(viewer.IsValid(), "a second viewer has the block open");
+    std::this_thread::sleep_for(400ms);// the log is written in the background
+    const auto connects = CountInLayerLog("connected to the host app");
+    const auto failedOpens = CountInLayerLog("couldn't open panel");
+    host.Kill();
+    RunFrames(game, 3s, [] { return Quads() == 0; });
+    const auto run = RunFrames(game, 3500ms);// reconnects are tried every second
+    std::this_thread::sleep_for(400ms);
+    Check(Quads() == 0, "no panels");
+    Check(CountInLayerLog("connected to the host app") == connects, "no reconnect to the exited host");
+    Check(CountInLayerLog("couldn't open panel") == failedOpens, "no failed texture opens");
+    Check(run.mMaxEndFrameMs < 5, std::format("no stall (max {:.2f} ms)", run.mMaxEndFrameMs));
+  });
+
+  Scenario("Panels resized every frame keep their swapchains (RN-7)", [&] {
+    RunFrames(game, 3s, [] { return Quads() == 0; });
+    HostProcess host {L"--resizing-panels"};
+    RunFrames(game, 10s, [] { return Quads() == 2; });
+    RunFrames(game, 1s);// first frames, and the textures' first growth
+    const auto created = gRT.mSwapchainsCreated;
+    std::set<int32_t> widths;
+    bool withinImages = true;
+    const auto run = RunFrames(game, 2s, [&] {
+      for (const auto& quad: gRT.mLastQuads) {
+        const auto& rect = quad.subImage.imageRect;
+        widths.insert(rect.extent.width);
+        const auto images = gRT.mSwapchains.find(reinterpret_cast<uint64_t>(quad.subImage.swapchain));
+        if (images != gRT.mSwapchains.end() && !images->second.empty()) {
+          D3D11_TEXTURE2D_DESC desc {};
+          images->second.front()->GetDesc(&desc);
+          withinImages &= rect.offset.x == 0 && rect.offset.y == 0 && rect.extent.width > 0
+            && static_cast<UINT>(rect.extent.width) <= desc.Width && static_cast<UINT>(rect.extent.height) <= desc.Height;
+        }
+      }
+      return false;
+    });
+    Check(Quads() == 2, "both panels showing");
+    Check(widths.size() >= 3, std::format("the frames had different sizes ({} widths)", widths.size()));
+    Check(gRT.mSwapchainsCreated == created,
+      std::format("no swapchain created while they changed size ({})", gRT.mSwapchainsCreated - created));
+    Check(withinImages, "each quad shows the top-left part of its image, its frame's size");
+    Check(run.mMaxEndFrameMs < 5, std::format("no stall (max {:.2f} ms)", run.mMaxEndFrameMs));
   });
 
   Scenario("A version mismatch passes through, with one log line (SY-7)", [&] {

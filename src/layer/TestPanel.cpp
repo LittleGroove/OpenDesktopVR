@@ -70,7 +70,8 @@ bool TestPanel::Prepare(const std::optional<XrPosef>& head) noexcept {
 }
 
 bool TestPanel::Draw(ID3D11DeviceContext* context) noexcept {
-  return !mFailed && mSwapchain.Present(context, mTexture.get(), ContentKey);
+  return !mFailed
+    && mSwapchain.Present(context, mTexture.get(), ContentKey, mOptions.mPattern.mWidth, mOptions.mPattern.mHeight);
 }
 
 const XrCompositionLayerQuad* TestPanel::Quad() noexcept {

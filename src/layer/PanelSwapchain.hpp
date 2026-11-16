@@ -2,8 +2,9 @@
 // Copyright (c) 2026 Robert McGough. All rights reserved.
 //
 // One panel's OpenXR swapchain on D3D11 (ADR-016: one swapchain per panel).
-// - Created once; re-created only on a size change or after a failed image
-//   wait (XR-15).
+// - Created once, at the host's texture size; re-created only when that
+//   grows (RN-7) or after a failed image wait (XR-15). Each image holds a
+//   frame of any size up to it, top-left; the quad shows just that part.
 // - Tracks the "what's shown" key (SY-4): reset on (re)creation and before
 //   each draw, set only after a successful release. Unchanged content is
 //   never copied again; the runtime keeps showing the last released image.
@@ -33,10 +34,13 @@ class PanelSwapchain {
     return mSwapchain == XR_NULL_HANDLE || mNeedsRecreate || width != mWidth || height != mHeight;
   }
 
-  // Copies `source` (same format family) into a new image and releases it,
-  // tagging the image with `contentKey`. Call inside the private context
-  // state. False on failure; a failed wait schedules a re-create.
-  bool Present(ID3D11DeviceContext* context, ID3D11Texture2D* source, uint64_t contentKey) noexcept;
+  // Copies the top-left `contentWidth` x `contentHeight` of `source` (same
+  // format family; one more pixel each way where there's room, the host's
+  // transparent edge) into a new image and releases it, tagging the image
+  // with `contentKey`. Call inside the private context state. False on
+  // failure; a failed wait schedules a re-create.
+  bool Present(ID3D11DeviceContext* context, ID3D11Texture2D* source, uint64_t contentKey, uint32_t contentWidth,
+    uint32_t contentHeight) noexcept;
 
   XrSwapchain Handle() const noexcept {
     return mSwapchain;
@@ -57,6 +61,13 @@ class PanelSwapchain {
   uint64_t ImagesReleased() const noexcept {
     return mImagesReleased;
   }
+  // The size of the frame in the last released image (0 x 0 if none)
+  uint32_t ShownWidth() const noexcept {
+    return mShownWidth;
+  }
+  uint32_t ShownHeight() const noexcept {
+    return mShownHeight;
+  }
 
  private:
   void Destroy() noexcept;
@@ -70,6 +81,8 @@ class PanelSwapchain {
   uint32_t mHeight {0};
   bool mNeedsRecreate {false};
   uint64_t mShownKey {0};
+  uint32_t mShownWidth {0};
+  uint32_t mShownHeight {0};
   uint64_t mImagesReleased {0};
 };
 

@@ -4,6 +4,10 @@
 // The layer's once-a-minute stats line (LG-2, doc 03 step 6). Counting is
 // plain arithmetic on the frame thread; the line itself goes through the
 // non-blocking logger. One owner (the session), no locks.
+//
+// Doc 08's budget is 0.2 ms typical and 0.5 ms at the 99th percentile: the
+// line counts frames over 0.5 ms and says where the slowest one's time went
+// (test round 5 saw single frames of 22-27 ms with no way to tell why).
 #pragma once
 
 #include <OpenDesktopVR/Log.hpp>
@@ -15,12 +19,27 @@
 
 namespace OpenDesktopVR::Layer {
 
+// Where one frame's time went, in the parts that call out of the layer
+struct FrameCosts {
+  double mLinkMs {0};     // the host link: connecting, opening shared textures
+  double mSwapchainMs {0};// creating panel swapchains
+  double mImageMs {0};    // acquiring, waiting for, copying and releasing images
+};
+
 class LayerStats {
  public:
+  static constexpr double SlowFrameMs = 0.5;
+
   explicit LayerStats(TimeUtil::Duration period = std::chrono::seconds(60)) noexcept : mTimer(period) {
   }
 
-  void FrameDone(double cpuMs, bool zeroLayers, uint32_t panels, uint32_t dropped) noexcept {
+  void FrameDone(double cpuMs, bool zeroLayers, uint32_t panels, uint32_t dropped, const FrameCosts& costs = {}) noexcept {
+    if (cpuMs > SlowFrameMs) {
+      ++mSlowFrames;
+    }
+    if (cpuMs > mCpuMaxMs) {
+      mSlowest = costs;
+    }
     ++mFrames;
     mZeroLayerFrames += zeroLayers ? 1 : 0;
     mFramesWithPanels += panels > 0 ? 1 : 0;
@@ -68,7 +87,8 @@ class LayerStats {
     Log::Info(
       "{}: {} frames ({} with panels, {} with no game layers); images {} ({} from the slot before the newest); "
       "kept previous {}; forced waits {}; panels dropped {}; hand frames {} (coverage {:.1f}%); "
-      "CPU avg {:.3f} ms, max {:.3f} ms",
+      "CPU avg {:.3f} ms, max {:.3f} ms (host link {:.3f}, swapchain creation {:.3f}, images {:.3f}); "
+      "frames over {} ms: {}",
       title,
       mFrames,
       mFramesWithPanels,
@@ -81,7 +101,12 @@ class LayerStats {
       mHandFrames,
       mHandFrames ? 100.0 * mHandCoverage / static_cast<double>(mHandFrames) : 0.0,
       mCpuTotalMs / frames,
-      mCpuMaxMs);
+      mCpuMaxMs,
+      mSlowest.mLinkMs,
+      mSlowest.mSwapchainMs,
+      mSlowest.mImageMs,
+      SlowFrameMs,
+      mSlowFrames);
   }
 
  private:
@@ -89,6 +114,8 @@ class LayerStats {
     mFrames = mZeroLayerFrames = mFramesWithPanels = mPanelsDropped = 0;
     mImagesReleased = mKeptPrevious = mForcedWaits = mHandFrames = mPreviousSlot = 0;
     mHandCoverage = mCpuTotalMs = mCpuMaxMs = 0;
+    mSlowFrames = 0;
+    mSlowest = {};
   }
 
   TimeUtil::PeriodicTimer mTimer;
@@ -104,6 +131,8 @@ class LayerStats {
   double mHandCoverage {0};
   double mCpuTotalMs {0};
   double mCpuMaxMs {0};
+  uint64_t mSlowFrames {0};
+  FrameCosts mSlowest;// the parts of the frame that took mCpuMaxMs
   uint64_t mTotalFrames {0};
   double mTotalCpuMs {0};
 };

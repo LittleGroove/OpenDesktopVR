@@ -7,6 +7,7 @@
 
 #include <OpenDesktopVR/UpdatePolicy.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <format>
 
@@ -31,7 +32,8 @@ int main() {
     limiter.Rendered(t0);
     Check(!limiter.MayRender(t0 + 10ms), "10 ms later: postponed");
     Check(limiter.MayRender(t0 + 10ms, true), "a structural change bypasses the cap (RN-3)");
-    Check(limiter.NextAllowed() == t0 + limiter.Interval(), "postponed until the interval ends");
+    Check(limiter.NextAllowed() == t0 + limiter.Period(), "a postponed change wakes a whole period later");
+    Check(limiter.MayRender(t0 + limiter.Interval()), "but may render from 4 ms sooner (an early tick)");
     Check(limiter.MayRender(t0 + 5s), "after a pause: at once");
   });
 
@@ -73,6 +75,22 @@ int main() {
     }
     Check(renders >= 30 && renders <= 36, std::format("{} renders in 1.1 s", renders));
     Check(lastShown == 1000, std::format("the final change (t=1000 ms) was rendered (last shown {})", lastShown));
+  });
+
+  Scenario("An animated panel woken by a precise timer renders at its cap, not above (test round 5)", [] {
+    UpdateRateLimiter limiter;
+    const TimeUtil::TimePoint t0 {std::chrono::seconds(10)};
+    auto now = t0;
+    int renders = 0;
+    while (now < t0 + 2s) {
+      if (limiter.MayRender(now)) {
+        limiter.Rendered(now);
+        ++renders;
+      }
+      // The timer fires when asked, plus a little wake-up latency
+      now = std::max(limiter.NextAllowed(), now) + 300us;
+    }
+    Check(renders >= 58 && renders <= 61, std::format("{} renders in 2 s at a cap of 30/s", renders));
   });
 
   Scenario("A dirty flag is taken before drawing, so mid-render changes survive (RN-2)", [] {

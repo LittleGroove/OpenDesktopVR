@@ -22,9 +22,28 @@ bool PlausibleEntry(const SharedAbi::PanelEntry& entry) {
   const float w = entry.mSizeMeters[0];
   const float h = entry.mSizeMeters[1];
   return std::isfinite(w) && std::isfinite(h) && w > 0.01f && h > 0.01f && w < 50 && h < 50
-    && entry.mContentWidth > 0 && entry.mContentHeight > 0 && entry.mContentWidth <= 16384
-    && entry.mContentHeight <= 16384 && entry.mContentWidth <= entry.mTextureWidth
+    && entry.mContentWidth > 0 && entry.mContentHeight > 0 && entry.mTextureWidth <= 16384
+    && entry.mTextureHeight <= 16384 && entry.mContentWidth <= entry.mTextureWidth
     && entry.mContentHeight <= entry.mTextureHeight && entry.mCurrentSlot < SharedAbi::RingSlots;
+}
+
+struct Extent {
+  uint32_t mWidth {0};
+  uint32_t mHeight {0};
+};
+
+// The size of the frame in `slot` (untrusted: within the texture, or none)
+std::optional<Extent> SlotContent(const SharedAbi::PanelEntry& entry, uint32_t slot) {
+  const uint32_t w = entry.mSlotContentSize[slot][0];
+  const uint32_t h = entry.mSlotContentSize[slot][1];
+  if (w == 0 || h == 0 || w > entry.mTextureWidth || h > entry.mTextureHeight) {
+    return std::nullopt;
+  }
+  return Extent {w, h};
+}
+
+double MillisecondsSince(TimeUtil::TimePoint start) {
+  return TimeUtil::ToMilliseconds(TimeUtil::Now() - start);
 }
 
 }// namespace
@@ -92,16 +111,21 @@ bool HostPanels::Bring(
     record.mSwapchain = std::make_unique<PanelSwapchain>(mNext, mSession, mSwapchainFormat);
   }
   auto& swapchain = *record.mSwapchain;
-  const bool sizeChanged = swapchain.Width() != entry.mContentWidth || swapchain.Height() != entry.mContentHeight;
-  if (swapchain.NeedsCreate(entry.mContentWidth, entry.mContentHeight)) {
+  // The texture's size, not the frame's: it changes only when the content
+  // grows past it (RN-7)
+  const bool sizeChanged = swapchain.Width() != entry.mTextureWidth || swapchain.Height() != entry.mTextureHeight;
+  if (swapchain.NeedsCreate(entry.mTextureWidth, entry.mTextureHeight)) {
     if (!createBudget) {
       // One creation per frame; until then the old image (if any) stays up
       return swapchain.HasReleasedImage();
     }
     createBudget = false;
-  }
-  if (!swapchain.Ensure(entry.mContentWidth, entry.mContentHeight)) {
-    return false;
+    const auto start = TimeUtil::Now();
+    const bool created = swapchain.Ensure(entry.mTextureWidth, entry.mTextureHeight);
+    mCosts.mSwapchainMs += MillisecondsSince(start);
+    if (!created) {
+      return false;
+    }
   }
   if (sizeChanged) {
     record.mShownGeneration = 0;// a new swapchain shows nothing yet (SY-4)
@@ -144,9 +168,13 @@ bool HostPanels::Bring(
     const bool previousIsNewer = !shown || swapchain.ShownKey() < previousVersion;
     if (entry.mFenceValue >= 2 && completed >= entry.mFenceValue - 1 && previousVersion > 0 && previousIsNewer) {
       const uint32_t previousSlot = (entry.mCurrentSlot + SharedAbi::RingSlots - 1) % SharedAbi::RingSlots;
-      if (auto* previous = resources.mTextures[previousSlot].get()) {
+      const auto content = SlotContent(entry, previousSlot);
+      if (auto* previous = resources.mTextures[previousSlot].get(); previous && content) {
         const auto scope = mContextState.Enter(mContext);
-        if (swapchain.Present(mContext, previous, previousVersion)) {
+        const auto start = TimeUtil::Now();
+        const bool presented = swapchain.Present(mContext, previous, previousVersion, content->mWidth, content->mHeight);
+        mCosts.mImageMs += MillisecondsSince(start);
+        if (presented) {
           record.mShownGeneration = resources.mGeneration;
           record.mShownTextureGeneration = entry.mTextureGeneration;
           record.mLateSince.reset();
@@ -205,6 +233,7 @@ bool HostPanels::Bring(
   if (!source) {
     return false;
   }
+  const auto content = SlotContent(entry, entry.mCurrentSlot).value_or(Extent {entry.mContentWidth, entry.mContentHeight});
   {
     const auto scope = mContextState.Enter(mContext);
     if (wait) {
@@ -213,7 +242,10 @@ bool HostPanels::Bring(
       ++mCounters.mForcedWaits;
       mStats.ForcedWait();
     }
-    if (!swapchain.Present(mContext, source, entry.mContentVersion)) {
+    const auto start = TimeUtil::Now();
+    const bool presented = swapchain.Present(mContext, source, entry.mContentVersion, content.mWidth, content.mHeight);
+    mCosts.mImageMs += MillisecondsSince(start);
+    if (!presented) {
       return swapchain.HasReleasedImage();
     }
   }
@@ -226,10 +258,13 @@ bool HostPanels::Bring(
 }
 
 std::size_t HostPanels::Compose(TimeUtil::TimePoint now, std::span<ComposedPanel> out) noexcept {
+  mCosts = {};
   if (!IsUsable()) {
     return 0;
   }
+  const auto linkStart = TimeUtil::Now();
   mLink.Update(now);
+  mCosts.mLinkMs += MillisecondsSince(linkStart);
   if (mLink.IsConnected() != mWasConnected) {
     mWasConnected = mLink.IsConnected();
     mReportDue = mWasConnected;
@@ -245,7 +280,9 @@ std::size_t HostPanels::Compose(TimeUtil::TimePoint now, std::span<ComposedPanel
     if (!(entry.mFlags & SharedAbi::PanelFlags::Visible) || !PlausibleEntry(entry)) {
       continue;
     }
+    const auto openStart = TimeUtil::Now();
     const auto* resources = mLink.Resources(entry, budget);
+    mCosts.mLinkMs += MillisecondsSince(openStart);
     auto* record = RecordFor(entry.mPanelID);
     if (!resources || !record || !Bring(*record, entry, *resources, now, budget)) {
       continue;
@@ -258,13 +295,18 @@ std::size_t HostPanels::Compose(TimeUtil::TimePoint now, std::span<ComposedPanel
     quad.space = mLocalSpace;
     quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     quad.subImage.swapchain = record->mSwapchain->Handle();
-    quad.subImage.imageRect = {
-      {0, 0}, {static_cast<int32_t>(record->mSwapchain->Width()), static_cast<int32_t>(record->mSwapchain->Height())}};
+    // The shown frame's part of the image, and its aspect (it can be an
+    // older frame than the newest, of another size)
+    const auto& shown = *record->mSwapchain;
+    const auto shownWidth = shown.ShownWidth();
+    const auto shownHeight = shown.ShownHeight();
+    quad.subImage.imageRect = {{0, 0}, {static_cast<int32_t>(shownWidth), static_cast<int32_t>(shownHeight)}};
     quad.subImage.imageArrayIndex = 0;
     quad.pose = {
       {entry.mPose[3], entry.mPose[4], entry.mPose[5], entry.mPose[6]},
       {entry.mPose[0], entry.mPose[1], entry.mPose[2]}};
-    quad.size = {entry.mSizeMeters[0], entry.mSizeMeters[1]};
+    const float width = entry.mSizeMeters[0];
+    quad.size = {width, width * static_cast<float>(shownHeight) / static_cast<float>(shownWidth)};
     out[added++] = {&quad, 0, (entry.mFlags & SharedAbi::PanelFlags::Focused) != 0};
   }
   return added;

@@ -13,10 +13,12 @@
 
 #include <winrt/base.h>
 
+#include <algorithm>
 #include <array>
 #include <format>
 #include <mutex>
 #include <optional>
+#include <utility>
 
 namespace OpenDesktopVR::Host {
 
@@ -54,7 +56,13 @@ struct RenderLoop::Impl {
 
   std::thread mThread;
   HANDLE mStop {CreateEventW(nullptr, TRUE, FALSE, nullptr)};
-  HANDLE mTimer {CreateWaitableTimerW(nullptr, FALSE, nullptr)};
+  bool mHighResolutionTimer {false};
+  HANDLE mTimer {FrameWakeup::CreateTimer(&mHighResolutionTimer)};
+
+  // Each panel's content size before trimming, for the settings window;
+  // written on the render thread when it changes
+  mutable std::mutex mSizesMutex;
+  std::array<std::pair<uint64_t, Render::PixelSize>, SharedAbi::MaxPanels> mUntrimmedSizes {};
 
   mutable std::mutex mStatsMutex;
   RenderStats mStats;
@@ -91,6 +99,7 @@ struct RenderLoop::Impl {
   SharedAbi::PanelEntry EntryFor(const HostPanel& panel, bool visible) const;
   void IssueDueSignals(TimeUtil::TimePoint now);
   void WriteStatsLine();
+  void UpdateUntrimmedSizes();
 };
 
 RenderLoop::RenderLoop(RenderLoopOptions options, SourceFactory factory) : mImpl(std::make_unique<Impl>()) {
@@ -139,6 +148,26 @@ void RenderLoop::SetPanelsVisible(bool visible) noexcept {
 RenderStats RenderLoop::Stats() const noexcept {
   std::scoped_lock lock(mImpl->mStatsMutex);
   return mImpl->mStats;
+}
+
+std::optional<Render::PixelSize> RenderLoop::UntrimmedSize(uint64_t panelID) const noexcept {
+  std::scoped_lock lock(mImpl->mSizesMutex);
+  for (const auto& [id, size]: mImpl->mUntrimmedSizes) {
+    if (id == panelID && size.mWidth > 0 && size.mHeight > 0) {
+      return size;
+    }
+  }
+  return std::nullopt;
+}
+
+void RenderLoop::Impl::UpdateUntrimmedSizes() {
+  decltype(mUntrimmedSizes) sizes {};
+  for (std::size_t i = 0; i < mPanels.size() && i < sizes.size(); ++i) {
+    const auto& panel = *mPanels[i];
+    sizes[i] = {panel.mDefinition.mID, panel.mSource ? panel.mSource->UntrimmedSize() : Render::PixelSize {}};
+  }
+  std::scoped_lock lock(mSizesMutex);
+  mUntrimmedSizes = sizes;
 }
 
 void RenderLoop::Impl::MakeSource(HostPanel& panel) {
@@ -325,12 +354,22 @@ SharedAbi::PanelEntry RenderLoop::Impl::EntryFor(const HostPanel& panel, bool vi
   for (int i = 0; i < 4; ++i) {
     entry.mPose[3 + i] = orientation[i];
   }
+  const auto content = ring.ContentSize(ring.NewestSlot());
+  if (content.mWidth == 0 || content.mHeight == 0) {
+    entry.mFlags = 0;// nothing drawn yet
+    return entry;
+  }
   entry.mSizeMeters[0] = definition.mWidthMeters;
-  entry.mSizeMeters[1] = definition.mWidthMeters * static_cast<float>(ring.Height()) / static_cast<float>(ring.Width());
+  entry.mSizeMeters[1] = definition.mWidthMeters * static_cast<float>(content.mHeight) / static_cast<float>(content.mWidth);
   entry.mTextureWidth = ring.Width();
   entry.mTextureHeight = ring.Height();
-  entry.mContentWidth = ring.Width();
-  entry.mContentHeight = ring.Height();
+  entry.mContentWidth = content.mWidth;
+  entry.mContentHeight = content.mHeight;
+  for (uint32_t slot = 0; slot < SharedAbi::RingSlots; ++slot) {
+    const auto slotContent = ring.ContentSize(slot);
+    entry.mSlotContentSize[slot][0] = slotContent.mWidth;
+    entry.mSlotContentSize[slot][1] = slotContent.mHeight;
+  }
   entry.mTextureGeneration = panel.mTextureGeneration;
   entry.mTextureFormat = static_cast<uint32_t>(ring.Format());
   for (uint32_t slot = 0; slot < SharedAbi::RingSlots; ++slot) {
@@ -359,9 +398,13 @@ bool RenderLoop::Impl::RenderPanel(HostPanel& panel, TimeUtil::TimePoint now) {
   if (size.mWidth == 0 || size.mHeight == 0 || size.mWidth > 16384 || size.mHeight > 16384) {
     return false;
   }
-  if (!panel.mRing || panel.mRing->Width() != size.mWidth || panel.mRing->Height() != size.mHeight
-      || panel.mRing->Format() != mRingFormat) {
-    panel.mRing = Render::PanelRing::Create(*mGpu, size.mWidth, size.mHeight, mRingFormat);
+  // RN-7: the textures only grow. A smaller frame (a window made smaller, a
+  // new trim) uses their top-left part, so nothing is re-created here or in
+  // the game while you drag.
+  if (!panel.mRing || !panel.mRing->Fits(size) || panel.mRing->Format() != mRingFormat) {
+    const Render::PixelSize current = panel.mRing ? Render::PixelSize {panel.mRing->Width(), panel.mRing->Height()} : Render::PixelSize {};
+    const auto capacity = Render::PanelRing::CapacityFor(size, current);
+    panel.mRing = Render::PanelRing::Create(*mGpu, capacity.mWidth, capacity.mHeight, mRingFormat);
     if (!panel.mRing) {
       return false;
     }
@@ -372,7 +415,24 @@ bool RenderLoop::Impl::RenderPanel(HostPanel& panel, TimeUtil::TimePoint now) {
   auto* d2d = mGpu->D2D();
   d2d->SetTarget(ring.Target(slot));
   d2d->BeginDraw();
+  const auto w = static_cast<float>(size.mWidth);
+  const auto h = static_cast<float>(size.mHeight);
+  // One transparent pixel past the content's right and bottom edges: a
+  // compositor filtering at the edge blends with that, never with an older,
+  // larger frame left in the texture
+  const auto edgeW = static_cast<float>(std::min(size.mWidth + 1, ring.Width()));
+  const auto edgeH = static_cast<float>(std::min(size.mHeight + 1, ring.Height()));
+  for (const D2D1_RECT_F margin: {D2D1_RECT_F {w, 0, edgeW, edgeH}, D2D1_RECT_F {0, h, edgeW, edgeH}}) {
+    if (margin.right > margin.left && margin.bottom > margin.top) {
+      d2d->PushAxisAlignedClip(margin, D2D1_ANTIALIAS_MODE_ALIASED);
+      d2d->Clear(D2D1_COLOR_F {0, 0, 0, 0});
+      d2d->PopAxisAlignedClip();
+    }
+  }
+  // Sources draw only within the content (their Clear too)
+  d2d->PushAxisAlignedClip(D2D1_RECT_F {0, 0, w, h}, D2D1_ANTIALIAS_MODE_ALIASED);
   panel.mSource->Render(d2d, size, now);
+  d2d->PopAxisAlignedClip();
   const auto drawn = d2d->EndDraw();
   d2d->SetTarget(nullptr);
   if (FAILED(drawn)) {
@@ -383,6 +443,7 @@ bool RenderLoop::Impl::RenderPanel(HostPanel& panel, TimeUtil::TimePoint now) {
     return false;
   }
 
+  ring.SetContentSize(slot, size);
   if (mOptions.mFenceDelay > 0ms) {
     // Test only: announce the frame now, signal its fence later, while
     // rendering carries on, like a host whose GPU work is starved
@@ -448,6 +509,9 @@ void RenderLoop::Impl::WriteStatsLine() {
 }
 
 void RenderLoop::Impl::Main(const std::atomic<bool>& visible) {
+  if (!mHighResolutionTimer) {
+    Log::Warning("Frame timer: standard resolution (15.6 ms steps); panels may update less often than their cap");
+  }
   FrameWakeup::SetTimer(mTimer);
   EnsurePublisher(TimeUtil::Now());
   std::optional<LUID> adapter;
@@ -485,6 +549,7 @@ void RenderLoop::Impl::Main(const std::atomic<bool>& visible) {
           ThreadUtil::CatchAll("source maintenance", [&] { panel->mSource->Maintain(now); });
         }
       }
+      UpdateUntrimmedSizes();
     }
     if (!mGpu && !EnsureGpu(std::nullopt)) {
       continue;
@@ -567,6 +632,7 @@ void RenderLoop::Impl::Main(const std::atomic<bool>& visible) {
     }
     if (publish) {
       Publish(showing);
+      UpdateUntrimmedSizes();// a window resized, or a new panel's first frame
     }
     if (!mGpu) {
       FrameWakeup::RequestFrameSoon();

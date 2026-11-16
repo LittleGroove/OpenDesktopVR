@@ -87,6 +87,7 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
   };
   Image mShown;
   Image mCandidate;
+  Render::Crop mCrop;// the user's trim (CT-12), applied when drawing
   bool mShownNotDrawn {false};
   bool mComparing {false};
   winrt::com_ptr<ID3D11ComputeShader> mCompare;
@@ -102,12 +103,14 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
   mutable std::mutex mMutex;
   wgc::Direct3D11CaptureFrame mPending {nullptr};
   RECT mPendingCrop {};
-  Render::Crop mCrop;// guarded by mMutex
   winrt::Windows::Graphics::SizeInt32 mPoolSize {};
   std::atomic<bool> mActive {true};
   std::atomic<bool> mClosed {false};
   std::atomic<uint64_t> mArrived {0};
   std::atomic<uint64_t> mCopied {0};
+  // The client area's size in the newest frame, before trimming
+  std::atomic<uint32_t> mClientWidth {0};
+  std::atomic<uint32_t> mClientHeight {0};
 
   bool EnsureDevice() {
     if (mDevice) {
@@ -213,29 +216,24 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
       return;
     }
     ++mArrived;
-    if (!mActive) {
-      newest.Close();// hidden or unwatched: nothing copied (CP-5)
-      return;
-    }
     const auto size = newest.ContentSize();
     RECT crop {0, 0, size.Width, size.Height};
     if (const auto client = WindowUtil::ClientCropInFrame(mWindow, static_cast<uint32_t>(size.Width), static_cast<uint32_t>(size.Height))) {
       crop = *client;
     }
+    // Known even while nobody watches, for the settings window's trim
+    // ranges (set up at the desk, before the game starts)
+    mClientWidth = static_cast<uint32_t>(crop.right - crop.left);
+    mClientHeight = static_cast<uint32_t>(crop.bottom - crop.top);
+    if (!mActive) {
+      newest.Close();// hidden or unwatched: nothing copied (CP-5)
+      return;
+    }
+    // The whole client area is copied (CP-3); the user's trim is applied
+    // when drawing, so changing it shows at once, even if the window sends
+    // no new frame
     {
       std::scoped_lock lock(mMutex);
-      // The user's trim, on top of the client area (CT-12)
-      const auto w = static_cast<float>(crop.right - crop.left);
-      const auto h = static_cast<float>(crop.bottom - crop.top);
-      RECT trimmed {
-        crop.left + static_cast<LONG>(w * mCrop.mLeft),
-        crop.top + static_cast<LONG>(h * mCrop.mTop),
-        crop.right - static_cast<LONG>(w * mCrop.mRight),
-        crop.bottom - static_cast<LONG>(h * mCrop.mBottom),
-      };
-      if (trimmed.right - trimmed.left >= 1 && trimmed.bottom - trimmed.top >= 1) {
-        crop = trimmed;
-      }
       if (size.Width != mPoolSize.Width || size.Height != mPoolSize.Height) {
         pool.Recreate(mDevice, Format, 2, size);// the window was resized
         mPoolSize = size;
@@ -249,8 +247,17 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
     mMarkDirty();
   }
 
+  // The part of the shown image that's drawn: the client area, trimmed
+  Render::PixelRect Kept() const {
+    return mCrop.Apply(mShown.mSize);
+  }
+
   Render::PixelSize Size() const {
-    return mShown.mTexture ? mShown.mSize : WaitingSize;
+    if (!mShown.mTexture) {
+      return WaitingSize;
+    }
+    const auto kept = Kept();
+    return {kept.mWidth, kept.mHeight};
   }
 
   bool EnsureImage(Image& image, Render::PixelSize size) {
@@ -425,9 +432,12 @@ void WindowCaptureSource::Render(ID2D1DeviceContext2* context, Render::PixelSize
   }
   if (shown.mBitmap) {
     const D2D1_RECT_F destination {0, 0, static_cast<float>(size.mWidth), static_cast<float>(size.mHeight)};
-    const bool exact = shown.mSize == size;
+    const auto kept = state.Kept();
+    const D2D1_RECT_F source {static_cast<float>(kept.mLeft), static_cast<float>(kept.mTop),
+      static_cast<float>(kept.mLeft + kept.mWidth), static_cast<float>(kept.mTop + kept.mHeight)};
+    const bool exact = kept.mWidth == size.mWidth && kept.mHeight == size.mHeight;
     context->DrawBitmap(shown.mBitmap.get(), &destination, 1.0f,
-      exact ? D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR : D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr);
+      exact ? D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR : D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, &source);
     state.mShownNotDrawn = false;
   } else {
     state.DrawWaiting(context, size);
@@ -448,8 +458,11 @@ void WindowCaptureSource::SetActive(bool active) {
 }
 
 void WindowCaptureSource::SetCrop(const Render::Crop& crop) {
-  std::scoped_lock lock(mState->mMutex);
-  mState->mCrop = crop.Clamped();
+  mState->mCrop = crop;// render thread, like Size() and Render()
+}
+
+Render::PixelSize WindowCaptureSource::UntrimmedSize() const {
+  return {mState->mClientWidth.load(), mState->mClientHeight.load()};
 }
 
 void WindowCaptureSource::Maintain(TimeUtil::TimePoint now) {

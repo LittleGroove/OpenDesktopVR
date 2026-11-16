@@ -9,6 +9,8 @@
 //   the render loop (CP-2); the frame is copied on the render thread, client
 //   area only (CP-3), and compared on the GPU with the frame shown: an
 //   identical frame is dropped (Windows 10 sends some; test round 4);
+// - the user's trim (CT-12, in pixels) is applied when drawing, so a new
+//   trim shows at once, without waiting for the window to send a frame;
 // - inactive (hidden, or nobody watching): frames are dropped, the session
 //   stays, so showing again is instant (CP-5);
 // - frame-pool resize on a content-size change; captured cursor off; the
@@ -41,6 +43,7 @@ class WindowCaptureSource final : public Render::ContentSource {
   void Render(ID2D1DeviceContext2* context, Render::PixelSize size, TimeUtil::TimePoint now) override;
   void SetActive(bool active) override;
   void SetCrop(const Render::Crop& crop) override;
+  Render::PixelSize UntrimmedSize() const override;
   void Maintain(TimeUtil::TimePoint now) override;
   std::wstring Describe() const override;
 

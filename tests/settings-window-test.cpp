@@ -4,8 +4,9 @@
 // The desktop settings window (M3b; ADR-020, ADR-023, RN-12): the real host,
 // as a test instance, opens its settings window, saves it as a PNG, then
 // stays idle for two seconds. Checks that it opens and quits cleanly, is
-// drawn in the product's theme, paints nothing while idle, and that the
-// window picker opens and gets its list from a worker thread.
+// drawn in the product's theme, paints nothing while idle, opens within
+// doc 08's 50 ms (DU-3) when opened as a user would, a moment after start,
+// and that the window picker opens and gets its list from a worker thread.
 //
 //   settings-window-test <host exe>
 
@@ -86,15 +87,22 @@ std::string ReadText(const std::wstring& path) {
   return text.str();
 }
 
-// Runs the host with a screenshot option; the image if it worked
-std::optional<ImageFile::Image> Screenshot(const std::wstring& option, const std::wstring& png) {
-  const auto run = RunHost(std::format(L"{} \"{}\"", option, png));
+// Runs the host with a screenshot option; the image if it worked. With
+// `delayMs`, the window opens that long after start (its device and fonts
+// are made by then, as when a user opens it), and its opening is timed.
+std::optional<ImageFile::Image> Screenshot(const std::wstring& option, const std::wstring& png, int delayMs = 0) {
+  const auto run = RunHost(std::format(L"{} \"{}\" --settings-delay {}", option, png, delayMs));
   Check(run.mExited && run.mExitCode == 0, "the host opened the window, saved it and quit cleanly");
-  // "idle paints: N", then "input messages: M (last 0x...)"
+  // "idle paints: N", "input messages: M (last 0x...)", "opened in: T ms"
   unsigned paints = ~0u;
   unsigned inputs = 0;
+  unsigned last = 0;
+  int opening = -1;
   const auto report = ReadText(png + L".idle.txt");
-  sscanf_s(report.c_str(), "idle paints: %u input messages: %u", &paints, &inputs);
+  sscanf_s(report.c_str(), "idle paints: %u input messages: %u (last %x) opened in: %d ms", &paints, &inputs, &last, &opening);
+  if (delayMs > 0) {
+    Check(opening >= 0 && opening <= 50, std::format("opened within 50 ms (DU-3, doc 08): {} ms", opening));
+  }
   if (inputs > 0) {
     std::printf("  (the mouse or keyboard was used in the idle second, so idle painting isn't judged)\n");
   }
@@ -118,7 +126,7 @@ int wmain(int argc, wchar_t** argv) {
   TempFolder folder;
 
   Scenario("The settings window opens, in the product's theme (ADR-023)", [&] {
-    const auto image = Screenshot(L"--settings-screenshot", folder.Path() + L"\\settings.png");
+    const auto image = Screenshot(L"--settings-screenshot", folder.Path() + L"\\settings.png", 1500);
     if (!image) {
       return;
     }

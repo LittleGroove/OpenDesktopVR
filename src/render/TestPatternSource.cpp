@@ -50,6 +50,15 @@ void TestPatternSource::CreateResources(ID2D1DeviceContext2* context) {
   mResourcesFor = context;
 }
 
+PixelSize TestPatternSource::Size() const {
+  if (!mOptions.mResizing) {
+    return mOptions.mSize;
+  }
+  // Cycles through four sizes, from full down to five eighths
+  const auto step = static_cast<uint32_t>(mFrames % 4);
+  return {mOptions.mSize.mWidth - step * mOptions.mSize.mWidth / 8, mOptions.mSize.mHeight - step * mOptions.mSize.mHeight / 8};
+}
+
 void TestPatternSource::Render(ID2D1DeviceContext2* context, PixelSize size, TimeUtil::TimePoint now) {
   if (mResourcesFor != context || !mBrush) {
     CreateResources(context);

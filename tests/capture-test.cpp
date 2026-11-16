@@ -225,6 +225,33 @@ int main(int argc, char** argv) {
     Check(resized, std::format("the panel follows: {}x{} (client {}x{})", size.mWidth, size.mHeight, client.right, client.bottom));
   });
 
+  Scenario("Pixel trims apply at once, with no new frame, and keep their pixels on a resize (CT-12)", [&] {
+    RenderAndSample(*gpu, source, 0, 0);// take anything pending
+    RECT client {};
+    GetClientRect(window, &client);
+    const auto copied = source.FramesCopied();
+    source.SetCrop({10, 40, 20, 5});
+    auto size = source.Size();
+    Check(size.mWidth == static_cast<uint32_t>(client.right) - 30 && size.mHeight == static_cast<uint32_t>(client.bottom) - 45,
+      std::format("trimmed at once: {}x{} (client {}x{})", size.mWidth, size.mHeight, client.right, client.bottom));
+    Check(source.FramesCopied() == copied, "without waiting for a new frame");
+    const auto untrimmed = source.UntrimmedSize();
+    Check(untrimmed.mWidth == static_cast<uint32_t>(client.right) && untrimmed.mHeight == static_cast<uint32_t>(client.bottom),
+      "the window's size before trimming is known (the settings window's ranges)");
+    Check(RenderAndSample(*gpu, source, 0, 0) != 0, "and draws");
+    SetWindowPos(window, nullptr, 0, 0, 700, 450, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    GetClientRect(window, &client);
+    const bool followed = WaitFor([&] {
+      source.Prepare();
+      size = source.Size();
+      return size.mWidth == static_cast<uint32_t>(client.right) - 30 && size.mHeight == static_cast<uint32_t>(client.bottom) - 45;
+    }, 5s);
+    Check(followed, std::format("resized: the same pixels trimmed ({}x{}, client {}x{})", size.mWidth, size.mHeight, client.right, client.bottom));
+    source.SetCrop({});
+    size = source.Size();
+    Check(size.mWidth == static_cast<uint32_t>(client.right), "untrimmed again at once");
+  });
+
   Scenario("Inactive: frames are dropped, nothing copied (CP-5)", [&] {
     RenderAndSample(*gpu, source, 0, 0);// take anything pending
     source.SetActive(false);

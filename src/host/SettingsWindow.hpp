@@ -8,9 +8,10 @@
 //
 // - Paints only in response to input, and for half a second after (hover
 //   and animation), at most 30 times a second; nothing while idle (RN-12).
-// - Opens within doc 08's 50 ms: its device is made on a worker thread at
-//   start and kept; its window, swapchain and ImGui context exist only
-//   while it's open.
+// - Opens within doc 08's 50 ms: its device and its fonts (at the main
+//   monitor's scale) are made on a worker thread at start and kept; its
+//   window, swapchain and ImGui context exist only while it's open, and its
+//   first frame is drawn before it shows.
 // - Window enumeration for the picker runs on a worker thread (ADR-020).
 // - Edits are addressed by panel ID and dropped if the panel is gone (DU-2),
 //   touch only that panel (ST-6), and save through the debounced store
@@ -39,6 +40,7 @@
 #include <string>
 #include <vector>
 
+struct ImFontAtlas;
 struct ImGuiContext;
 
 namespace OpenDesktopVR::Host {
@@ -60,9 +62,9 @@ class SettingsWindow {
 
   // Tests: half a second after opening (and once the picker, if asked for,
   // has its list), save the window as a PNG; then stay idle for two
-  // seconds, write how many times it painted in the second of those, and
-  // how many input messages it had then, to "<png>.idle.txt" (no paints is
-  // a pass: RN-12), and quit the host
+  // seconds, write how many times it painted in the second of those, how
+  // many input messages it had then, and how long it took to open, to
+  // "<png>.idle.txt" (no paints is a pass: RN-12), and quit the host
   void RequestScreenshot(std::filesystem::path path, bool withPicker);
 
  private:
@@ -72,6 +74,15 @@ class SettingsWindow {
   };
   // The default adapter, or WARP; empty if neither works
   static Gpu CreateDevice() noexcept;
+  // What the worker makes at start: the device, and the fonts for the main
+  // monitor's scale
+  struct Prepared {
+    Gpu mGpu;
+    std::shared_ptr<ImFontAtlas> mAtlas;
+    UiTheme::Fonts mFonts;
+    float mScale {0};
+  };
+  static Prepared Prepare() noexcept;
 
   static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
   LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam);
@@ -107,7 +118,7 @@ class SettingsWindow {
   HWND mWindow {nullptr};
   // Made in the background at start and kept while the host runs (an idle
   // device costs no CPU); the rest exists only while the window is open
-  ThreadUtil::BackgroundTask<Gpu> mDeviceTask;
+  ThreadUtil::BackgroundTask<Prepared> mPrepareTask;
   winrt::com_ptr<ID3D11Device> mDevice;
   winrt::com_ptr<ID3D11DeviceContext> mContext;
   winrt::com_ptr<IDXGISwapChain1> mSwapchain;
@@ -117,6 +128,10 @@ class SettingsWindow {
   bool mRendererReady {false};// ImGui's D3D11 backend
   int mDeviceLosses {0};
   UiTheme::Fonts mFonts;
+  // The fonts' atlas, shared with the ImGui context and kept between opens;
+  // built for mAtlasScale (0: not built yet)
+  std::shared_ptr<ImFontAtlas> mAtlas;
+  float mAtlasScale {0};
   float mScale {1.0f};
   bool mRebuildFonts {false};
   bool mOccluded {false};
@@ -148,6 +163,12 @@ class SettingsWindow {
   uint64_t mIdleStartPaints {0};
   TimeUtil::TimePoint mOpenedAt {};
   bool mFirstPaintLogged {false};
+  // Where opening's time went, for the first-frame log line (doc 08's
+  // 50 ms: test round 5 measured 102-117 ms on its PC, 36-38 ms here)
+  void MarkOpening(const char* part);
+  TimeUtil::TimePoint mOpeningMark {};
+  std::string mOpeningParts;
+  int64_t mOpeningMs {-1};
   // Input and WM_PAINT messages, and the last of them, so the idle check
   // can tell its own painting from a mouse moved over the window
   uint64_t mInputs {0};

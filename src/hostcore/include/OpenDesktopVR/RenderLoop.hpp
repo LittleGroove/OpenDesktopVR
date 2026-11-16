@@ -11,6 +11,7 @@
 //   tells sources to stop producing frames (CP-5);
 // - about once a second: follows the game's adapter and panel format,
 //   maintains sources (re-finding windows), retries shared memory (SY-8);
+// - ring textures only grow (RN-7); each frame says how much of them it uses;
 // - panels can be replaced at any time from any thread (SetPanels); a panel
 //   whose content is unchanged keeps its source;
 // - writes a stats line every 60 s (LG-2).
@@ -23,6 +24,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -85,6 +87,10 @@ class RenderLoop {
   }
 
   RenderStats Stats() const noexcept;
+
+  // A panel's content size before trimming (a window's client area), for
+  // the settings window's trim ranges; nullopt while unknown. Any thread.
+  std::optional<Render::PixelSize> UntrimmedSize(uint64_t panelID) const noexcept;
 
  private:
   struct Impl;

@@ -53,16 +53,36 @@ uint64_t NewPanelID() noexcept {
   return id;
 }
 
+namespace {
+constexpr float DegreesPerRadian = 180.0f / std::numbers::pi_v<float>;
+}
+
+Facing FacingOrigin(const float position[3]) noexcept {
+  // Toward the origin: turned by the horizontal direction, tilted by the
+  // vertical one (a panel below the eyes faces up)
+  const float horizontal = std::sqrt(position[0] * position[0] + position[2] * position[2]);
+  return {
+    std::atan2(-position[0], -position[2]) * DegreesPerRadian,
+    std::atan2(-position[1], horizontal) * DegreesPerRadian,
+  };
+}
+
 void PanelOrientation(const PanelDefinition& definition, float out[4]) noexcept {
-  // Yaw 0 faces +Z (toward a viewer at the origin looking down -Z)
-  float yaw = definition.mYawDegrees * std::numbers::pi_v<float> / 180.0f;
-  if (definition.mFaceOrigin) {
-    yaw = std::atan2(-definition.mPosition[0], -definition.mPosition[2]);
-  }
-  out[0] = 0;
-  out[1] = std::sin(yaw / 2);
-  out[2] = 0;
-  out[3] = std::cos(yaw / 2);
+  // Yaw 0, pitch 0 faces +Z (toward a viewer at the origin looking down -Z)
+  const auto facing = definition.mFaceOrigin ? FacingOrigin(definition.mPosition)
+                                             : Facing {definition.mYawDegrees, definition.mPitchDegrees};
+  const float yaw = facing.mYawDegrees / DegreesPerRadian;
+  // A rotation of -pitch about +X turns the +Z normal up for a positive pitch
+  const float pitch = -facing.mPitchDegrees / DegreesPerRadian;
+  // Turn about Y, then tilt about the panel's own X: q = qYaw * qPitch
+  const float sy = std::sin(yaw / 2);
+  const float cy = std::cos(yaw / 2);
+  const float sx = std::sin(pitch / 2);
+  const float cx = std::cos(pitch / 2);
+  out[0] = cy * sx;
+  out[1] = sy * cx;
+  out[2] = -sy * sx;
+  out[3] = cy * cx;
 }
 
 }// namespace OpenDesktopVR::Host

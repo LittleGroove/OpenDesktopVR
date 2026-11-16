@@ -53,6 +53,8 @@ add_test(NAME layer-dll-test COMMAND layer-dll-test $<TARGET_FILE:${ODVR_LAYER_F
 # Shared-memory ABI and panel policies (M2)
 odvr_test(shared-abi-test SOURCES shared-abi-test.cpp DEPS odvr::xrshared)
 odvr_test(panels-test SOURCES panels-test.cpp DEPS odvr::panels)
+# The host's panel model: trims, facing, the settings format, ring growth (M3b)
+odvr_test(hostcore-test SOURCES hostcore-test.cpp DEPS odvr::hostcore)
 
 # M2 end to end: the real host (child processes) and the real layer DLL
 odvr_executable(host-layer-test SOURCES host-layer-test.cpp DEPS odvr::xrshared odvr::core odvr::openxr_headers odvr::cppwinrt d3d11 winmm)

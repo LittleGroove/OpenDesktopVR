@@ -7,9 +7,13 @@
 // - one shared fence, signalled with a new value per frame and flushed at
 //   once (SY-3);
 // - the host draws into the slot after the newest, so the layer can still
-//   copy the newest (and the one before) while the next is drawn (SY-5).
+//   copy the newest (and the one before) while the next is drawn (SY-5);
+// - textures only grow (RN-7): a smaller frame uses the top-left part, and
+//   each slot remembers its frame's size, so resizing or trimming a window
+//   re-creates nothing here or in the game.
 #pragma once
 
+#include <OpenDesktopVR/ContentSource.hpp>
 #include <OpenDesktopVR/GpuDevice.hpp>
 
 #include <array>
@@ -24,6 +28,15 @@ class PanelRing {
 
   // Null on failure (logged). `format` is B8G8R8A8_UNORM or R8G8B8A8_UNORM
   static std::unique_ptr<PanelRing> Create(GpuDevice& gpu, uint32_t width, uint32_t height, DXGI_FORMAT format) noexcept;
+
+  // The texture size for content of `size`, given the current one (0 x 0 if
+  // none): never smaller than the current size, and rounded up to a step,
+  // so a window dragged larger re-creates the ring every 256 pixels, not
+  // every pixel
+  static PixelSize CapacityFor(PixelSize content, PixelSize current) noexcept;
+  bool Fits(PixelSize content) const noexcept {
+    return content.mWidth <= mWidth && content.mHeight <= mHeight;
+  }
   ~PanelRing();
   PanelRing(const PanelRing&) = delete;
   PanelRing& operator=(const PanelRing&) = delete;
@@ -47,6 +60,14 @@ class PanelRing {
   // The two halves of Finish, for the late-fence test only: a frame is
   // announced (Advance) and its fence signalled later (Signal)
   uint64_t Advance(uint32_t slot) noexcept;
+
+  // The size of the frame drawn into `slot` (top-left); 0 x 0 until drawn
+  void SetContentSize(uint32_t slot, PixelSize size) noexcept {
+    mContentSizes[slot % Slots] = size;
+  }
+  PixelSize ContentSize(uint32_t slot) const noexcept {
+    return mContentSizes[slot % Slots];
+  }
   void Signal(ID3D11DeviceContext4* context, uint64_t value) noexcept;
 
   uint32_t NewestSlot() const noexcept {
@@ -81,6 +102,7 @@ class PanelRing {
   HANDLE mFenceHandle {nullptr};
   uint64_t mFenceValue {0};
   uint32_t mNewestSlot {Slots - 1};
+  std::array<PixelSize, Slots> mContentSizes {};
   uint32_t mWidth {0};
   uint32_t mHeight {0};
   DXGI_FORMAT mFormat {DXGI_FORMAT_UNKNOWN};

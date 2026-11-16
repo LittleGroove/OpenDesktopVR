@@ -22,16 +22,37 @@ struct PixelSize {
   bool operator==(const PixelSize&) const = default;
 };
 
-// How much of each edge to trim, as fractions of the content (CT-12):
-// frameless apps draw their own title bar inside the client area
+// A rectangle within the content, in pixels
+struct PixelRect {
+  uint32_t mLeft {0};
+  uint32_t mTop {0};
+  uint32_t mWidth {0};
+  uint32_t mHeight {0};
+  bool operator==(const PixelRect&) const = default;
+};
+
+// How many pixels to trim from each edge (CT-12): frameless apps draw their
+// own title bar inside the client area. Pixels, not fractions, so a trim
+// stays on the title bar when the window is resized (test round 5).
 struct Crop {
-  float mLeft {0};
-  float mTop {0};
-  float mRight {0};
-  float mBottom {0};
+  // Something is always left: at least this much each way, or all of it if
+  // the content is smaller
+  static constexpr uint32_t MinimumLeft = 16;
+  // Hand-edited files: anything larger is treated as this
+  static constexpr uint32_t MaximumEdge = 16384;
+
+  uint32_t mLeft {0};
+  uint32_t mTop {0};
+  uint32_t mRight {0};
+  uint32_t mBottom {0};
   bool operator==(const Crop&) const = default;
-  // Each edge at most 45%, so something is always left
-  Crop Clamped() const noexcept;
+  bool IsEmpty() const noexcept {
+    return mLeft == 0 && mTop == 0 && mRight == 0 && mBottom == 0;
+  }
+  // What's left of content of `size`. Trims that would leave less than
+  // MinimumLeft shrink in proportion, so a window made small keeps a sliver
+  // of the part you chose, not the part you trimmed.
+  PixelRect Apply(PixelSize size) const noexcept;
 };
 
 // Given to a source when it's made: call it, from any thread, when new
@@ -82,6 +103,12 @@ class ContentSource {
 
   // Trim the content's edges; sources that can't crop ignore it
   virtual void SetCrop(const Crop& /*crop*/) {
+  }
+
+  // The content's size before trimming (a window's client area), for the
+  // settings window's trim ranges; 0 x 0 while unknown. Any thread.
+  virtual PixelSize UntrimmedSize() const {
+    return {};
   }
 
   // A short state for logs and menus ("capturing", "waiting for Discord")

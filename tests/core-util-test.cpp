@@ -2,11 +2,12 @@
 // Copyright (c) 2026 Robert McGough. All rights reserved.
 //
 // Utility files: strings, files (atomic writes, ST-2), time, lock checks
-// (TH-2), the catch-all (TH-8) and product names.
+// (TH-2), the catch-all (TH-8), product names and the frame timer.
 
 #include "check.hpp"
 
 #include <OpenDesktopVR/FileUtil.hpp>
+#include <OpenDesktopVR/FrameWakeup.hpp>
 #include <OpenDesktopVR/Product.hpp>
 #include <OpenDesktopVR/StringUtil.hpp>
 #include <OpenDesktopVR/ThreadUtil.hpp>
@@ -213,6 +214,26 @@ int main() {
     other.join();
     Check(gViolations == 2, "different threads taking the same lock is not a violation");
     ThreadUtil::LockCheck::SetViolationHandler(nullptr);
+  });
+
+  Scenario("The frame timer wakes when asked, not on the next 15.6 ms tick (test round 5)", [] {
+    bool highResolution = false;
+    const HANDLE timer = FrameWakeup::CreateTimer(&highResolution);
+    Check(timer != nullptr && highResolution, "a high-resolution timer");
+    if (!timer) {
+      return;
+    }
+    // 20 waits of 2 ms; a tick-bound timer would average 8-16 ms
+    double total = 0;
+    for (int i = 0; i < 20; ++i) {
+      const auto start = TimeUtil::Now();
+      const LARGE_INTEGER due {.QuadPart = -20'000};// 2 ms, relative, in 100 ns
+      SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+      WaitForSingleObject(timer, 1000);
+      total += TimeUtil::ToMilliseconds(TimeUtil::Now() - start);
+    }
+    CloseHandle(timer);
+    Check(total / 20 < 5.0, std::format("2 ms waits took {:.2f} ms on average", total / 20));
   });
 
   return Finish();

@@ -30,12 +30,16 @@ struct PanelDefinition {
   bool mEnabled {true};
   // LOCAL space: seated, origin at the head when the view was last recentered
   float mPosition[3] {0, 0, -0.6f};
-  // Turned about the vertical axis; by default the panel faces the origin
+  // By default the panel faces the origin (turned and tilted toward it).
+  // Otherwise it's turned by mYawDegrees about the vertical axis (positive
+  // turns it to its left), then tilted by mPitchDegrees (positive tilts its
+  // top away, so it faces up: for a panel below the eyes).
   bool mFaceOrigin {true};
   float mYawDegrees {0};
+  float mPitchDegrees {0};
   float mWidthMeters {0.36f};// height follows the content's aspect
   double mMaxUpdatesPerSecond {0};// 0 = the global maximum
-  Render::Crop mCrop;// trimmed edges (CT-12)
+  Render::Crop mCrop;// trimmed edges in pixels (CT-12)
   // Fields this version doesn't know, kept for a newer one (ST-5)
   JsonUtil::Json mExtra;
 
@@ -69,6 +73,13 @@ std::vector<PanelDefinition> DefaultTestPanels();
 PanelDefinition NewWindowPanel(const WindowUtil::WindowInfo& window, std::size_t existingWindowPanels);
 
 uint64_t NewPanelID() noexcept;
+
+// The turn and tilt that face the origin from `position`, in degrees
+struct Facing {
+  float mYawDegrees {0};
+  float mPitchDegrees {0};
+};
+Facing FacingOrigin(const float position[3]) noexcept;
 
 // Orientation (x, y, z, w) for a definition
 void PanelOrientation(const PanelDefinition& definition, float out[4]) noexcept;

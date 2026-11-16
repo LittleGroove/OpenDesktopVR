@@ -23,7 +23,8 @@ namespace OpenDesktopVR::SharedAbi {
 
 inline constexpr uint32_t Magic = 0x5244444F;// "ODDR" little-endian: Open Desktop, data region
 // 2: the header's viewer heartbeat
-inline constexpr uint32_t AbiVersion = 2;
+// 3: each ring slot's content size; ring textures only grow (RN-7)
+inline constexpr uint32_t AbiVersion = 3;
 inline constexpr uint32_t MaxPanels = 16;
 inline constexpr uint32_t RingSlots = 3;
 
@@ -62,10 +63,13 @@ struct PanelEntry {
   uint64_t mFenceValue;
   // Pose in LOCAL space: position (x, y, z), orientation (x, y, z, w)
   float mPose[7];
-  float mSizeMeters[2];// width, height
-  uint32_t mTextureWidth; // ring texture size
+  float mSizeMeters[2];// width, height (the newest frame's aspect)
+  // Ring texture size. Textures only grow (RN-7): a smaller frame uses the
+  // top-left part, so resizing and trimming never re-create the textures or
+  // the layer's swapchain.
+  uint32_t mTextureWidth;
   uint32_t mTextureHeight;
-  uint32_t mContentWidth; // the part of the texture holding content (top-left)
+  uint32_t mContentWidth; // the newest frame's part of the texture (top-left)
   uint32_t mContentHeight;
   // Bumped when the ring's textures are re-created; layers re-open them
   uint32_t mTextureGeneration;
@@ -77,7 +81,10 @@ struct PanelEntry {
   // NT handle values, valid in the host process
   uint64_t mTextureHandles[RingSlots];
   uint64_t mFenceHandle;
-  uint8_t mReserved[64];
+  // Each slot's content size (width, height): a slot shown late can hold a
+  // frame of another size than the newest. 0 x 0 for a slot not drawn yet.
+  uint32_t mSlotContentSize[RingSlots][2];
+  uint8_t mReserved[64 - RingSlots * 8];
 };
 static_assert(sizeof(PanelEntry) == 192);
 static_assert(offsetof(PanelEntry, mTextureHandles) == 96);

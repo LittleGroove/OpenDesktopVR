@@ -6,6 +6,8 @@
 #include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/XrUtil.hpp>
 
+#include <algorithm>
+
 namespace OpenDesktopVR::Layer {
 
 PanelSwapchain::PanelSwapchain(const NextFunctions& next, XrSession session, DXGI_FORMAT format) noexcept
@@ -23,6 +25,8 @@ void PanelSwapchain::Destroy() noexcept {
     mSwapchain = XR_NULL_HANDLE;
   }
   mShownKey = 0;
+  mShownWidth = 0;
+  mShownHeight = 0;
 }
 
 bool PanelSwapchain::Ensure(uint32_t width, uint32_t height) noexcept {
@@ -76,8 +80,10 @@ bool PanelSwapchain::Ensure(uint32_t width, uint32_t height) noexcept {
   return true;
 }
 
-bool PanelSwapchain::Present(ID3D11DeviceContext* context, ID3D11Texture2D* source, uint64_t contentKey) noexcept {
-  if (mSwapchain == XR_NULL_HANDLE || !context || !source) {
+bool PanelSwapchain::Present(ID3D11DeviceContext* context, ID3D11Texture2D* source, uint64_t contentKey,
+  uint32_t contentWidth, uint32_t contentHeight) noexcept {
+  if (mSwapchain == XR_NULL_HANDLE || !context || !source || contentWidth == 0 || contentHeight == 0
+      || contentWidth > mWidth || contentHeight > mHeight) {
     return false;
   }
   mShownKey = 0;// a failed draw never counts as shown (SY-4)
@@ -96,7 +102,9 @@ bool PanelSwapchain::Present(ID3D11DeviceContext* context, ID3D11Texture2D* sour
     mNeedsRecreate = true;
     return false;
   }
-  const D3D11_BOX box {0, 0, 0, mWidth, mHeight, 1};
+  // The frame, and the host's transparent edge just past it where there's
+  // room: filtering at the quad's edge never reaches an older frame
+  const D3D11_BOX box {0, 0, 0, std::min(contentWidth + 1, mWidth), std::min(contentHeight + 1, mHeight), 1};
   context->CopySubresourceRegion(mImages[index].get(), 0, 0, 0, 0, source, 0, &box);
   const XrSwapchainImageReleaseInfo releaseInfo {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
   if (XR_FAILED(mNext.xrReleaseSwapchainImage(mSwapchain, &releaseInfo))) {
@@ -105,6 +113,8 @@ bool PanelSwapchain::Present(ID3D11DeviceContext* context, ID3D11Texture2D* sour
   }
   ++mImagesReleased;
   mShownKey = contentKey;
+  mShownWidth = contentWidth;
+  mShownHeight = contentHeight;
   return true;
 }
 

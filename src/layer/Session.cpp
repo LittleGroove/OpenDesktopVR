@@ -191,6 +191,7 @@ XrFrameEndInfo Session::Compose(const XrFrameEndInfo& game) noexcept {
   XrFrameEndInfo frame = game;
   uint32_t panelsComposed = 0;
   uint32_t panelsDropped = 0;
+  FrameCosts costs;
   const bool zeroLayers = game.layerCount == 0 || !game.layers;
 
   // XR-6: frames with no game layers pass through untouched
@@ -199,6 +200,7 @@ XrFrameEndInfo Session::Compose(const XrFrameEndInfo& game) noexcept {
       std::size_t panelCount = 0;
       if (mHostPanels) {
         panelCount += mHostPanels->Compose(start, {mPanels.data(), mPanels.size()});
+        costs = mHostPanels->LastFrameCosts();
         const bool reportNow = mHostPanels->TakeReportDue();
         if (mReportTimer.Due(start) || reportNow) {
           mReport.mFramesSinceAttach = mStats.TotalFrames();
@@ -248,7 +250,7 @@ XrFrameEndInfo Session::Compose(const XrFrameEndInfo& game) noexcept {
     }
   }
 
-  mStats.FrameDone(TimeUtil::ToMilliseconds(TimeUtil::Now() - start), zeroLayers, panelsComposed, panelsDropped);
+  mStats.FrameDone(TimeUtil::ToMilliseconds(TimeUtil::Now() - start), zeroLayers, panelsComposed, panelsDropped, costs);
   mStats.MaybeLog();
   return frame;
 }

@@ -3,8 +3,9 @@
 //
 // When a panel may render (doc 08 "Update-rate policy", ADR-013):
 // - content-driven: only dirty panels render (RN-1);
-// - at most `rate` times a second, with the interval 1/rate minus 4 ms so a
-//   slightly early tick doesn't slip a whole frame (RN-5);
+// - at most `rate` times a second: a postponed change wakes at 1/rate, and
+//   anything from 4 ms sooner is let through, so a slightly early tick or
+//   frame doesn't slip a whole interval (RN-5);
 // - the first change after a pause renders at once;
 // - changes that come sooner are postponed, never dropped: the caller keeps
 //   the panel dirty and wakes at NextAllowed();
@@ -32,18 +33,26 @@ class UpdateRateLimiter {
   double Rate() const noexcept {
     return mRate;
   }
+  // The shortest gap allowed between renders (1/rate minus the slack)
   TimeUtil::Duration Interval() const noexcept {
     return mInterval;
+  }
+  // 1/rate
+  TimeUtil::Duration Period() const noexcept {
+    return mPeriod;
   }
 
   bool MayRender(TimeUtil::TimePoint now, bool structural = false) const noexcept;
   void Rendered(TimeUtil::TimePoint now) noexcept;
-  // The earliest time a postponed change may render
+  // When to wake for a postponed change: a whole period after the last
+  // render. (Waking at the earliest allowed time ran a precise timer at
+  // 34 a second against a cap of 30.)
   TimeUtil::TimePoint NextAllowed() const noexcept;
 
  private:
   double mRate {DefaultMaxUpdatesPerSecond};
   TimeUtil::Duration mInterval {};
+  TimeUtil::Duration mPeriod {};
   TimeUtil::TimePoint mLastRender {};
   bool mHasRendered {false};
 };
