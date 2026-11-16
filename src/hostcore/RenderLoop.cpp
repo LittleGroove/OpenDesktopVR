@@ -197,6 +197,7 @@ void RenderLoop::Impl::MakeSource(HostPanel& panel) {
   });
   if (panel.mSource) {
     panel.mSource->SetCrop(panel.mDefinition.mCrop);
+    panel.mSource->SetKeepUpdatingWhenCovered(panel.mDefinition.mKeepUpdatingWhenCovered);
   }
   panel.mDirty->Mark(Panels::Dirty::Structural);
 }
@@ -230,10 +231,14 @@ void RenderLoop::Impl::ApplyPendingPanels() {
     const bool newContent = !panel || !panel->mDefinition.SameContent(definition);
     const bool newCrop = panel && !(panel->mDefinition.mCrop == definition.mCrop);
     const bool newLook = panel && !panel->mDefinition.SameLook(definition);
+    const bool newKeepUpdating = panel && panel->mDefinition.mKeepUpdatingWhenCovered != definition.mKeepUpdatingWhenCovered;
     if (!panel) {
       panel = std::make_unique<HostPanel>();
     }
     panel->mDefinition = std::move(definition);
+    if (newKeepUpdating && !newContent && panel->mSource) {
+      panel->mSource->SetKeepUpdatingWhenCovered(panel->mDefinition.mKeepUpdatingWhenCovered);
+    }
     panel->mLimiter.SetRate(panel->mDefinition.mMaxUpdatesPerSecond, mOptions.mGlobalMaxUpdatesPerSecond);
     if (newContent) {
       MakeSource(*panel);

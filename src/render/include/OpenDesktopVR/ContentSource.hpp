@@ -105,6 +105,11 @@ class ContentSource {
   virtual void SetCrop(const Crop& /*crop*/) {
   }
 
+  // Keep the content's app updating while other windows cover it (CT-3:
+  // the app helper, for captured windows); others ignore it. Render thread.
+  virtual void SetKeepUpdatingWhenCovered(bool /*keep*/) {
+  }
+
   // The content's size before trimming (a window's client area), for the
   // settings window's trim ranges; 0 x 0 while unknown. Any thread.
   virtual PixelSize UntrimmedSize() const {

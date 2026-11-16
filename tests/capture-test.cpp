@@ -244,7 +244,20 @@ int main(int argc, char** argv) {
   }
   const auto info = WindowUtil::Describe(window);
   std::atomic<int> dirty {0};
-  Capture::WindowCaptureSource source {*gpu, {WindowMatch::FromWindow(*info), L"Click target"}, [&] { ++dirty; }};
+  // The app helper's leases (CT-3), counted
+  int leases = 0;
+  int released = 0;
+  HWND leasedWindow = nullptr;
+  Capture::WindowCaptureOptions options {WindowMatch::FromWindow(*info), L"Click target"};
+  options.mKeepUpdating = [&](HWND leased) -> std::shared_ptr<void> {
+    ++leases;
+    leasedWindow = leased;
+    return {new int {0}, [&](void* lease) {
+      delete static_cast<int*>(lease);
+      ++released;
+    }};
+  };
+  Capture::WindowCaptureSource source {*gpu, std::move(options), [&] { ++dirty; }};
 
   Scenario("A window is found and captured, client area only (CP-3)", [&] {
     Check(WaitFor([&] { return source.FramesArrived() > 0; }, 5s, [&] { source.Maintain(TimeUtil::Now()); }), "frames arrive");
@@ -267,6 +280,19 @@ int main(int argc, char** argv) {
     const uint32_t r = (pixel >> 16) & 0xFF, g = (pixel >> 8) & 0xFF, b = pixel & 0xFF;
     Check(r == 30 && g == 34 && b == 44, std::format("the top-left pixel is the client area's colour, not the frame ({}, {}, {})", r, g, b));
     Check(source.FramesCopied() >= 1, "the frame was copied on the render thread");
+  });
+
+  Scenario("Keep updating when covered: asked for while capturing, if wanted (HK-1, CT-3)", [&] {
+    Check(leases == 0, "not until it's wanted");
+    source.SetKeepUpdatingWhenCovered(true);
+    Check(leases == 1 && leasedWindow == window, "wanted while capturing: asked for at once, for the captured window");
+    source.SetKeepUpdatingWhenCovered(true);
+    Check(leases == 1, "wanted again: still the one");
+    source.SetKeepUpdatingWhenCovered(false);
+    Check(released == 1, "turned off: let go, without restarting the capture");
+    Check(source.IsCapturing(), "still capturing");
+    source.SetKeepUpdatingWhenCovered(true);
+    Check(leases == 2 && released == 1, "on again: asked for again");
   });
 
   Scenario("An identical frame is dropped by the GPU check (test round 4)", [&] {
@@ -340,8 +366,10 @@ int main(int argc, char** argv) {
   Scenario("The window closes, then comes back: found again (CP-7)", [&] {
     target.Kill();
     Check(WaitFor([&] { return !source.IsCapturing(); }, 5s, [&] { source.Maintain(TimeUtil::Now()); }), "capture stops when the window closes");
+    Check(released == leases, "and the helper's lease is let go with it");
     Target again;
     Check(WaitFor([&] { return source.IsCapturing(); }, 8s, [&] { source.Maintain(TimeUtil::Now()); }), "capture restarts on the reopened window");
+    Check(leases == released + 1 && leasedWindow == again.Window(), "asked for again at capture start, for the new window (HK-1)");
     const auto arrived = source.FramesArrived();
     Check(WaitFor([&] { return source.FramesArrived() > arrived; }, 5s), "and frames arrive again");
   });

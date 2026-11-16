@@ -137,4 +137,37 @@ std::optional<bool> UacEnabled() noexcept {
   return value != 0;
 }
 
+std::filesystem::path ProcessImagePath(unsigned long processID) noexcept {
+  try {
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processID);
+    if (!process) {
+      return {};
+    }
+    wchar_t path[MAX_PATH * 2] {};
+    DWORD size = static_cast<DWORD>(std::size(path));
+    const bool ok = QueryFullProcessImageNameW(process, 0, path, &size);
+    CloseHandle(process);
+    return ok ? std::filesystem::path {std::wstring_view {path, size}} : std::filesystem::path {};
+  } catch (...) {
+    return {};
+  }
+}
+
+std::optional<bool> SameArchitecture(unsigned long processID) noexcept {
+  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processID);
+  if (!process) {
+    return std::nullopt;
+  }
+  USHORT theirs = IMAGE_FILE_MACHINE_UNKNOWN;
+  USHORT native = IMAGE_FILE_MACHINE_UNKNOWN;
+  const bool ok = IsWow64Process2(process, &theirs, &native);
+  CloseHandle(process);
+  if (!ok) {
+    return std::nullopt;
+  }
+  // UNKNOWN: not under WOW64, so the PC's own architecture; ours is x64 too
+  // unless we run under WOW64 ourselves, which a 64-bit build never does
+  return theirs == IMAGE_FILE_MACHINE_UNKNOWN && (native == IMAGE_FILE_MACHINE_AMD64 || sizeof(void*) == 4);
+}
+
 }// namespace OpenDesktopVR::ProcessUtil

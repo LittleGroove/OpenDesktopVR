@@ -25,6 +25,9 @@
 #include <OpenDesktopVR/GpuDevice.hpp>
 #include <OpenDesktopVR/WindowMatch.hpp>
 
+#include <Windows.h>
+
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -33,6 +36,10 @@ namespace OpenDesktopVR::Capture {
 struct WindowCaptureOptions {
   WindowMatch::Rule mRule;
   std::wstring mName;// shown while waiting for the window
+  // Keeps the window's app updating while covered (CT-3): called on the
+  // render thread when capture starts, if wanted; the window's app keeps
+  // updating while the result lives. Null: not available.
+  std::function<std::shared_ptr<void>(HWND window)> mKeepUpdating;
 };
 
 class WindowCaptureSource final : public Render::ContentSource {
@@ -46,6 +53,8 @@ class WindowCaptureSource final : public Render::ContentSource {
   void Render(ID2D1DeviceContext2* context, Render::PixelSize size, TimeUtil::TimePoint now) override;
   void SetActive(bool active) override;
   void SetCrop(const Render::Crop& crop) override;
+  // HK-1: from capture start (and while hidden: CP-5) until capture stops
+  void SetKeepUpdatingWhenCovered(bool keep) override;
   Render::PixelSize UntrimmedSize() const override;
   void Maintain(TimeUtil::TimePoint now) override;
   std::wstring Describe() const override;

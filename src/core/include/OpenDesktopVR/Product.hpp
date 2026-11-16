@@ -29,6 +29,8 @@ inline constexpr std::string_view TestPanelEnvVar = "OPENDESKTOPVR_TEST_PANEL";
 // The layer DLL and manifest file names
 inline constexpr std::wstring_view LayerDllName = L"" ODVR_LAYER_FILE_STEM ".dll";
 inline constexpr std::wstring_view LayerManifestName = L"" ODVR_LAYER_FILE_STEM ".json";
+// Loaded into captured apps that need it, next to the host's exe (doc 06)
+inline constexpr std::wstring_view AppHelperDllName = L"" ODVR_APP_HELPER_FILE_STEM ".dll";
 
 inline constexpr std::string_view Version = ODVR_VERSION;
 

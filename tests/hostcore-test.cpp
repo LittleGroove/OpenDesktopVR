@@ -281,6 +281,19 @@ int main() {
     Check(panel.IsPlain(false) && !panel.IsPlain(true), "plain until looked at, when the focused opacity applies");
   });
 
+  Scenario("Keep updating when covered: on by default, stored when off (CT-3, Q10)", [] {
+    auto panel = WindowPanel();
+    Check(panel.mKeepUpdatingWhenCovered, "a new window panel: on");
+    auto json = PanelConfig::ToJson(panel);
+    json.erase("keepUpdatingWhenCovered");
+    auto back = PanelConfig::FromJson(json);
+    Check(back && back->mKeepUpdatingWhenCovered, "a file from before M3d: on");
+    panel.mKeepUpdatingWhenCovered = false;
+    back = PanelConfig::FromJson(PanelConfig::ToJson(panel));
+    Check(back && !back->mKeepUpdatingWhenCovered, "turned off: read back off");
+    Check(back && back->SameContent(panel), "not part of the content: changing it doesn't restart the capture");
+  });
+
   Scenario("Keybinds are stored with the panel and in the global section (UI-2, UI-3)", [] {
     auto panel = WindowPanel();
     const auto f13 = Keybinds::Binding::From({Keybinds::Button {Keybinds::DeviceKind::Keyboard, {}, VK_F13}});

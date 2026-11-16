@@ -82,6 +82,9 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
   wgc::GraphicsCaptureItem::Closed_revoker mClosedRevoker;
   TimeUtil::TimePoint mNextAttempt {};
   std::wstring mStatus {L"starting"};
+  // The app helper's lease while capturing, if wanted (CT-3)
+  bool mKeepUpdatingWanted {false};
+  std::shared_ptr<void> mKeepUpdating;
   // The image shown, and a new frame being compared with it
   struct Image {
     winrt::com_ptr<ID3D11Texture2D> mTexture;
@@ -155,7 +158,18 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
     return true;
   }
 
+  // Asked for while capturing and wanted; let go otherwise
+  void UpdateKeepUpdating() {
+    const bool want = mKeepUpdatingWanted && mSession && mWindow && mOptions.mKeepUpdating;
+    if (want && !mKeepUpdating) {
+      mKeepUpdating = mOptions.mKeepUpdating(mWindow);
+    } else if (!want) {
+      mKeepUpdating.reset();
+    }
+  }
+
   void Stop() noexcept {
+    mKeepUpdating.reset();
     mFrameRevoker.revoke();
     mClosedRevoker.revoke();
     try {
@@ -579,6 +593,12 @@ void WindowCaptureSource::SetCrop(const Render::Crop& crop) {
   mState->mCrop = crop;// render thread, like Size() and Render()
 }
 
+void WindowCaptureSource::SetKeepUpdatingWhenCovered(bool keep) {
+  auto& state = *mState;// render thread, like Maintain()
+  state.mKeepUpdatingWanted = keep;
+  ThreadUtil::CatchAll("keep updating", [&] { state.UpdateKeepUpdating(); });
+}
+
 Render::PixelSize WindowCaptureSource::UntrimmedSize() const {
   return {mState->mClientWidth.load(), mState->mClientHeight.load()};
 }
@@ -604,6 +624,7 @@ void WindowCaptureSource::Maintain(TimeUtil::TimePoint now) {
     }
     if (state.Start(window->mWindow)) {
       state.mStatus = L"Capturing";
+      state.UpdateKeepUpdating();// HK-1: at capture start, never on first input
       // Elevated windows are a top support topic (CMP-8): log what we saw
       Log::Info(
         "Capture: started on '{}' (its process: {})",

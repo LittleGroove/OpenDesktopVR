@@ -9,6 +9,7 @@
 # Layout (inside the OpenDesktopVR/ folder of the zip):
 #   OpenDesktopVR-Layer.dll, OpenDesktopVR-Layer.json   the OpenXR layer
 #   OpenDesktopVR.exe                                    the host app (tray)
+#   OpenDesktopVR-AppHelper.dll                          loaded into captured apps that need it
 #   odvr-layer.exe                                       registration and settings
 #   install.cmd, uninstall.cmd, command-prompt.cmd       test-build helpers
 #   BUILD-INFO.txt                                       version, commit, date
@@ -25,6 +26,8 @@ install(
   COMPONENT product
 )
 install(TARGETS odvr-layer OpenDesktopVR RUNTIME DESTINATION . COMPONENT product)
+# Loaded by the host into captured apps that need it (doc 06), from next to its exe
+install(TARGETS ${ODVR_APP_HELPER_FILE_STEM} RUNTIME DESTINATION . COMPONENT product)
 # Until the real installer (M7): double-click install, uninstall and a
 # command prompt opened in the install folder
 install(

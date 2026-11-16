@@ -16,6 +16,7 @@ odvr_executable(
   odvr::hostcore
   odvr::keybinds
   odvr::capture
+  odvr::apphelperhost
   odvr::settings
   odvr::registration
   odvr::ui

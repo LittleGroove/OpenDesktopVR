@@ -22,6 +22,7 @@
 #include "KeybindService.hpp"
 #include "PanelManager.hpp"
 
+#include <OpenDesktopVR/AppHelperService.hpp>
 #include <OpenDesktopVR/RenderLoop.hpp>
 #include <OpenDesktopVR/ThreadUtil.hpp>
 #include <OpenDesktopVR/TimeUtil.hpp>
@@ -48,7 +49,8 @@ namespace OpenDesktopVR::Host {
 
 class SettingsWindow {
  public:
-  SettingsWindow(HINSTANCE instance, RenderLoop& renderer, PanelManager& panels, KeybindService& keybinds);
+  SettingsWindow(HINSTANCE instance, RenderLoop& renderer, PanelManager& panels, KeybindService& keybinds,
+    AppHelper::AppHelperService& appHelper);
   ~SettingsWindow();
   SettingsWindow(const SettingsWindow&) = delete;
   SettingsWindow& operator=(const SettingsWindow&) = delete;
@@ -129,6 +131,7 @@ class SettingsWindow {
   RenderLoop& mRenderer;
   PanelManager& mPanels;
   KeybindService& mKeybinds;
+  AppHelper::AppHelperService& mAppHelper;
   Events::Subscription mPanelsChanged;// repaints when keybinds hide panels
 
   // A keybind being set

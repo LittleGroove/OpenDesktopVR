@@ -48,6 +48,10 @@ struct PanelDefinition {
   float mBrightness {1.0f};    // 0.1 to 1
   bool mTintEnabled {false};
   uint32_t mTintColor {DefaultTintColor};// 0xRRGGBB
+  // Windows: a Chromium-based app or Firefox keeps updating while the game
+  // covers it, with the app helper loaded into it (CT-3, Q10, ADR-031). On
+  // by default; changing it doesn't restart the capture.
+  bool mKeepUpdatingWhenCovered {true};
   // Its keybinds (UI-3), indexed like Keybinds::PanelActions
   std::array<Keybinds::Slots, Keybinds::PanelActions.size()> mKeybinds {};
   // Fields this version doesn't know, kept for a newer one (ST-5)

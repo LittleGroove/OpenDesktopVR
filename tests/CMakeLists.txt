@@ -66,6 +66,25 @@ add_dependencies(host-layer-test ${ODVR_LAYER_FILE_STEM} OpenDesktopVR)
 add_test(NAME host-layer-test COMMAND host-layer-test $<TARGET_FILE:${ODVR_LAYER_FILE_STEM}> $<TARGET_FILE:OpenDesktopVR>)
 set_tests_properties(host-layer-test PROPERTIES TIMEOUT 180)
 
+# The app helper (M3d): against a test app that behaves like a Chromium app,
+# one module of which delay-loads user32
+add_library(apphelper-test-dll SHARED apphelper-test-dll.cpp)
+target_link_libraries(apphelper-test-dll PRIVATE user32 delayimp)
+target_link_options(apphelper-test-dll PRIVATE /DELAYLOAD:user32.dll)
+set_target_properties(apphelper-test-dll PROPERTIES FOLDER "tests")
+odvr_executable(apphelper-test-app WIN32 SOURCES apphelper-test-app.cpp DEPS apphelper-test-dll user32)
+target_include_directories(apphelper-test-app PRIVATE "${PROJECT_SOURCE_DIR}/tests/support")
+set_target_properties(apphelper-test-app PROPERTIES FOLDER "tests")
+odvr_test(apphelper-test NO_CTEST SOURCES apphelper-test.cpp DEPS odvr::apphelperhost odvr::importpatch odvr::apphelper_protocol)
+add_dependencies(apphelper-test apphelper-test-app)
+add_test(NAME apphelper-test COMMAND apphelper-test $<TARGET_FILE:apphelper-test-app>)
+set_tests_properties(apphelper-test PROPERTIES TIMEOUT 180)
+
+# The app helper with real browsers (M3d, CT-3): Firefox and Edge, each
+# skipped if not installed
+odvr_test(occlusion-test SOURCES occlusion-test.cpp DEPS odvr::apphelperhost)
+set_tests_properties(occlusion-test PROPERTIES TIMEOUT 240)
+
 # Window capture against a real window in another process (M3)
 odvr_test(capture-test NO_CTEST SOURCES capture-test.cpp DEPS odvr::capture)
 target_include_directories(capture-test PRIVATE "${PROJECT_SOURCE_DIR}/tests/support")

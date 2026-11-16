@@ -150,8 +150,9 @@ bool DragPixels(const char* label, uint32_t* pixels, uint32_t maximum) {
 
 }// namespace
 
-SettingsWindow::SettingsWindow(HINSTANCE instance, RenderLoop& renderer, PanelManager& panels, KeybindService& keybinds)
-  : mInstance(instance), mRenderer(renderer), mPanels(panels), mKeybinds(keybinds) {
+SettingsWindow::SettingsWindow(HINSTANCE instance, RenderLoop& renderer, PanelManager& panels, KeybindService& keybinds,
+  AppHelper::AppHelperService& appHelper)
+  : mInstance(instance), mRenderer(renderer), mPanels(panels), mKeybinds(keybinds), mAppHelper(appHelper) {
   mPanelsChanged = mPanels.Changed().Subscribe([this] { Invalidate(); });
   WNDCLASSEXW windowClass {sizeof(windowClass)};
   windowClass.lpfnWndProc = &SettingsWindow::WindowProc;
@@ -932,6 +933,22 @@ void SettingsWindow::PanelDetails(PanelDefinition panel) {
     changed = true;
   }
   Help("Lower is lighter on your PC. Panels only update when what they show changes.");
+  if (isWindow) {
+    // CT-3, Q10 (ADR-031): on by default, with what the helper is doing
+    changed |= ImGui::Checkbox("Keep updating when covered", &panel.mKeepUpdatingWhenCovered);
+    Help(
+      "Browsers (Firefox, Edge, Chrome) and apps built like them (Discord, Spotify) stop drawing when another "
+      "window, like the game, covers them. This loads a small helper into that app so it keeps drawing. Untick it "
+      "if the app misbehaves.");
+    if (const auto status = mAppHelper.StatusOf(panel.mID)) {
+      ImGui::TextDisabled("%s", status->mText.c_str());
+      if (status->mState == AppHelper::AppHelperService::State::Waiting) {
+        KeepPainting(15);// until the helper answers
+      }
+    } else {
+      ImGui::TextDisabled("%s", panel.mKeepUpdatingWhenCovered ? "Shows here once the window is captured." : "Off.");
+    }
+  }
   ImGui::PopItemWidth();
 
   ImGui::Spacing();

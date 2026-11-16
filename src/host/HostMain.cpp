@@ -34,6 +34,7 @@
 #include "SettingsWindow.hpp"
 #include "TrayIcon.hpp"
 
+#include <OpenDesktopVR/AppHelperService.hpp>
 #include <OpenDesktopVR/LayerRegistration.hpp>
 #include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/ProcessUtil.hpp>
@@ -177,15 +178,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     if (options.mFenceDelayMs > 0) {
       Log::Warning("Test mode: frames are announced {} ms before their GPU work is signalled", options.mFenceDelayMs);
     }
+    // Keeps captured browsers updating while the game covers them (CT-3).
+    // Made before the renderer, whose capture sources hold its leases.
+    AppHelper::AppHelperService appHelper;
     // What each kind of panel shows
     const bool staticPanels = options.mStaticPanels;
     const bool resizingPanels = options.mResizingPanels;
     Host::RenderLoop renderer {loopOptions,
-      [staticPanels, resizingPanels](const Host::PanelDefinition& definition, Render::GpuDevice& gpu, Render::MarkDirty markDirty)
-        -> std::unique_ptr<Render::ContentSource> {
+      [staticPanels, resizingPanels, &appHelper](const Host::PanelDefinition& definition, Render::GpuDevice& gpu,
+        Render::MarkDirty markDirty) -> std::unique_ptr<Render::ContentSource> {
         if (definition.mKind == Host::PanelKind::Window) {
-          return std::make_unique<Capture::WindowCaptureSource>(
-            gpu, Capture::WindowCaptureOptions {definition.mWindow, definition.mName}, std::move(markDirty));
+          Capture::WindowCaptureOptions capture {definition.mWindow, definition.mName};
+          capture.mKeepUpdating = [&appHelper, id = definition.mID](HWND window) { return appHelper.KeepPainting(id, window); };
+          return std::make_unique<Capture::WindowCaptureSource>(gpu, std::move(capture), std::move(markDirty));
         }
         return std::make_unique<Render::TestPatternSource>(
           gpu, Render::TestPatternOptions {
@@ -194,6 +199,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             .mResizing = resizingPanels,
           });
       }};
+    // HK-11: never the game. Asked of the renderer, so forgotten before the
+    // renderer goes (this guard is destroyed first)
+    appHelper.SetGameProcess([&renderer] { return renderer.Stats().mLayerProcessID; });
+    struct ForgetGame {
+      AppHelper::AppHelperService& mService;
+      ~ForgetGame() {
+        mService.SetGameProcess({});
+      }
+    } forgetGame {appHelper};
     if (!Capture::IsCaptureSupported()) {
       Log::Warning("Windows.Graphics.Capture isn't available here: window panels can't show");
     }
@@ -225,7 +239,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       slots[0] = Keybinds::Binding::From({Keybinds::Button {Keybinds::DeviceKind::Keyboard, {}, options.mTestKeybind}});
       panels.SetToggleAllKeybinds(slots);// in memory: a test instance saves nothing
     }
-    Host::SettingsWindow settings {instance, renderer, panels, keybinds};
+    Host::SettingsWindow settings {instance, renderer, panels, keybinds, appHelper};
     Host::TrayIcon tray {instance, renderer, panels, settings};
     if (options.mExitAfterSeconds > 0) {
       tray.QuitAfter(options.mExitAfterSeconds);

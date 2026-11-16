@@ -112,6 +112,7 @@ std::optional<PanelDefinition> FromJson(const Json& json) noexcept {
     panel.mBrightness = level("brightness");
     panel.mTintEnabled = JsonUtil::GetOr<bool>(json, "tintEnabled", false);
     panel.mTintColor = ParseColor(JsonUtil::GetOr<std::string>(json, "tintColor", "")).value_or(PanelDefinition::DefaultTintColor);
+    panel.mKeepUpdatingWhenCovered = JsonUtil::GetOr<bool>(json, "keepUpdatingWhenCovered", true);
     if (const auto keybinds = JsonUtil::Get<Json>(json, "keybinds"); keybinds && keybinds->is_object()) {
       for (std::size_t i = 0; i < Keybinds::PanelActions.size(); ++i) {
         panel.mKeybinds[i] = Keybinds::SlotsFromJson(JsonUtil::GetOr<Json>(*keybinds, Keybinds::ActionKey(Keybinds::PanelActions[i]), Json {}));
@@ -176,6 +177,7 @@ Json ToJson(const PanelDefinition& panel) {
   json["brightness"] = panel.mBrightness;
   json["tintEnabled"] = panel.mTintEnabled;
   json["tintColor"] = std::format("#{:06X}", panel.mTintColor & 0xFFFFFF);
+  json["keepUpdatingWhenCovered"] = panel.mKeepUpdatingWhenCovered;
   Json keybinds = Json::object();
   for (std::size_t i = 0; i < Keybinds::PanelActions.size(); ++i) {
     keybinds[Keybinds::ActionKey(Keybinds::PanelActions[i])] = Keybinds::ToJson(panel.mKeybinds[i]);
