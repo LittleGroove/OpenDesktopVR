@@ -84,6 +84,8 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
     winrt::com_ptr<ID2D1Bitmap1> mBitmap;
     ID2D1DeviceContext2* mBitmapContext {nullptr};
     Render::PixelSize mSize {};
+    // When Windows composed the frame (the same clock as TimeUtil::Now)
+    TimeUtil::TimePoint mComposedAt {};
   };
   Image mShown;
   Image mCandidate;
@@ -96,6 +98,12 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
   winrt::com_ptr<ID3D11Buffer> mReadback;
   std::unique_ptr<D3D11Util::PrivateContextState> mContextState;
   std::atomic<uint64_t> mUnchanged {0};
+  // From composition to drawn, per stats line (render thread only): a
+  // steady delay keeps frames evenly spaced; a varying one is a hitch
+  mutable uint64_t mLatencyCount {0};
+  mutable double mLatencySumMs {0};
+  mutable double mLatencyMaxMs {0};
+  mutable uint64_t mLatencyOver10 {0};
   winrt::com_ptr<IDWriteTextFormat> mTextFormat;
   winrt::com_ptr<ID2D1SolidColorBrush> mBrush;
 
@@ -371,6 +379,8 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
         // CP-3: only the client area, never the whole (possibly monitor-sized) surface
         const D3D11_BOX box {static_cast<UINT>(crop.left), static_cast<UINT>(crop.top), 0, static_cast<UINT>(crop.right), static_cast<UINT>(crop.bottom), 1};
         context->CopySubresourceRegion(mCandidate.mTexture.get(), 0, 0, 0, 0, source.get(), 0, &box);
+        mCandidate.mComposedAt
+          = TimeUtil::TimePoint {std::chrono::duration_cast<TimeUtil::Duration>(frame.SystemRelativeTime())};
         ++mCopied;
         frame.Close();
         if (!mShown.mTexture || !(mShown.mSize == size) || !StartCompare()) {
@@ -438,6 +448,15 @@ void WindowCaptureSource::Render(ID2D1DeviceContext2* context, Render::PixelSize
     const bool exact = kept.mWidth == size.mWidth && kept.mHeight == size.mHeight;
     context->DrawBitmap(shown.mBitmap.get(), &destination, 1.0f,
       exact ? D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR : D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, &source);
+    if (state.mShownNotDrawn && shown.mComposedAt != TimeUtil::TimePoint {}) {
+      const double latency = TimeUtil::ToMilliseconds(TimeUtil::Now() - shown.mComposedAt);
+      if (latency >= 0 && latency < 10'000) {
+        ++state.mLatencyCount;
+        state.mLatencySumMs += latency;
+        state.mLatencyMaxMs = std::max(state.mLatencyMaxMs, latency);
+        state.mLatencyOver10 += latency > 10 ? 1 : 0;
+      }
+    }
     state.mShownNotDrawn = false;
   } else {
     state.DrawWaiting(context, size);
@@ -445,8 +464,18 @@ void WindowCaptureSource::Render(ID2D1DeviceContext2* context, Render::PixelSize
 }
 
 std::string WindowCaptureSource::StatsText() const {
-  return std::format(
-    "frames {} arrived, {} identical skipped", mState->mArrived.load(), mState->mUnchanged.load());
+  auto& state = *mState;
+  auto text = std::format("frames {} arrived, {} identical skipped", state.mArrived.load(), state.mUnchanged.load());
+  if (state.mLatencyCount > 0) {
+    text += std::format(", drawn {:.1f} ms after Windows composed them on average, at most {:.1f} ms ({} over 10 ms)",
+      state.mLatencySumMs / static_cast<double>(state.mLatencyCount), state.mLatencyMaxMs, state.mLatencyOver10);
+  }
+  // Per stats line
+  state.mLatencyCount = 0;
+  state.mLatencySumMs = 0;
+  state.mLatencyMaxMs = 0;
+  state.mLatencyOver10 = 0;
+  return text;
 }
 
 uint64_t WindowCaptureSource::FramesUnchanged() const noexcept {

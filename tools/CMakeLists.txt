@@ -8,7 +8,7 @@ odvr_executable(
   click-target
   PORTED
   SOURCES click-target/click-target.cpp
-  DEPS user32 gdi32
+  DEPS user32 gdi32 dwmapi
 )
 
 # Fake OpenXR runtime + game that loads a real API layer DLL

@@ -5,21 +5,31 @@
 // A window to capture as a panel: it logs every click it gets,
 // to check that finger taps arrive as real clicks.
 //
-// Usage: click-target-test <log file> [slow ms]
+// Usage: click-target-test <log file> [slow ms] [animate fps] [same]
 // Each line of the log is "DOWN x y t", "UP x y t", "WHEEL delta x y", or
 // "MOVES n" (a count of mouse moves since the last button event); t is a
 // high-resolution timestamp in milliseconds, comparable between processes.
 //
 // 'slow ms' makes every mouse move take that long to handle, like a busy app.
+// 'animate fps' repaints that many times a second with a moving bar, like a
+// playing video, evenly paced on the display's refresh (DwmFlush); the
+// title becomes "Click Target (animated)". With 'same', it repaints that
+// often without changing anything, like an idle window on Windows 10.
+// "Click Target (repainting)".
 
 #include <Windows.h>
+#include <dwmapi.h>
 #include <windowsx.h>
 
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <format>
 #include <fstream>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -28,6 +38,9 @@ int gMoves = 0;
 POINT gLastClick {-1, -1};
 int gClickCount = 0;
 int gSlowMilliseconds = 0;
+int gAnimateFps = 0;
+bool gSame = false;
+std::atomic<uint64_t> gAnimationFrame {0};
 
 double NowMilliseconds() {
   static const auto frequency = [] {
@@ -119,6 +132,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         gLastClick.x,
         gLastClick.y);
       TextOutW(dc, 20, 20, text.c_str(), static_cast<int>(text.size()));
+      if (gAnimateFps > 0 && !gSame) {
+        // A bar that moves every frame: each frame differs from the last
+        const auto bar = CreateSolidBrush(RGB(90, 200, 120));
+        const LONG x = static_cast<LONG>((gAnimationFrame.load() * 7) % static_cast<uint64_t>(std::max<LONG>(client.right - 40, 1)));
+        const RECT r {x, 60, x + 40, client.bottom - 20};
+        FillRect(dc, &r, bar);
+        DeleteObject(bar);
+      }
       if (gLastClick.x >= 0) {
         const auto marker = CreateSolidBrush(RGB(255, 120, 60));
         const RECT r {
@@ -152,6 +173,10 @@ int main(int argc, char** argv) {
   if (argc > 2) {
     gSlowMilliseconds = std::atoi(argv[2]);
   }
+  if (argc > 3) {
+    gAnimateFps = std::max(0, std::min(240, std::atoi(argv[3])));
+  }
+  gSame = argc > 4 && std::string {argv[4]} == "same";
 
   const auto instance = GetModuleHandleW(nullptr);
   const WNDCLASSW windowClass {
@@ -167,7 +192,7 @@ int main(int argc, char** argv) {
   const auto hwnd = CreateWindowExW(
     0,
     windowClass.lpszClassName,
-    L"Click Target",
+    gAnimateFps == 0 ? L"Click Target" : gSame ? L"Click Target (repainting)" : L"Click Target (animated)",
     WS_OVERLAPPEDWINDOW | WS_VISIBLE,
     100,
     100,
@@ -182,6 +207,27 @@ int main(int argc, char** argv) {
     return 1;
   }
   Log("READY");
+  if (gAnimateFps > 0) {
+    // Paced on the display's refresh, like a video player: a new frame on
+    // the first refresh at least one period after the last, so frames are
+    // evenly spaced at the source (a free-running timer drifts against the
+    // refresh and stutters by itself)
+    std::thread([hwnd] {
+      const double period = 1000.0 / gAnimateFps;
+      double last = NowMilliseconds() - period;
+      while (IsWindow(hwnd)) {
+        if (FAILED(DwmFlush())) {
+          Sleep(1);
+        }
+        const double now = NowMilliseconds();
+        if (now - last >= period - 4.0) {
+          last = now;
+          ++gAnimationFrame;
+          InvalidateRect(hwnd, nullptr, FALSE);
+        }
+      }
+    }).detach();
+  }
 
   MSG msg;
   while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

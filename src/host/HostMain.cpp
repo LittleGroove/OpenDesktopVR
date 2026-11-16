@@ -14,7 +14,8 @@
 //                    signalled, to exercise the layer's bounded staleness
 // --static-panels    test panels that never change (the idle bench gate)
 // --resizing-panels  test panels that change size every frame (RN-7)
-// --window <title>   test instances: one window panel, matching this title
+// --window <title>   test instances: a window panel matching this title
+//                    (repeat it for more)
 // --warp             allow software rendering if there's no GPU (CI)
 // --settings         open the settings window at start
 // --settings-screenshot <png>, --picker-screenshot <png>
@@ -47,6 +48,7 @@
 #include <algorithm>
 #include <cwchar>
 #include <string_view>
+#include <vector>
 
 using namespace OpenDesktopVR;
 
@@ -60,7 +62,7 @@ struct Options {
   bool mStaticPanels {false};
   bool mResizingPanels {false};
   bool mTestInstance {false};
-  std::wstring mTestWindowTitle;
+  std::vector<std::wstring> mTestWindowTitles;
   bool mOpenSettings {false};
   int mSettingsDelayMs {0};
   std::wstring mScreenshot;
@@ -80,7 +82,7 @@ Options ParseOptions() {
     } else if (arg == L"--fence-delay-ms" && i + 1 < argc) {
       options.mFenceDelayMs = std::max(0, _wtoi(argv[++i]));
     } else if (arg == L"--window" && i + 1 < argc) {
-      options.mTestWindowTitle = argv[++i];
+      options.mTestWindowTitles.emplace_back(argv[++i]);
     } else if (arg == L"--static-panels") {
       options.mStaticPanels = true;
     } else if (arg == L"--resizing-panels") {
@@ -182,11 +184,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       Log::Warning("Windows.Graphics.Capture isn't available here: window panels can't show");
     }
     std::vector<Host::PanelDefinition> testPanels;
-    if (!options.mTestWindowTitle.empty()) {
-      WindowUtil::WindowInfo match {nullptr, options.mTestWindowTitle};
-      auto panel = Host::NewWindowPanel(match, 0);
-      panel.mWindow = {L"", L"", options.mTestWindowTitle, WindowMatch::TitleMode::Contains};
-      panel.mPosition[0] = 0;
+    for (const auto& title: options.mTestWindowTitles) {
+      WindowUtil::WindowInfo match {nullptr, title};
+      auto panel = Host::NewWindowPanel(match, testPanels.size());
+      panel.mWindow = {L"", L"", title, WindowMatch::TitleMode::Contains};
+      if (options.mTestWindowTitles.size() == 1) {
+        panel.mPosition[0] = 0;
+      }
       testPanels.push_back(std::move(panel));
     }
     Host::PanelManager panels {renderer, !options.mTestInstance, std::move(testPanels)};

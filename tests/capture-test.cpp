@@ -10,6 +10,7 @@
 
 #include "check.hpp"
 
+#include <OpenDesktopVR/FrameWakeup.hpp>
 #include <OpenDesktopVR/GpuDevice.hpp>
 #include <OpenDesktopVR/PanelRing.hpp>
 #include <OpenDesktopVR/TimeUtil.hpp>
@@ -34,10 +35,12 @@ std::wstring gTargetExe;
 
 struct Target {
   PROCESS_INFORMATION mInfo {};
-  Target() {
+  // `extra`: more arguments ("<slow ms> <animate fps>")
+  explicit Target(const std::wstring& extra = L"") {
     // The click target logs clicks to a file it's given
-    const auto log = (std::filesystem::temp_directory_path() / std::format(L"odvr-capture-test-{}.log", GetCurrentProcessId())).wstring();
-    std::wstring command = L"\"" + gTargetExe + L"\" \"" + log + L"\"";
+    const auto log = (std::filesystem::temp_directory_path()
+      / std::format(L"odvr-capture-test-{}{}.log", GetCurrentProcessId(), extra.empty() ? L"" : L"-animated")).wstring();
+    std::wstring command = L"\"" + gTargetExe + L"\" \"" + log + L"\"" + extra;
     STARTUPINFOW startup {sizeof(startup)};
     CreateProcessW(gTargetExe.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &mInfo);
     WaitForInputIdle(mInfo.hProcess, 5000);
@@ -273,6 +276,54 @@ int main(int argc, char** argv) {
     Check(WaitFor([&] { return source.IsCapturing(); }, 8s, [&] { source.Maintain(TimeUtil::Now()); }), "capture restarts on the reopened window");
     const auto arrived = source.FramesArrived();
     Check(WaitFor([&] { return source.FramesArrived() > arrived; }, 5s), "and frames arrive again");
+  });
+
+  Scenario("A window changing 30 times a second is drawn about 30 times a second (test rounds 5 and 6)", [&] {
+    Target animated {L" 0 30"};
+    HWND animatedWindow = nullptr;
+    WaitFor([&] { return (animatedWindow = animated.Window()) != nullptr; }, 5s);
+    Check(animatedWindow != nullptr, "the animated window is open");
+    if (!animatedWindow) {
+      return;
+    }
+    const auto animatedInfo = WindowUtil::Describe(animatedWindow);
+    Capture::WindowCaptureSource video {*gpu, {WindowMatch::FromWindow(*animatedInfo), L"Video"}, [] {}};
+    Check(WaitFor([&] { return video.FramesArrived() > 0; }, 5s, [&] { video.Maintain(TimeUtil::Now()); }), "frames arrive");
+    // As the render loop does: check every 2 ms (a precise timer), draw
+    // each frame the GPU check says is new
+    std::unique_ptr<Render::PanelRing> ring;
+    const HANDLE timer = FrameWakeup::CreateTimer();
+    const LARGE_INTEGER due {.QuadPart = -20'000};
+    SetWaitableTimer(timer, &due, 2, nullptr, nullptr, FALSE);
+    const auto arrived = video.FramesArrived();
+    const auto unchanged = video.FramesUnchanged();
+    int drawn = 0;
+    const auto start = TimeUtil::Now();
+    while (TimeUtil::Now() - start < 3s) {
+      WaitForSingleObject(timer, 100);
+      if (video.Prepare() != Render::Readiness::Ready) {
+        continue;
+      }
+      const auto size = video.Size();
+      if (!ring || !ring->Fits(size)) {
+        const auto capacity = Render::PanelRing::CapacityFor(size, {});
+        ring = Render::PanelRing::Create(*gpu, capacity.mWidth, capacity.mHeight, DXGI_FORMAT_B8G8R8A8_UNORM);
+      }
+      auto* d2d = gpu->D2D();
+      d2d->SetTarget(ring->Target(0));
+      d2d->BeginDraw();
+      video.Render(d2d, size, TimeUtil::Now());
+      d2d->EndDraw();
+      d2d->SetTarget(nullptr);
+      ++drawn;
+    }
+    CloseHandle(timer);
+    const auto frames = video.FramesArrived() - arrived;
+    const auto identical = video.FramesUnchanged() - unchanged;
+    std::printf("  (3 s: %llu frames arrived, %d drawn, %llu judged identical)\n", static_cast<unsigned long long>(frames), drawn,
+      static_cast<unsigned long long>(identical));
+    Check(drawn >= 75, std::format("at least 25 a second drawn ({} in 3 s)", drawn));
+    Check(identical * 4 < frames, "changed frames aren't mistaken for identical ones");
   });
 
   return Finish();
