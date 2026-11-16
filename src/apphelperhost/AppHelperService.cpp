@@ -155,8 +155,8 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
     mWindow = nullptr;
     // Whatever didn't answer in time: the hooks go now (the helper's DllMain
     // puts the app's imports back when it's unloaded)
-    for (auto& [thread, install]: mInstalls) {
-      UnhookWindowsHookEx(install.mHook);
+    for (const auto& [thread, install]: mInstalls) {
+      Unhook(install);
     }
     mInstalls.clear();
     DestroyWindow(window);
@@ -390,7 +390,7 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
     if (it == mInstalls.end()) {
       return;
     }
-    UnhookWindowsHookEx(it->second.mHook);
+    Unhook(it->second);
     mInstalls.erase(it);
     UpdateInstallCount();
     // Leases that arrived while it unloaded get a new install
@@ -410,6 +410,13 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
     if (mStopping && mInstalls.empty()) {
       PostQuitMessage(0);
     }
+  }
+
+  // Windows unloads a hook's DLL from the app when its thread next takes a
+  // message: one that does nothing, so an idle app lets go of it now (R8)
+  static void Unhook(const Install& install) {
+    UnhookWindowsHookEx(install.mHook);
+    PostThreadMessageW(install.mThread, WM_NULL, 0, 0);
   }
 
   void OnReply(WPARAM wParam, LPARAM lParam) {
