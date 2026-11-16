@@ -14,8 +14,10 @@ odvr_module(
   Visibility.cpp
   HandService.cpp
   HandConfig.cpp
+  InjectingSink.cpp
   DEPS
   odvr::interaction
+  odvr::pointer
   odvr::keybinds
   odvr::render
   odvr::capture

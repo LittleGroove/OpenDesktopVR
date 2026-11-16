@@ -4,7 +4,10 @@
 // Runs a command beside a private host instance, for end-to-end tests that
 // need the real host app (the simulator's hand scenarios).
 //
-//   with-host <host exe> [host args...] -- <command> [args...]
+//   with-host [--also <exe> <file>] <host exe> [host args...] -- <command> [args...]
+//
+// --also: starts another program first (click-target with its log file;
+//   the file's folder is made), and stops it at the end.
 //
 // - A private instance name (OPENDESKTOPVR_INSTANCE), so a real host on the
 //   same PC is never touched; the host then uses its built-in test panels
@@ -17,6 +20,7 @@
 #include <Windows.h>
 
 #include <cstdio>
+#include <filesystem>
 #include <format>
 #include <string>
 #include <vector>
@@ -59,10 +63,15 @@ int wmain(int argc, wchar_t** argv) {
   std::wstring hostExe;
   std::wstring commandExe;
   std::vector<std::wstring> commandArgs;
+  std::wstring alsoExe;
+  std::wstring alsoFile;
   bool inCommand = false;
   for (int i = 1; i < argc; ++i) {
     const std::wstring arg {argv[i]};
-    if (!inCommand && arg == L"--") {
+    if (!inCommand && hostExe.empty() && arg == L"--also" && i + 2 < argc) {
+      alsoExe = argv[++i];
+      alsoFile = argv[++i];
+    } else if (!inCommand && arg == L"--") {
       inCommand = true;
     } else if (!inCommand && hostExe.empty()) {
       hostExe = arg;
@@ -81,8 +90,23 @@ int wmain(int argc, wchar_t** argv) {
   SetEnvironmentVariableW(L"OPENDESKTOPVR_INSTANCE", std::format(L"with-host-{}", GetCurrentProcessId()).c_str());
   SetEnvironmentVariableW(L"OPENDESKTOPVR_TEST_PANEL", L"0");
 
+  HANDLE also = nullptr;
+  if (!alsoExe.empty()) {
+    std::error_code ignored;
+    std::filesystem::create_directories(std::filesystem::path {alsoFile}.parent_path(), ignored);
+    std::filesystem::remove(alsoFile, ignored);
+    also = Start(alsoExe, {alsoFile});
+    if (!also) {
+      return 1;
+    }
+    Sleep(1000);// its window is up before the host looks for it
+  }
   HANDLE host = Start(hostExe, hostArgs);
   if (!host) {
+    if (also) {
+      TerminateProcess(also, 0);
+      CloseHandle(also);
+    }
     return 1;
   }
   int exitCode = 1;
@@ -105,5 +129,10 @@ int wmain(int argc, wchar_t** argv) {
   TerminateProcess(host, 0);
   WaitForSingleObject(host, 5000);
   CloseHandle(host);
+  if (also) {
+    TerminateProcess(also, 0);
+    WaitForSingleObject(also, 5000);
+    CloseHandle(also);
+  }
   return exitCode;
 }

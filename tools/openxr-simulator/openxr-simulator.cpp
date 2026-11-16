@@ -168,6 +168,10 @@ struct Runtime {
   float mWatchU {};
   float mWatchV {};
   std::optional<double> mPanelChangedAt;
+  // When the scripted fingertip first came within the touch distance (1 cm)
+  // of the panel: the frame whose sample reports contact (added in the
+  // port, M4b)
+  std::optional<double> mContactAt;
 
   // '--bench': no read-backs, and counts of what a real runtime would have
   // to composite
@@ -1675,6 +1679,9 @@ int main(int rawArgc, char** rawArgv) {
   const auto start = Clock::now();
   std::optional<Clock::time_point> scriptStart;
   std::map<Step, Stats> stats;
+  int scriptFrames = 0;
+  std::optional<double> scriptFirstFrameAt;
+  double scriptLastFrameAt = 0;
   Step lastStep = Step::Waiting;
   bool savedTouching = false;
   bool savedHovering = false;
@@ -1714,6 +1721,11 @@ int main(int rawArgc, char** rawArgv) {
       lastStep = step;
     }
 
+    // The press latency gate (doc 11) starts at the frame whose tracking
+    // sample reports contact
+    if (step == Step::PokeIn && !gRuntime.mContactAt && 0.08 + (-0.015 - 0.08) * progress <= 0.010) {
+      gRuntime.mContactAt = NowMilliseconds();
+    }
     if (step == Step::PokeIn && !gRuntime.mWatchPanel) {
       gRuntime.mWatchU = TargetU;
       gRuntime.mWatchV = TargetV;
@@ -1740,6 +1752,14 @@ int main(int rawArgc, char** rawArgv) {
       .layers = &gameLayerHeader,
     };
     layerEndFrame(session, &frameEndInfo);
+    // The real frame interval: sleeps run at the system timer's resolution
+    if (scriptStart) {
+      ++scriptFrames;
+      scriptLastFrameAt = NowMilliseconds();
+      if (!scriptFirstFrameAt) {
+        scriptFirstFrameAt = scriptLastFrameAt;
+      }
+    }
 
     auto& s = stats[step];
     ++s.mFrames;
@@ -1843,6 +1863,20 @@ int main(int rawArgc, char** rawArgv) {
       double clickedAt {};
       if (!(fields >> x >> y >> clickedAt)) {
         break;
+      }
+      if (gRuntime.mContactAt && scriptFirstFrameAt && scriptFrames > 1) {
+        // One frame plus 2 ms (doc 11, "Latency"), at the simulator's real
+        // frame interval
+        const double frame
+          = (scriptLastFrameAt - *scriptFirstFrameAt) / (scriptFrames - 1);
+        const double latency = clickedAt - *gRuntime.mContactAt;
+        checks.Check(
+          latency <= frame + 2.0,
+          std::format(
+            "the press reached the window {:.1f}ms after the frame that "
+            "touched (gate: 1 frame of {:.1f}ms + 2 ms)",
+            latency,
+            frame));
       }
       if (gRuntime.mPanelChangedAt) {
         std::printf(

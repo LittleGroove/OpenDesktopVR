@@ -20,7 +20,9 @@ odvr_module(
 )
 
 set(ODVR_APP_HELPER_TARGET ${ODVR_APP_HELPER_FILE_STEM})
-add_library(${ODVR_APP_HELPER_TARGET} SHARED AppHelperMain.cpp)
+add_library(${ODVR_APP_HELPER_TARGET} SHARED AppHelperMain.cpp InputFakes.cpp)
 target_link_libraries(${ODVR_APP_HELPER_TARGET} PRIVATE odvr::apphelper_protocol odvr::importpatch user32)
+# The keyboard commands' numbers (header only; none of odvr::inject's code)
+target_include_directories(${ODVR_APP_HELPER_TARGET} PRIVATE "${PROJECT_SOURCE_DIR}/src/inject/include")
 target_compile_options(${ODVR_APP_HELPER_TARGET} PRIVATE ${ODVR_NEW_CODE_WARNINGS})
 set_target_properties(${ODVR_APP_HELPER_TARGET} PROPERTIES FOLDER "apphelper")

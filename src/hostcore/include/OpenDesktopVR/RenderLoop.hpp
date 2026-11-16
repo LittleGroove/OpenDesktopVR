@@ -101,6 +101,8 @@ class RenderLoop {
   TrackingChannel& Tracking() noexcept;
   // The panels the layer shows, as last published (any thread)
   std::shared_ptr<const TouchPanels> TouchablePanels() const;
+  // "Use my hands" (any thread): with it off, no app is readied for input
+  void SetHandsEnabled(bool enabled);
 
  private:
   struct Impl;

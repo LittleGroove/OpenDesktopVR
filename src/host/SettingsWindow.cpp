@@ -935,6 +935,18 @@ void SettingsWindow::PanelDetails(PanelDefinition panel) {
   Help("Point with your index finger and touch the panel to click. Hold your finger on it to drag.");
   changed |= ImGui::Checkbox("Scroll with two fingers", &panel.mScroll);
   Help("Touch with your index and middle fingers out, then move them up or down.");
+  if (isWindow && (panel.mTouch || panel.mScroll)) {
+    // The helper's input mode, ready from capture start (HK-1)
+    if (const auto status = mAppHelper.InputStatusOf(panel.mID)) {
+      ImGui::TextDisabled("%s", status->mText.c_str());
+      if (status->mState == AppHelper::AppHelperService::State::Waiting) {
+        KeepPainting(15);// until the helper answers
+      }
+    } else {
+      ImGui::TextDisabled("%s", mPanels.Hands().mEnabled ? "Shows here once the window is captured."
+                                                         : "Hands are off (Hands tab).");
+    }
+  }
 
   ImGui::SeparatorText("Updates");
   int rate = static_cast<int>(std::lround(panel.mMaxUpdatesPerSecond));

@@ -32,7 +32,7 @@ bool TouchPanel::operator==(const TouchPanel& other) const noexcept {
   const auto& a = mGeometry;
   const auto& b = other.mGeometry;
   return mID == other.mID && mTouch == other.mTouch && mScroll == other.mScroll && a.mPosition == b.mPosition
-    && a.mOrientation == b.mOrientation && a.mSize == b.mSize && mName == other.mName;
+    && a.mOrientation == b.mOrientation && a.mSize == b.mSize && mName == other.mName && mTarget == other.mTarget;
 }
 
 namespace {

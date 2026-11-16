@@ -85,6 +85,8 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
   // The app helper's lease while capturing, if wanted (CT-3)
   bool mKeepUpdatingWanted {false};
   std::shared_ptr<void> mKeepUpdating;
+  bool mInputWanted {false};
+  std::shared_ptr<void> mInput;
   // The image shown, and a new frame being compared with it
   struct Image {
     winrt::com_ptr<ID3D11Texture2D> mTexture;
@@ -166,10 +168,17 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
     } else if (!want) {
       mKeepUpdating.reset();
     }
+    const bool input = mInputWanted && mSession && mWindow && mOptions.mInput;
+    if (input && !mInput) {
+      mInput = mOptions.mInput(mWindow);
+    } else if (!input) {
+      mInput.reset();
+    }
   }
 
   void Stop() noexcept {
     mKeepUpdating.reset();
+    mInput.reset();
     mFrameRevoker.revoke();
     mClosedRevoker.revoke();
     try {
@@ -591,6 +600,20 @@ void WindowCaptureSource::SetActive(bool active) {
 
 void WindowCaptureSource::SetCrop(const Render::Crop& crop) {
   mState->mCrop = crop;// render thread, like Size() and Render()
+}
+
+void WindowCaptureSource::SetInputWanted(bool wanted) {
+  auto& state = *mState;// render thread, like Maintain()
+  state.mInputWanted = wanted;
+  ThreadUtil::CatchAll("input", [&] { state.UpdateKeepUpdating(); });
+}
+
+std::optional<Render::InputTarget> WindowCaptureSource::Input() const {
+  const auto& state = *mState;// render thread
+  if (!state.mSession || !state.mWindow || !state.mShown.mTexture) {
+    return std::nullopt;
+  }
+  return Render::InputTarget {state.mWindow, state.Kept(), state.mShown.mSize};
 }
 
 void WindowCaptureSource::SetKeepUpdatingWhenCovered(bool keep) {

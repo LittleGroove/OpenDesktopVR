@@ -51,16 +51,28 @@ std::string ExeOf(DWORD process) {
 }// namespace
 
 struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
+  // What a lease is for
+  enum class Kind : int { KeepPainting = 0, Input = 1 };
+  static constexpr Protocol::Command OnCommand(Kind kind) {
+    return kind == Kind::Input ? Protocol::Command::InputOn : Protocol::Command::KeepPaintingOn;
+  }
+  static constexpr Protocol::Command OffCommand(Kind kind) {
+    return kind == Kind::Input ? Protocol::Command::InputOff : Protocol::Command::KeepPaintingOff;
+  }
+  using PanelKey = std::pair<uint64_t, Kind>;
+
   struct Request {
     bool mAttach {true};
     uint64_t mLease {0};
     uint64_t mPanel {0};
     HWND mWindow {nullptr};
+    Kind mKind {Kind::KeepPainting};
   };
   struct Lease {
     uint64_t mID {0};
     uint64_t mPanel {0};
     HWND mWindow {nullptr};
+    Kind mKind {Kind::KeepPainting};
     DWORD mThread {0};// its install's thread, once connected
     std::string mTitle;
     std::string mExe;
@@ -70,12 +82,14 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
   struct Install {
     DWORD mThread {0};
     HHOOK mHook {nullptr};
+    HHOOK mCallHook {nullptr};// the injector's sent commands
     std::string mExe;
     Phase mPhase {Phase::Hello};
     TimeUtil::TimePoint mDeadline {};
     std::vector<uint64_t> mLeases;
-    std::deque<uint64_t> mAwaitingOn;// in the order sent; the helper answers in order
-    uint32_t mAwaitingOff {0};
+    // In the order sent, per kind; the helper answers in order
+    std::deque<uint64_t> mAwaitingOn[2];
+    uint32_t mAwaitingOff[2] {0, 0};
   };
 
   explicit Impl(Options options) : mOptions(std::move(options)) {
@@ -89,8 +103,8 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
   // Shared with other threads
   mutable std::mutex mMutex;
   std::vector<Request> mRequests;
-  std::map<uint64_t, uint64_t> mNewestLease;// panel -> lease
-  std::map<uint64_t, Status> mStatus;       // panel -> status of its newest lease
+  std::map<PanelKey, uint64_t> mNewestLease;// (panel, kind) -> lease
+  std::map<PanelKey, Status> mStatus;       // (panel, kind) -> status of its newest lease
   std::function<uint32_t()> mGameProcess;
   std::size_t mInstallCount {0};
   uint64_t mUnexpected {0};
@@ -99,6 +113,7 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
   // The service thread's own
   HMODULE mHelper {nullptr};
   HOOKPROC mHookProc {nullptr};
+  HOOKPROC mCallHookProc {nullptr};
   UINT mCommandMessage {0};
   UINT mReplyMessage {0};
   std::map<uint64_t, Lease> mLeases;
@@ -120,8 +135,9 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
 
   void SetStatus(const Lease& lease, State state, std::string text) {
     std::scoped_lock lock(mMutex);
-    if (auto newest = mNewestLease.find(lease.mPanel); newest != mNewestLease.end() && newest->second == lease.mID) {
-      mStatus[lease.mPanel] = {state, std::move(text)};
+    const PanelKey key {lease.mPanel, lease.mKind};
+    if (auto newest = mNewestLease.find(key); newest != mNewestLease.end() && newest->second == lease.mID) {
+      mStatus[key] = {state, std::move(text)};
     }
   }
 
@@ -172,8 +188,10 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
     mHelper = LoadLibraryExW(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (mHelper) {
       mHookProc = reinterpret_cast<HOOKPROC>(reinterpret_cast<void*>(GetProcAddress(mHelper, Protocol::HookProcName)));
+      mCallHookProc = reinterpret_cast<HOOKPROC>(reinterpret_cast<void*>(GetProcAddress(mHelper, Protocol::CallHookProcName)));
     }
-    if (!mHookProc) {
+    if (!mHookProc || !mCallHookProc) {
+      mHookProc = nullptr;
       Log::Warning("App helper: '{}' can't be used ({}); captured browsers will stop updating when covered",
         StringUtil::Narrow(path.wstring()), GetLastError());
     }
@@ -221,7 +239,8 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
   // Whether this window's app should and can have the helper; the lease is
   // kept either way, for its status and its release
   void Attach(const Request& request) {
-    Lease lease {request.mLease, request.mPanel, request.mWindow};
+    Lease lease {request.mLease, request.mPanel, request.mWindow, request.mKind};
+    const bool input = lease.mKind == Kind::Input;
     if (mStopping) {
       return;
     }
@@ -245,7 +264,7 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
       SetStatus(lease, state, std::move(text));
       mLeases.emplace(lease.mID, lease);
     };
-    if (family == AppFamily::None) {
+    if (!input && family == AppFamily::None) {
       keep(State::NotNeeded, "Not needed: this app keeps updating when covered.");
       return;
     }
@@ -259,18 +278,17 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
       keep(State::Unavailable, "Never for the game.");
       return;
     }
+    // What the user loses without it
+    const char* without = input ? "Taps may not reach it." : "It may stop updating when covered.";
     if (ProcessUtil::ProcessElevation(process) != ProcessUtil::Elevation::NotElevated
         && ProcessUtil::CurrentProcessElevation() != ProcessUtil::Elevation::Elevated) {
-      Log::Info("App helper: {} runs as administrator and we don't; '{}' may stop updating when covered", lease.mExe,
-        lease.mTitle);
-      keep(State::Unavailable,
-        std::format("Not available: {} runs as administrator. It may stop updating when covered.", lease.mExe));
+      Log::Info("App helper: {} runs as administrator and we don't; '{}': {}", lease.mExe, lease.mTitle, without);
+      keep(State::Unavailable, std::format("Not available: {} runs as administrator. {}", lease.mExe, without));
       return;
     }
     if (ProcessUtil::SameArchitecture(process) != true) {
-      Log::Info("App helper: {} is a 32-bit app; '{}' may stop updating when covered", lease.mExe, lease.mTitle);
-      keep(State::Unavailable,
-        std::format("Not available: {} is a 32-bit app. It may stop updating when covered.", lease.mExe));
+      Log::Info("App helper: {} is a 32-bit app; '{}': {}", lease.mExe, lease.mTitle, without);
+      keep(State::Unavailable, std::format("Not available: {} is a 32-bit app. {}", lease.mExe, without));
       return;
     }
     if (!mHookProc) {
@@ -292,11 +310,15 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
       return;
     }
     if (it == mInstalls.end()) {
-      // HK-2: one hook per UI thread, for all its windows
+      // HK-2: one set of hooks per UI thread, for all its windows
       const HHOOK hook = SetWindowsHookExW(WH_GETMESSAGE, mHookProc, mHelper, lease.mThread);
-      if (!hook) {
+      const HHOOK callHook = hook ? SetWindowsHookExW(WH_CALLWNDPROC, mCallHookProc, mHelper, lease.mThread) : nullptr;
+      if (!hook || !callHook) {
         const auto error = GetLastError();
-        Log::Warning("App helper: can't hook {} ({}); '{}' may stop updating when covered", lease.mExe, error, lease.mTitle);
+        if (hook) {
+          UnhookWindowsHookEx(hook);
+        }
+        Log::Warning("App helper: can't hook {} ({}) for '{}'", lease.mExe, error, lease.mTitle);
         SetStatus(lease, State::Failed, std::format("The helper can't load into {} (error {}).", lease.mExe, error));
         lease.mThread = 0;
         return;
@@ -304,6 +326,7 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
       Install install;
       install.mThread = lease.mThread;
       install.mHook = hook;
+      install.mCallHook = callHook;
       install.mExe = lease.mExe;
       install.mDeadline = TimeUtil::Now() + mOptions.mHelloTimeout;
       it = mInstalls.emplace(lease.mThread, std::move(install)).first;
@@ -319,9 +342,9 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
     }
     auto& install = it->second;
     install.mLeases.push_back(id);
-    if (Post(install, lease.mWindow, Protocol::Command::KeepPaintingOn, reinterpret_cast<LPARAM>(lease.mWindow))) {
+    if (Post(install, lease.mWindow, OnCommand(lease.mKind), reinterpret_cast<LPARAM>(lease.mWindow))) {
       lease.mOnSent = true;
-      install.mAwaitingOn.push_back(id);
+      install.mAwaitingOn[static_cast<int>(lease.mKind)].push_back(id);
       SetStatus(lease, State::Waiting, std::format("Loading the helper into {}...", lease.mExe));
     }
   }
@@ -352,9 +375,10 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
     mLeases.erase(found);
     {
       std::scoped_lock lock(mMutex);
-      if (auto newest = mNewestLease.find(lease.mPanel); newest != mNewestLease.end() && newest->second == id) {
+      const PanelKey key {lease.mPanel, lease.mKind};
+      if (auto newest = mNewestLease.find(key); newest != mNewestLease.end() && newest->second == id) {
         mNewestLease.erase(newest);
-        mStatus.erase(lease.mPanel);
+        mStatus.erase(key);
       }
     }
     const auto it = mInstalls.find(lease.mThread);
@@ -363,13 +387,14 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
     }
     auto& install = it->second;
     std::erase(install.mLeases, id);
-    // Another panel may still show the same window
+    // Another panel may still show the same window, for the same thing
     const bool stillShown = std::ranges::any_of(install.mLeases, [&](uint64_t other) {
-      return mLeases.at(other).mWindow == lease.mWindow;
+      const auto& lease2 = mLeases.at(other);
+      return lease2.mWindow == lease.mWindow && lease2.mKind == lease.mKind;
     });
     if (lease.mOnSent && !stillShown && install.mPhase != Phase::Unloading
-        && Post(install, lease.mWindow, Protocol::Command::KeepPaintingOff, reinterpret_cast<LPARAM>(lease.mWindow))) {
-      ++install.mAwaitingOff;
+        && Post(install, lease.mWindow, OffCommand(lease.mKind), reinterpret_cast<LPARAM>(lease.mWindow))) {
+      ++install.mAwaitingOff[static_cast<int>(lease.mKind)];
     }
     if (install.mLeases.empty() && install.mPhase != Phase::Unloading) {
       StartUnload(install);
@@ -416,6 +441,9 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
   // message: one that does nothing, so an idle app lets go of it now (R8)
   static void Unhook(const Install& install) {
     UnhookWindowsHookEx(install.mHook);
+    if (install.mCallHook) {
+      UnhookWindowsHookEx(install.mCallHook);
+    }
     PostThreadMessageW(install.mThread, WM_NULL, 0, 0);
   }
 
@@ -443,23 +471,29 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
         }
         break;
       case Protocol::Command::KeepPaintingOn:
-        if (install.mAwaitingOn.empty()) {
+      case Protocol::Command::InputOn: {
+        auto& awaiting = install.mAwaitingOn[static_cast<int>(KindOf(reply.mCommand))];
+        if (awaiting.empty()) {
           Unexpected();
         } else {
-          const auto id = install.mAwaitingOn.front();
-          install.mAwaitingOn.pop_front();
+          const auto id = awaiting.front();
+          awaiting.pop_front();
           if (const auto lease = mLeases.find(id); lease != mLeases.end()) {
             Answered(lease->second, reply);
           }
         }
         break;
+      }
       case Protocol::Command::KeepPaintingOff:
-        if (install.mAwaitingOff == 0) {
+      case Protocol::Command::InputOff: {
+        auto& awaiting = install.mAwaitingOff[static_cast<int>(KindOf(reply.mCommand))];
+        if (awaiting == 0) {
           Unexpected();
         } else {
-          --install.mAwaitingOff;
+          --awaiting;
         }
         break;
+      }
       case Protocol::Command::Unload:
         if (install.mPhase != Phase::Unloading) {
           Unexpected();
@@ -477,7 +511,23 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
     }
   }
 
+  static Kind KindOf(Protocol::Command command) {
+    return command == Protocol::Command::InputOn || command == Protocol::Command::InputOff ? Kind::Input : Kind::KeepPainting;
+  }
+
   void Answered(const Lease& lease, const Protocol::Reply& reply) {
+    if (lease.mKind == Kind::Input) {
+      // Without anything to redirect, taps still go to the app as messages
+      if (reply.mResult == Protocol::Result::Ok || reply.mResult == Protocol::Result::NothingToPatch) {
+        Log::Info("App helper: '{}' ({}) is ready for taps ({} import{} redirected)", lease.mTitle, lease.mExe,
+          reply.mDetail, reply.mDetail == 1 ? "" : "s");
+        SetStatus(lease, State::On, std::format("On: the helper is loaded in {}.", lease.mExe));
+      } else {
+        Log::Warning("App helper: couldn't start input in {} (result {})", lease.mExe, static_cast<int>(reply.mResult));
+        SetStatus(lease, State::Failed, std::format("The helper couldn't start in {}. Taps may not reach it.", lease.mExe));
+      }
+      return;
+    }
     switch (reply.mResult) {
       case Protocol::Result::Ok:
         Log::Info("App helper: '{}' ({}) keeps updating when covered ({} import{} redirected)", lease.mTitle, lease.mExe,
@@ -590,14 +640,23 @@ void AppHelperService::SetGameProcess(std::function<uint32_t()> gameProcess) {
 }
 
 std::shared_ptr<void> AppHelperService::KeepPainting(uint64_t panelID, HWND window) {
+  return MakeLease(panelID, window, static_cast<int>(Impl::Kind::KeepPainting));
+}
+
+std::shared_ptr<void> AppHelperService::Input(uint64_t panelID, HWND window) {
+  return MakeLease(panelID, window, static_cast<int>(Impl::Kind::Input));
+}
+
+std::shared_ptr<void> AppHelperService::MakeLease(uint64_t panelID, HWND window, int kindValue) {
+  const auto kind = static_cast<Impl::Kind>(kindValue);
   uint64_t id = 0;
   {
     std::scoped_lock lock(mImpl->mMutex);
     id = mImpl->mNextLease++;
-    mImpl->mNewestLease[panelID] = id;
-    mImpl->mStatus[panelID] = {State::Waiting, "Starting..."};
+    mImpl->mNewestLease[{panelID, kind}] = id;
+    mImpl->mStatus[{panelID, kind}] = {State::Waiting, "Starting..."};
   }
-  mImpl->Queue({true, id, panelID, window});
+  mImpl->Queue({true, id, panelID, window, kind});
   // Released from any thread, even after the service is gone. Made in place:
   // a copy's destructor would release it at once.
   struct Token {
@@ -605,7 +664,7 @@ std::shared_ptr<void> AppHelperService::KeepPainting(uint64_t panelID, HWND wind
     uint64_t mID {0};
     ~Token() {
       if (auto impl = mImpl.lock()) {
-        impl->Queue({false, mID, 0, nullptr});
+        impl->Queue({false, mID, 0, nullptr, Impl::Kind::KeepPainting});
       }
     }
   };
@@ -617,7 +676,15 @@ std::shared_ptr<void> AppHelperService::KeepPainting(uint64_t panelID, HWND wind
 
 std::optional<AppHelperService::Status> AppHelperService::StatusOf(uint64_t panelID) const {
   std::scoped_lock lock(mImpl->mMutex);
-  if (const auto it = mImpl->mStatus.find(panelID); it != mImpl->mStatus.end()) {
+  if (const auto it = mImpl->mStatus.find({panelID, Impl::Kind::KeepPainting}); it != mImpl->mStatus.end()) {
+    return it->second;
+  }
+  return std::nullopt;
+}
+
+std::optional<AppHelperService::Status> AppHelperService::InputStatusOf(uint64_t panelID) const {
+  std::scoped_lock lock(mImpl->mMutex);
+  if (const auto it = mImpl->mStatus.find({panelID, Impl::Kind::Input}); it != mImpl->mStatus.end()) {
     return it->second;
   }
   return std::nullopt;

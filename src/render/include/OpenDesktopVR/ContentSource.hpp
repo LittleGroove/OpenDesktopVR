@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 
 namespace OpenDesktopVR::Render {
@@ -29,6 +30,16 @@ struct PixelRect {
   uint32_t mWidth {0};
   uint32_t mHeight {0};
   bool operator==(const PixelRect&) const = default;
+};
+
+// Where input for content goes (window panels; M4b): the captured window,
+// and the part of its client area the panel shows, in the captured frame's
+// pixels (physical). The injector maps a point on the panel through these.
+struct InputTarget {
+  void* mWindow {nullptr};// HWND
+  PixelRect mShown;
+  PixelSize mClient;
+  bool operator==(const InputTarget&) const = default;
 };
 
 // How many pixels to trim from each edge (CT-12): frameless apps draw their
@@ -108,6 +119,16 @@ class ContentSource {
   // Keep the content's app updating while other windows cover it (CT-3:
   // the app helper, for captured windows); others ignore it. Render thread.
   virtual void SetKeepUpdatingWhenCovered(bool /*keep*/) {
+  }
+
+  // Get the content's app ready for input from the hands (the app helper's
+  // input mode, from capture start: HK-1); others ignore it. Render thread.
+  virtual void SetInputWanted(bool /*wanted*/) {
+  }
+  // Where input goes now; nullopt if it can't take input (not capturing,
+  // or not a window). Render thread.
+  virtual std::optional<InputTarget> Input() const {
+    return std::nullopt;
   }
 
   // The content's size before trimming (a window's client area), for the

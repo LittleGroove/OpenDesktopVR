@@ -101,6 +101,8 @@ struct RenderLoop::Impl {
       publisher.WriteHandState(mLast);
     }
   } mChannel {*this};
+  std::atomic<bool> mHandsEnabled {true};
+  bool mHandsApplied {true};
   mutable std::mutex mTouchMutex;
   std::shared_ptr<const TouchPanels> mTouchPanels {std::make_shared<const TouchPanels>()};
   bool mHighResolutionTimer {false};
@@ -143,6 +145,11 @@ struct RenderLoop::Impl {
   void DrawLook(HostPanel& panel);
   void ApplyPendingPanels();
   void MakeSource(HostPanel& panel);
+  // The hands may touch it: its app gets ready for input at capture start
+  bool WantsInput(const PanelDefinition& definition) const {
+    return mHandsEnabled.load(std::memory_order_relaxed) && (definition.mTouch || definition.mScroll);
+  }
+  void FollowHandsEnabled();
   bool EnsureGpu(std::optional<LUID> adapter);
   void EnsurePublisher(TimeUtil::TimePoint now);
   void FollowLayer();
@@ -161,6 +168,25 @@ RenderLoop::RenderLoop(RenderLoopOptions options, SourceFactory factory) : mImpl
 
 RenderLoop::~RenderLoop() {
   Stop();
+}
+
+void RenderLoop::SetHandsEnabled(bool enabled) {
+  mImpl->mHandsEnabled = enabled;
+  FrameWakeup::RequestFrameSoon();
+}
+
+// Render thread: hands turned on or off since the last frame
+void RenderLoop::Impl::FollowHandsEnabled() {
+  const bool enabled = mHandsEnabled.load(std::memory_order_relaxed);
+  if (enabled == mHandsApplied) {
+    return;
+  }
+  mHandsApplied = enabled;
+  for (auto& panel: mPanels) {
+    if (panel->mSource) {
+      panel->mSource->SetInputWanted(WantsInput(panel->mDefinition));
+    }
+  }
 }
 
 TrackingChannel& RenderLoop::Tracking() noexcept {
@@ -246,6 +272,7 @@ void RenderLoop::Impl::MakeSource(HostPanel& panel) {
   if (panel.mSource) {
     panel.mSource->SetCrop(panel.mDefinition.mCrop);
     panel.mSource->SetKeepUpdatingWhenCovered(panel.mDefinition.mKeepUpdatingWhenCovered);
+    panel.mSource->SetInputWanted(WantsInput(panel.mDefinition));
   }
   panel.mDirty->Mark(Panels::Dirty::Structural);
 }
@@ -280,12 +307,16 @@ void RenderLoop::Impl::ApplyPendingPanels() {
     const bool newCrop = panel && !(panel->mDefinition.mCrop == definition.mCrop);
     const bool newLook = panel && !panel->mDefinition.SameLook(definition);
     const bool newKeepUpdating = panel && panel->mDefinition.mKeepUpdatingWhenCovered != definition.mKeepUpdatingWhenCovered;
+    const bool newInput = panel && WantsInput(panel->mDefinition) != WantsInput(definition);
     if (!panel) {
       panel = std::make_unique<HostPanel>();
     }
     panel->mDefinition = std::move(definition);
     if (newKeepUpdating && !newContent && panel->mSource) {
       panel->mSource->SetKeepUpdatingWhenCovered(panel->mDefinition.mKeepUpdatingWhenCovered);
+    }
+    if (newInput && !newContent && panel->mSource) {
+      panel->mSource->SetInputWanted(WantsInput(panel->mDefinition));
     }
     panel->mLimiter.SetRate(panel->mDefinition.mMaxUpdatesPerSecond, mOptions.mGlobalMaxUpdatesPerSecond);
     if (newContent) {
@@ -494,6 +525,9 @@ void RenderLoop::Impl::Publish() {
     }
     const auto& definition = mPanels[i]->mDefinition;
     TouchPanel panel {.mID = definition.mID, .mName = definition.mName, .mTouch = definition.mTouch, .mScroll = definition.mScroll};
+    if (mPanels[i]->mSource) {
+      panel.mTarget = mPanels[i]->mSource->Input();
+    }
     panel.mGeometry = {
       .mID = definition.mID,
       .mPosition = {entry.mPose[0], entry.mPose[1], entry.mPose[2]},
@@ -724,6 +758,7 @@ void RenderLoop::Impl::Main() {
 
     EnsurePublisher(now);
     ApplyPendingPanels();
+    FollowHandsEnabled();
     if (layerWoke) {
       FollowFocus();// the head points at another panel
     }

@@ -18,6 +18,7 @@
 // Every callback is caught (TH-8).
 #pragma once
 
+#include <OpenDesktopVR/ContentSource.hpp>
 #include <OpenDesktopVR/HandInteraction.hpp>
 #include <OpenDesktopVR/SharedAbi.hpp>
 
@@ -53,6 +54,8 @@ struct TouchPanel {
   HandInteraction::Panel mGeometry {};
   bool mTouch {true}; // tap, hold and drag
   bool mScroll {true};// two-finger scroll
+  // Where input goes (window panels); nullopt for content that takes none
+  std::optional<Render::InputTarget> mTarget;
   bool operator==(const TouchPanel& other) const noexcept;
 };
 using TouchPanels = std::vector<TouchPanel>;

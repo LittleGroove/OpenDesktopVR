@@ -32,6 +32,26 @@ struct AppHelperProbe {
   std::atomic<uint32_t> mLocationChanges {0};
   // Calls made by its busy thread (HK-9 under load)
   std::atomic<uint64_t> mBusyCalls {0};
+
+  // Input mode (M4b): what the app saw while handling a WM_LBUTTONDOWN the
+  // test sent, and what its probe thread saw at that moment
+  std::atomic<uint32_t> mDowns {0};
+  std::atomic<int32_t> mDownCursorX {0};
+  std::atomic<int32_t> mDownCursorY {0};
+  std::atomic<uint32_t> mDownMessagePos {0};
+  std::atomic<int32_t> mDownForeground {-1};// GetForegroundWindow() was its main window
+  std::atomic<int32_t> mDownActive {-1};    // GetActiveWindow() was its main window
+  std::atomic<int32_t> mOtherThreadCursorFaked {-1};
+  std::atomic<int32_t> mOtherThreadForegroundFaked {-1};
+  // On WM_APP + 1 (sent with no injection open): GetForegroundWindow() was
+  // its main window
+  std::atomic<uint32_t> mProbes {0};
+  std::atomic<int32_t> mProbeForeground {-1};
+  // Z-order among its own windows: WM_APP + 2 puts its second window above
+  // its main one (1 if it worked); a click then tries to bring the main one
+  // to the top (1 if it came above the second)
+  std::atomic<int32_t> mSecondOnTop {-1};
+  std::atomic<int32_t> mMainCameUp {-1};
 };
 
 inline constexpr wchar_t AppHelperProbeName[] = L"Local\\OdvrAppHelperTestProbe";

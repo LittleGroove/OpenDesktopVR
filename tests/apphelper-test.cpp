@@ -13,11 +13,17 @@
 // - unloading: everything back, the DLL gone from the app, 15 times while a
 //   thread calls the check as fast as it can (HK-9, R8);
 // - never the game, never the host itself (HK-11);
+// - input mode (M4b): inside an injected click the app sees the cursor at
+//   the injected point (negative coordinates too), its window in the
+//   foreground and active; another of its threads sees none of it (HK-5);
+//   it can't come to the top or SendInput (HK-8); the fakes end 100 ms
+//   after the end, 2 s after a lost end, and a stray end changes nothing;
 // - the service stopping with a window still on unloads it too.
 // The real browsers are in occlusion-test.
 
 #include "apphelper-probe.hpp"
 #include "check.hpp"
+#include "foreground.hpp"
 
 #include <OpenDesktopVR/AppHelperProtocol.hpp>
 #include <OpenDesktopVR/AppHelperRules.hpp>
@@ -28,6 +34,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <format>
 #include <functional>
 #include <thread>
 
@@ -239,6 +246,114 @@ int main(int argc, char** argv) {
   }
 
   if (ready) {
+    Scenario("Input mode: the app sees an injected click as real, only inside it (HK-1, HK-5, HK-8)", [&] {
+      AppHelperService service;
+      auto lease = service.Input(8, main);
+      const bool on = WaitFor([&] {
+        const auto status = service.InputStatusOf(8);
+        return status && status->mState != AppHelperService::State::Waiting;
+      }, 8s) && service.InputStatusOf(8)->mState == AppHelperService::State::On;
+      Check(on, "input on: the helper loaded, its fakes set up");
+      if (!on) {
+        return;
+      }
+      const UINT command = RegisterWindowMessageW(AppHelperProtocol::CommandMessageName);
+      const auto send = [&](UINT message, WPARAM wParam, LPARAM lParam) {
+        DWORD_PTR result = 0;
+        return SendMessageTimeoutW(main, message, wParam, lParam, SMTO_NORMAL | SMTO_ABORTIFHUNG, 2000, &result) != 0;
+      };
+      const auto begin = [&](int x, int y) {
+        send(command, static_cast<WPARAM>(AppHelperProtocol::Command::BeginInjection), AppHelperProtocol::PackPoint(x, y));
+      };
+      const auto end = [&] { send(command, static_cast<WPARAM>(AppHelperProtocol::Command::EndInjection), 0); };
+      const auto probeForeground = [&] {
+        const auto before = probe->mProbes.load();
+        send(WM_APP + 1, 0, 0);
+        return probe->mProbes.load() > before && probe->mProbeForeground == 1;
+      };
+      // The test's window is the foreground, like the game
+      Check(Testing::TakeForeground(cover), "before: the test's window is the foreground");
+      // The app's second window above its main one, so a click can try to
+      // bring the main one up
+      const auto secondOnTop = [&] {
+        probe->mSecondOnTop = -1;
+        send(WM_APP + 2, 0, 0);
+        return probe->mSecondOnTop == 1;
+      };
+      // Active on its own thread first (activation reorders the app's own
+      // windows by itself), then its second window on top
+      begin(0, 0);
+      send(command, 0x11, reinterpret_cast<LPARAM>(main));// ActivateWindow
+      end();
+      std::this_thread::sleep_for(150ms);
+      Check(secondOnTop(), "before: the app's second window is above its main one");
+      // Input the app sends: seen by a low-level hook here
+      static std::atomic<int> injected {0};
+      injected = 0;
+      const HHOOK mouseHook = SetWindowsHookExW(WH_MOUSE_LL, [](int code, WPARAM wParam, LPARAM lParam) -> LRESULT {
+        if (code == HC_ACTION && (reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam)->flags & LLMHF_INJECTED)) {
+          ++injected;
+        }
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+      }, GetModuleHandleW(nullptr), 0);
+
+      // A click, as the injector sends it, left of and above the main monitor
+      begin(-1234, -567);
+      const auto downs = probe->mDowns.load();
+      send(WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(10, 10));
+      Check(probe->mDowns.load() == downs + 1, "the app handled the click");
+      Check(probe->mDownCursorX == -1234 && probe->mDownCursorY == -567,
+        std::format("GetCursorPos: the injected point ({}, {})", probe->mDownCursorX.load(), probe->mDownCursorY.load()));
+      const auto packed = AppHelperProtocol::UnpackPoint(static_cast<LPARAM>(probe->mDownMessagePos.load()));
+      Check(packed.x == -1234 && packed.y == -567, "GetMessagePos: the same, packed signed");
+      Check(probe->mDownForeground == 1, "GetForegroundWindow: its own window");
+      Check(probe->mDownActive == 1, "its window is active on its own thread");
+      Check(probe->mOtherThreadCursorFaked == 0 && probe->mOtherThreadForegroundFaked == 0,
+        "another of its threads sees the real cursor and foreground (HK-5)");
+      Check(probe->mMainCameUp == 0, "it couldn't bring its window to the top (HK-8)");
+      Check(GetForegroundWindow() == cover, "the real foreground didn't change");
+      Pump(100ms);
+      Check(injected == 0, "its SendInput went nowhere (HK-8)");
+      Check(probeForeground(), "until the end, its window still looks foreground");
+      end();
+      Check(probeForeground(), "within 100 ms of the end: still");
+      std::this_thread::sleep_for(150ms);
+      Check(!probeForeground(), "150 ms after: the real foreground");
+
+      // A stray end: never below zero, the next click works the same
+      end();
+      end();
+      begin(50, 60);
+      send(WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(10, 10));
+      end();
+      Check(probe->mDownCursorX == 50 && probe->mDownCursorY == 60, "after stray ends: a click works as before");
+      std::this_thread::sleep_for(150ms);
+      Check(!probeForeground(), "and ends 100 ms later (no count left over)");
+
+      // An end that never comes
+      begin(70, 80);
+      Check(probeForeground(), "a begin with no end: foreground faked");
+      std::this_thread::sleep_for(2200ms);
+      Check(!probeForeground(), "2 s later: over by itself");
+      begin(90, 100);
+      end();
+      std::this_thread::sleep_for(150ms);
+      Check(!probeForeground(), "a begin after the expired one starts fresh: over 100 ms after its end");
+
+      Check(GetForegroundWindow() == cover, "the test's window stayed the foreground throughout");
+      lease.reset();
+      Check(WaitFor([&] { return probe->mHelperLoaded == 0; }, 5s), "input off: the helper is gone from the app");
+      // Without the helper, the app's own calls are real again
+      Check(secondOnTop(), "after: the second window on top again");
+      begin(1, 2);
+      send(WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(10, 10));
+      end();
+      Check(probe->mDownCursorX != 1 || probe->mDownCursorY != 2, "after: the real cursor");
+      Check(probe->mMainCameUp == 1, "after: the app can bring its window to the top again (the guard is gone)");
+      Check(WaitFor([&] { return injected > 0; }, 1s), "after: its SendInput is real again (the hook here sees it)");
+      UnhookWindowsHookEx(mouseHook);
+    });
+
     Scenario("The service stops with a window still on: the helper unloads", [&] {
       std::shared_ptr<void> lease;
       {

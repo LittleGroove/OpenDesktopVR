@@ -36,6 +36,7 @@
 #include "TrayIcon.hpp"
 
 #include <OpenDesktopVR/AppHelperService.hpp>
+#include <OpenDesktopVR/InjectingSink.hpp>
 #include <OpenDesktopVR/LayerRegistration.hpp>
 #include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/ProcessUtil.hpp>
@@ -194,6 +195,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         if (definition.mKind == Host::PanelKind::Window) {
           Capture::WindowCaptureOptions capture {definition.mWindow, definition.mName};
           capture.mKeepUpdating = [&appHelper, id = definition.mID](HWND window) { return appHelper.KeepPainting(id, window); };
+          capture.mInput = [&appHelper, id = definition.mID](HWND window) { return appHelper.Input(id, window); };
           return std::make_unique<Capture::WindowCaptureSource>(gpu, std::move(capture), std::move(markDirty));
         }
         return std::make_unique<Render::TestPatternSource>(
@@ -236,12 +238,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     panels.Load();
     renderer.Start();
 
-    // Hands (doc 05): samples from the layer, touches out. Made after the
-    // renderer, whose shared block it reads, so it stops first. M4a logs
-    // touches; the injector (M4b) becomes its sink.
-    Host::HandService hands {renderer.Tracking(), [&renderer] { return renderer.TouchablePanels(); }, nullptr};
-    hands.SetSettings(panels.Hands());
-    const auto handSettings = panels.Changed().Subscribe([&] { hands.SetSettings(panels.Hands()); });
+    // Hands (doc 05): samples from the layer, touches into the captured
+    // windows (doc 06). Made after the renderer, whose shared block they
+    // read, so they stop first; the hand thread stops before the injector,
+    // which then posts any release still held (INJ-4).
+    Pointer::Injector injector;
+    Host::InjectingSink injectingSink {injector};
+    Host::HandService hands {renderer.Tracking(), [&renderer] { return renderer.TouchablePanels(); }, &injectingSink};
+    const auto applyHands = [&] {
+      hands.SetSettings(panels.Hands());
+      renderer.SetHandsEnabled(panels.Hands().mEnabled);
+    };
+    applyHands();
+    const auto handSettings = panels.Changed().Subscribe(applyHands);
     hands.Start();
 
     // Keybinds: the keyboard and game controllers, on their own thread

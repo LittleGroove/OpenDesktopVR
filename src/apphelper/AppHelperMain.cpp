@@ -2,8 +2,11 @@
 // Copyright (c) 2026 Robert McGough. All rights reserved.
 //
 // The app helper DLL (doc 06; ADR-031): loaded into a captured app by the
-// host's WH_GETMESSAGE hook on the captured window's UI thread. So far it does
-// one thing: it keeps the app painting while the game covers it (CT-3).
+// host's hooks on the captured window's UI thread. It does two things:
+// - keeps the app painting while the game covers it (CT-3), below;
+// - input mode (M4b, InputFakes.hpp): around each event the host's injector
+//   sends, the app sees the cursor where the finger is and its window as the
+//   foreground one, and can't move itself over the game.
 //
 // Chromium-based apps (Edge, Chrome, Discord, Spotify) and Firefox check
 // whether other windows cover theirs, and stop painting about a second after
@@ -18,8 +21,11 @@
 //   (fixed-size state); nothing throws out of the hook; nothing waits on the
 //   host; nothing is logged (the host logs what the replies say).
 
+#include "InputFakes.hpp"
+
 #include <OpenDesktopVR/AppHelperProtocol.hpp>
 #include <OpenDesktopVR/ImportPatch.hpp>
+#include <OpenDesktopVR/InjectionHookProtocol.hpp>
 
 #include <Windows.h>
 
@@ -30,7 +36,9 @@
 namespace {
 
 namespace Protocol = OpenDesktopVR::AppHelperProtocol;
+namespace InputFakes = OpenDesktopVR::AppHelper::InputFakes;
 using OpenDesktopVR::AppHelper::ImportPatch;
+using OpenDesktopVR::AppHelper::InputFakes::gInFlight;
 
 constexpr std::size_t MaxWindows = 16;
 // HK-9: how long Unload waits for calls already in the visibility check
@@ -42,7 +50,6 @@ HMODULE gModule {nullptr};
 
 // ---- Read by the visibility check, on any thread --------------------------
 std::atomic<int> gWindowsOn {0};
-std::atomic<int> gInFlight {0};
 IsWindowVisibleFn gRealIsWindowVisible {nullptr};// set once, before any patch
 DWORD gOwnProcess {0};
 HWND gDesktop {nullptr};
@@ -50,6 +57,8 @@ HWND gDesktop {nullptr};
 // ---- Commands only (under gLock) ------------------------------------------
 SRWLOCK gLock = SRWLOCK_INIT;
 std::array<HWND, MaxWindows> gWindows {};
+std::array<HWND, MaxWindows> gInputWindows {};
+std::atomic<int> gInputOn {0};
 ImportPatch gPatch;
 std::atomic<HWND> gReplyWindow {nullptr};
 std::atomic<bool> gRetired {false};// pinned after an unload that couldn't finish
@@ -108,12 +117,53 @@ void LookAgain(HWND window) noexcept {
   NotifyWinEvent(EVENT_OBJECT_LOCATIONCHANGE, window, OBJID_WINDOW, CHILDID_SELF);
 }
 
-std::size_t CountOn() noexcept {
+std::size_t CountOn(const std::array<HWND, MaxWindows>& windows = gWindows) noexcept {
   std::size_t count = 0;
-  for (const auto window: gWindows) {
+  for (const auto window: windows) {
     count += window ? 1 : 0;
   }
   return count;
+}
+
+// Lists the window once; false if the list is full
+bool AddWindow(std::array<HWND, MaxWindows>& windows, HWND window) noexcept {
+  if (std::find(windows.begin(), windows.end(), window) != windows.end()) {
+    return true;
+  }
+  const auto free = std::find(windows.begin(), windows.end(), nullptr);
+  if (free == windows.end()) {
+    return false;
+  }
+  *free = window;
+  return true;
+}
+
+// Input mode: the fakes set up (they act only inside an injection window)
+void InputOn(HWND window) noexcept {
+  if (!IsWindow(window)) {
+    Reply(Protocol::Command::InputOn, Protocol::Result::Failed);
+    return;
+  }
+  if (!AddWindow(gInputWindows, window)) {
+    Reply(Protocol::Command::InputOn, Protocol::Result::TooManyWindows);
+    return;
+  }
+  // Modules loaded since the last command are redirected too
+  const auto slots = InputFakes::Apply(gModule);
+  gInputOn.store(static_cast<int>(CountOn(gInputWindows)), std::memory_order_release);
+  Reply(Protocol::Command::InputOn, slots > 0 ? Protocol::Result::Ok : Protocol::Result::NothingToPatch, slots);
+}
+
+void InputOff(HWND window) noexcept {
+  for (auto& on: gInputWindows) {
+    if (on == window) {
+      on = nullptr;
+    }
+  }
+  gInputOn.store(static_cast<int>(CountOn(gInputWindows)), std::memory_order_release);
+  // The fakes stay set up, doing nothing outside an injection window;
+  // Unload puts them back
+  Reply(Protocol::Command::InputOff, Protocol::Result::Ok);
 }
 
 void KeepPaintingOn(HWND window) noexcept {
@@ -132,17 +182,9 @@ void KeepPaintingOn(HWND window) noexcept {
     return;
   }
   // Once per window (a repeated command changes nothing)
-  bool listed = false;
-  for (const auto on: gWindows) {
-    listed |= on == window;
-  }
-  if (!listed) {
-    auto free = std::find(gWindows.begin(), gWindows.end(), nullptr);
-    if (free == gWindows.end()) {
-      Reply(Protocol::Command::KeepPaintingOn, Protocol::Result::TooManyWindows);
-      return;
-    }
-    *free = window;
+  if (!AddWindow(gWindows, window)) {
+    Reply(Protocol::Command::KeepPaintingOn, Protocol::Result::TooManyWindows);
+    return;
   }
   // Modules loaded since the last command are patched too
   const auto slots = gPatch.Apply("IsWindowVisible", reinterpret_cast<void*>(gRealIsWindowVisible),
@@ -169,8 +211,11 @@ void KeepPaintingOff(HWND window) noexcept {
 // host removes the hook (which unloads it)
 void Unload() noexcept {
   gWindows.fill(nullptr);
+  gInputWindows.fill(nullptr);
   gWindowsOn.store(0, std::memory_order_release);
+  gInputOn.store(0, std::memory_order_release);
   gPatch.Restore();
+  InputFakes::Restore();
   // A thread may have read a patched slot just before it was put back and
   // not be inside yet: a moment for it, then wait for those inside
   Sleep(2);
@@ -209,10 +254,51 @@ void Handle(WPARAM command, LPARAM argument) noexcept {
     case Protocol::Command::Unload:
       Unload();
       break;
+    case Protocol::Command::InputOn:
+      if (gRetired) {
+        Reply(Protocol::Command::InputOn, Protocol::Result::Failed);
+      } else {
+        InputOn(reinterpret_cast<HWND>(argument));
+      }
+      break;
+    case Protocol::Command::InputOff:
+      InputOff(reinterpret_cast<HWND>(argument));
+      break;
+    case Protocol::Command::EndInjection:
+      // Posted instead of sent when the window wasn't responding (INJ-3)
+      InputFakes::End();
+      break;
+    case Protocol::Command::SetMouseButtons:
+      InputFakes::SetMouseButtons(argument);
+      break;
     default:
-      break;// another build's command, or a keyboard one: not handled here yet
+      break;// another build's command, or a sent one (the other hook's)
   }
   ReleaseSRWLockExclusive(&gLock);
+}
+
+// A sent command, on the hooked thread, before the window gets it. Never
+// answered; never waits; takes no lock (injection windows are per thread).
+void HandleSent(HWND window, WPARAM command, LPARAM argument) noexcept {
+  if (gRetired || gInputOn.load(std::memory_order_acquire) == 0) {
+    return;// input isn't on here
+  }
+  switch (command) {
+    case static_cast<WPARAM>(Protocol::Command::BeginInjection):
+      InputFakes::Begin(window, argument);
+      break;
+    case static_cast<WPARAM>(Protocol::Command::EndInjection):
+      InputFakes::End();
+      break;
+    case static_cast<WPARAM>(Protocol::Command::SetMouseButtons):
+      InputFakes::SetMouseButtons(argument);
+      break;
+    case static_cast<WPARAM>(OpenDesktopVR::InjectionHookProtocol::Command::ActivateWindow):
+      InputFakes::Activate(reinterpret_cast<HWND>(argument));
+      break;
+    default:
+      break;// the keyboard's other commands: M5
+  }
 }
 
 }// namespace
@@ -237,6 +323,19 @@ extern "C" __declspec(dllexport) LRESULT CALLBACK OdvrAppHelperGetMessageProc(in
   return CallNextHookEx(nullptr, code, wParam, lParam);
 }
 
+// The hook for sent messages (input mode). Called before the window
+// procedure for every message sent to the thread's windows, so the common
+// case is one comparison; it can't change or stop the message.
+extern "C" __declspec(dllexport) LRESULT CALLBACK OdvrAppHelperCallWndProc(int code, WPARAM wParam, LPARAM lParam) {
+  if (code == HC_ACTION && lParam != 0) {
+    const auto* sent = reinterpret_cast<const CWPSTRUCT*>(lParam);
+    if (sent->message == CommandMessage() && sent->message != 0) {
+      HandleSent(sent->hwnd, sent->wParam, sent->lParam);
+    }
+  }
+  return CallNextHookEx(nullptr, code, wParam, lParam);
+}
+
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
   if (reason == DLL_PROCESS_ATTACH) {
     gModule = module;
@@ -246,8 +345,10 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
     // the app's imports back before this code goes away. Without the lock:
     // a command may be stuck, and the restore is a compare-exchange per slot.
     gWindowsOn.store(0, std::memory_order_release);
-    if (gPatch.Count() > 0) {
+    gInputOn.store(0, std::memory_order_release);
+    if (gPatch.Count() > 0 || InputFakes::Count() > 0) {
       gPatch.Restore();
+      InputFakes::Restore();
       const ULONGLONG until = GetTickCount64() + InFlightWaitMs;
       while (gInFlight.load(std::memory_order_acquire) > 0 && GetTickCount64() < until) {
         Sleep(1);

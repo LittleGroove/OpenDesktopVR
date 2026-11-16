@@ -57,6 +57,17 @@ endfunction()
 odvr_hands_test(sim-hands ${ODVR_SIM_ARGS} ${ODVR_SIM_OUT}/hands)
 # The game in STAGE, offset from LOCAL: hands still where they are (XR-12)
 odvr_hands_test(sim-hands-stage --stage-offset ${ODVR_SIM_ARGS} ${ODVR_SIM_OUT}/hands-stage)
+# M4b, end to end: the scripted hand taps, sweeps and scrolls a panel showing
+# click-target; exactly one click, none from the sweep, the wheel without a
+# click, and the latency from the click to the panel showing it (doc 11)
+add_dependencies(with-host click-target)
+add_test(
+  NAME sim-click
+  COMMAND with-host --also $<TARGET_FILE:click-target> ${ODVR_SIM_OUT}/click/click-target.log
+    $<TARGET_FILE:OpenDesktopVR> --window "Click Target"
+    -- $<TARGET_FILE:openxr-simulator> ${ODVR_SIM_ARGS} ${ODVR_SIM_OUT}/click ${ODVR_SIM_OUT}/click/click-target.log
+)
+set_tests_properties(sim-click PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL" PASS_REGULAR_EXPRESSION "PASSED" TIMEOUT 200)
 
 # The real layer DLL against a minimal fake runtime (WARP; runs without a GPU)
 odvr_executable(layer-dll-test SOURCES layer-dll-test.cpp DEPS odvr::core odvr::openxr_headers odvr::cppwinrt d3d11)
@@ -95,12 +106,20 @@ set_target_properties(apphelper-test-app PROPERTIES FOLDER "tests")
 odvr_test(apphelper-test NO_CTEST SOURCES apphelper-test.cpp DEPS odvr::apphelperhost odvr::importpatch odvr::apphelper_protocol)
 add_dependencies(apphelper-test apphelper-test-app)
 add_test(NAME apphelper-test COMMAND apphelper-test $<TARGET_FILE:apphelper-test-app>)
+# The injector (M4b) against click-target, with the helper's input mode
+odvr_test(pointer-inject-test NO_CTEST SOURCES pointer-inject-test.cpp DEPS odvr::pointer odvr::apphelperhost)
+add_dependencies(pointer-inject-test click-target)
+add_test(NAME pointer-inject-test COMMAND pointer-inject-test $<TARGET_FILE:click-target>)
+set_tests_properties(pointer-inject-test PROPERTIES TIMEOUT 120)
 set_tests_properties(apphelper-test PROPERTIES TIMEOUT 180)
 
 # The app helper with real browsers (M3d, CT-3): Firefox and Edge, each
 # skipped if not installed
 odvr_test(occlusion-test SOURCES occlusion-test.cpp DEPS odvr::apphelperhost)
 set_tests_properties(occlusion-test PROPERTIES TIMEOUT 240)
+# The injection matrix's mouse rows on Firefox and Edge, covered (M4b)
+odvr_test(browser-input-test SOURCES browser-input-test.cpp DEPS odvr::apphelperhost odvr::pointer)
+set_tests_properties(browser-input-test PROPERTIES TIMEOUT 240)
 
 # Window capture against a real window in another process (M3)
 odvr_test(capture-test NO_CTEST SOURCES capture-test.cpp DEPS odvr::capture)

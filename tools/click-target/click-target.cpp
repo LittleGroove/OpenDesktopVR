@@ -6,9 +6,13 @@
 // to check that finger taps arrive as real clicks.
 //
 // Usage: click-target-test <log file> [slow ms] [animate fps] [same]
+//          [--hang-once <ms>]
 // Each line of the log is "DOWN x y t", "UP x y t", "WHEEL delta x y", or
 // "MOVES n" (a count of mouse moves since the last button event); t is a
 // high-resolution timestamp in milliseconds, comparable between processes.
+// Added in the port (M4b): "DOUBLE x y t" for a double-click (the window
+// asks for them), "LEAVE t" when the mouse leaves it; '--hang-once <ms>'
+// stops responding for that long on the first click, like a hung app.
 //
 // 'slow ms' makes every mouse move take that long to handle, like a busy app.
 // 'animate fps' repaints that many times a second with a moving bar, like a
@@ -29,7 +33,10 @@
 #include <format>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -40,6 +47,7 @@ int gClickCount = 0;
 int gSlowMilliseconds = 0;
 int gAnimateFps = 0;
 bool gSame = false;
+int gHangOnceMilliseconds = 0;
 std::atomic<uint64_t> gAnimationFrame {0};
 
 double NowMilliseconds() {
@@ -78,14 +86,21 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         BusyWait(gSlowMilliseconds);
       }
       return 0;
-    case WM_LBUTTONDOWN: {
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONDBLCLK: {
       const auto now = NowMilliseconds();
       gLastClick = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
       ++gClickCount;
-      Log(std::format("DOWN {} {} {:.3f}", gLastClick.x, gLastClick.y, now));
+      Log(std::format("{} {} {} {:.3f}", msg == WM_LBUTTONDBLCLK ? "DOUBLE" : "DOWN", gLastClick.x, gLastClick.y, now));
       InvalidateRect(hwnd, nullptr, TRUE);
+      if (gHangOnceMilliseconds > 0) {
+        Sleep(static_cast<DWORD>(std::exchange(gHangOnceMilliseconds, 0)));
+      }
       return 0;
     }
+    case WM_MOUSELEAVE:
+      Log(std::format("LEAVE {:.3f}", NowMilliseconds()));
+      return 0;
     case WM_LBUTTONUP:
       Log(std::format(
         "UP {} {} {:.3f}",
@@ -169,6 +184,17 @@ int main(int argc, char** argv) {
     std::printf("Usage: click-target-test <log file>\n");
     return 1;
   }
+  // Named options can go anywhere; what's left is positional
+  std::vector<char*> positional;
+  for (int i = 0; i < argc; ++i) {
+    if (std::string_view {argv[i]} == "--hang-once" && i + 1 < argc) {
+      gHangOnceMilliseconds = std::max(0, std::atoi(argv[++i]));
+    } else {
+      positional.push_back(argv[i]);
+    }
+  }
+  argc = static_cast<int>(positional.size());
+  argv = positional.data();
   gLog.open(argv[1], std::ios::out | std::ios::trunc);
   if (argc > 2) {
     gSlowMilliseconds = std::atoi(argv[2]);
@@ -180,6 +206,7 @@ int main(int argc, char** argv) {
 
   const auto instance = GetModuleHandleW(nullptr);
   const WNDCLASSW windowClass {
+    .style = CS_DBLCLKS,
     .lpfnWndProc = &WindowProc,
     .hInstance = instance,
     .hCursor = LoadCursorW(nullptr, IDC_ARROW),

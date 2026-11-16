@@ -16,7 +16,9 @@
 // A browser that isn't installed is skipped. Only the processes this test
 // started are closed.
 
+#include "browser.hpp"
 #include "check.hpp"
+#include "foreground.hpp"
 
 #include <OpenDesktopVR/AppHelperService.hpp>
 
@@ -72,106 +74,16 @@ std::optional<PageState> ReadPage(HWND window) {
   return state;
 }
 
-// Waits, keeping this thread's windows responsive (a window that stops
-// answering is replaced by a ghost on screen)
+// Shared with browser-input-test (support/browser.hpp, foreground.hpp)
+using Testing::Browser;
+using Testing::TakeForeground;
+
 void Pump(std::chrono::milliseconds duration) {
-  const auto end = std::chrono::steady_clock::now() + duration;
-  do {
-    MSG message {};
-    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
-      DispatchMessageW(&message);
-    }
-    std::this_thread::sleep_for(10ms);
-  } while (std::chrono::steady_clock::now() < end);
+  Testing::PumpFor(duration);
 }
 
 bool WaitFor(const std::function<bool()>& condition, std::chrono::milliseconds limit) {
-  const auto end = std::chrono::steady_clock::now() + limit;
-  while (std::chrono::steady_clock::now() < end) {
-    if (condition()) {
-      return true;
-    }
-    Pump(50ms);
-  }
-  return condition();
-}
-
-// The browser: its processes in a job, closed with it
-class Browser {
- public:
-  Browser(const std::filesystem::path& exe, const std::wstring& arguments) {
-    mJob = CreateJobObjectW(nullptr, nullptr);
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits {};
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
-    SetInformationJobObject(mJob, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
-    std::wstring commandLine = L"\"" + exe.wstring() + L"\" " + arguments;
-    STARTUPINFOW startup {sizeof(startup)};
-    PROCESS_INFORMATION process {};
-    if (CreateProcessW(exe.c_str(), commandLine.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED, nullptr, nullptr,
-          &startup, &process)) {
-      AssignProcessToJobObject(mJob, process.hProcess);
-      ResumeThread(process.hThread);
-      CloseHandle(process.hThread);
-      CloseHandle(process.hProcess);
-      mStarted = true;
-    }
-  }
-  ~Browser() {
-    // The process that owns the window (it may have left the job), then the rest
-    if (mWindow) {
-      DWORD id = 0;
-      GetWindowThreadProcessId(mWindow, &id);
-      if (HANDLE process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, id)) {
-        TerminateProcess(process, 0);
-        WaitForSingleObject(process, 5000);
-        CloseHandle(process);
-      }
-    }
-    CloseHandle(mJob);
-    std::this_thread::sleep_for(500ms);
-  }
-
-  bool Started() const {
-    return mStarted;
-  }
-
-  // Its page's window, once the page has set its title
-  HWND FindPage(std::chrono::milliseconds limit) {
-    WaitFor([&] {
-      EnumWindows(
-        [](HWND window, LPARAM context) -> BOOL {
-          auto* self = reinterpret_cast<Browser*>(context);
-          if (IsWindowVisible(window) && ReadPage(window)) {
-            self->mWindow = window;
-            return FALSE;
-          }
-          return TRUE;
-        },
-        reinterpret_cast<LPARAM>(this));
-      return mWindow != nullptr;
-    }, limit);
-    return mWindow;
-  }
-
- private:
-  HANDLE mJob {nullptr};
-  bool mStarted {false};
-  HWND mWindow {nullptr};
-};
-
-// Windows only lets the foreground's input queue hand the foreground over:
-// share it for a moment. Brought to the top of the z-order too.
-bool TakeForeground(HWND window) {
-  SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-  SetWindowPos(window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-  const HWND foreground = GetForegroundWindow();
-  const DWORD theirs = foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
-  const bool shared = theirs != 0 && theirs != GetCurrentThreadId() && AttachThreadInput(GetCurrentThreadId(), theirs, TRUE);
-  SetForegroundWindow(window);
-  if (shared) {
-    AttachThreadInput(GetCurrentThreadId(), theirs, FALSE);
-  }
-  return GetForegroundWindow() == window;
+  return Testing::WaitUntil(condition, limit);
 }
 
 LRESULT CALLBACK CoverProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {

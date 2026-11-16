@@ -1,17 +1,22 @@
 // SPDX-License-Identifier: LicenseRef-Proprietary
 // Copyright (c) 2026 Robert McGough. All rights reserved.
 //
-// Keeps captured apps painting while the game covers them (CT-3; doc 06
-// "Occlusion"; ADR-031), by loading the app helper into them.
+// Loads the app helper into captured apps (doc 06; ADR-031), for two
+// things, each asked for with its own lease:
+// - keeping an app painting while the game covers it (CT-3, "Occlusion");
+// - input (M4b): the fakes that let the injector's events land as if the
+//   app were in front, without it coming in front.
 //
 // - **When:** a window panel's capture asks at capture start (HK-1) and lets
-//   go when its capture stops, through a lease. Only apps that need it
-//   (AppHelperRules: Chromium-based and Firefox), only windows the user
-//   picked, never the game or the host itself (HK-11), never an elevated
-//   app while we aren't, never a 32-bit app (ADR-015). Each panel can turn
-//   it off (Q10).
-// - **How:** one WH_GETMESSAGE hook per UI thread, shared by every window
-//   of that thread (HK-2). Commands are posted only after the hook is in,
+//   go when its capture stops, through a lease. Painting: only apps that
+//   need it (AppHelperRules: Chromium-based and Firefox). Input: any app,
+//   for panels with touch or scroll on. Only windows the user picked, never
+//   the game or the host itself (HK-11), never an elevated app while we
+//   aren't, never a 32-bit app (ADR-015). Each panel can turn either off.
+// - **How:** one set of hooks per UI thread (WH_GETMESSAGE for posted
+//   commands, WH_CALLWNDPROC for the injector's sent ones), shared by every
+//   window of that thread and both kinds of lease (HK-2). Commands are
+//   posted only after the hooks are in,
 //   starting with Hello, and every one is answered (HK-4). When the last
 //   window lets go, Unload waits for the helper to finish (HK-9) before the
 //   hook is removed, which unloads it.
@@ -72,9 +77,13 @@ class AppHelperService {
   // it needs to and can. Any thread; never blocks. `panelID` names it for
   // StatusOf.
   [[nodiscard]] std::shared_ptr<void> KeepPainting(uint64_t panelID, HWND window);
+  // While the lease lives, the helper's input fakes are set up in the
+  // window's app (they act only around injected events). Any thread.
+  [[nodiscard]] std::shared_ptr<void> Input(uint64_t panelID, HWND window);
 
   // The newest lease's status for a panel; nullopt if it has none. Any thread.
   std::optional<Status> StatusOf(uint64_t panelID) const;
+  std::optional<Status> InputStatusOf(uint64_t panelID) const;
 
   // For tests
   std::size_t Installs() const;
@@ -84,6 +93,7 @@ class AppHelperService {
  private:
   struct Impl;
   std::shared_ptr<Impl> mImpl;
+  std::shared_ptr<void> MakeLease(uint64_t panelID, HWND window, int kind);
 };
 
 }// namespace OpenDesktopVR::AppHelper

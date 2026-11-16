@@ -40,6 +40,9 @@ struct WindowCaptureOptions {
   // render thread when capture starts, if wanted; the window's app keeps
   // updating while the result lives. Null: not available.
   std::function<std::shared_ptr<void>(HWND window)> mKeepUpdating;
+  // Gets the window's app ready for input (the app helper's input mode):
+  // called on the render thread when capture starts, if wanted
+  std::function<std::shared_ptr<void>(HWND window)> mInput;
 };
 
 class WindowCaptureSource final : public Render::ContentSource {
@@ -55,6 +58,8 @@ class WindowCaptureSource final : public Render::ContentSource {
   void SetCrop(const Render::Crop& crop) override;
   // HK-1: from capture start (and while hidden: CP-5) until capture stops
   void SetKeepUpdatingWhenCovered(bool keep) override;
+  void SetInputWanted(bool wanted) override;
+  std::optional<Render::InputTarget> Input() const override;
   Render::PixelSize UntrimmedSize() const override;
   void Maintain(TimeUtil::TimePoint now) override;
   std::wstring Describe() const override;
