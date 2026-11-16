@@ -164,10 +164,14 @@ std::string ButtonName(const Button& button) {
     return KeyName(button.mCode);
   }
   const auto device = button.mDeviceName.empty() ? std::string {"Controller"} : button.mDeviceName;
-  if (button.mCode >= HatBase) {
-    return std::format("{}: hat {} {}", device, (button.mCode - HatBase) / 4 + 1, HatDirectionNames[(button.mCode - HatBase) % 4]);
+  return std::format("{}: {}", device, ControllerCodeName(button.mCode));
+}
+
+std::string ControllerCodeName(uint32_t code) {
+  if (code >= HatBase) {
+    return std::format("hat {} {}", (code - HatBase) / 4 + 1, HatDirectionNames[(code - HatBase) % 4]);
   }
-  return std::format("{}: button {}", device, button.mCode + 1);
+  return std::format("button {}", code + 1);
 }
 
 std::string BindingName(const Binding& binding) {

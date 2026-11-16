@@ -8,7 +8,10 @@
 // - each FrameArrived drains the pool to the newest frame (CP-1) and wakes
 //   the render loop (CP-2); the frame is copied on the render thread, client
 //   area only (CP-3), and compared on the GPU with the frame shown: an
-//   identical frame is dropped (Windows 10 sends some; test round 4);
+//   identical frame is dropped (Windows 10 sends some; test round 4). Only
+//   a still window waits for that check; a window that changed in the last
+//   half second (a video) is drawn at once, while the check runs alongside
+//   (CP-10: the check's answer comes late while a game fills the GPU);
 // - the user's trim (CT-12, in pixels) is applied when drawing, so a new
 //   trim shows at once, without waiting for the window to send a frame;
 // - inactive (hidden, or nobody watching): frames are dropped, the session
@@ -51,6 +54,13 @@ class WindowCaptureSource final : public Render::ContentSource {
   uint64_t FramesArrived() const noexcept;
   uint64_t FramesCopied() const noexcept;
   uint64_t FramesUnchanged() const noexcept;
+  // Drawn as soon as they arrived: the window was live (CP-10)
+  uint64_t FramesDrawnAtOnce() const noexcept;
+  // Hitches while a window keeps changing: a frame Windows composed much
+  // later than the window's usual interval (the window's own), and a frame
+  // we drew more than about half a frame later than the one before (ours)
+  uint64_t WindowGaps() const noexcept;
+  uint64_t LateDraws() const noexcept;
   bool IsCapturing() const noexcept;
 
  private:

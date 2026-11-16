@@ -39,6 +39,11 @@ namespace {
 constexpr Render::PixelSize WaitingSize {800, 450};
 constexpr auto RetryInterval = 1s;// CP-6: about once a second while missing
 constexpr auto Format = wgdx::DirectXPixelFormat::B8G8R8A8UIntNormalized;
+// CP-10: a window that changed this recently is "live" (a video, scrolling):
+// its frames are drawn at once, without waiting for the GPU check
+constexpr auto LiveWindow = 500ms;
+// Two: three or four did no better under a game-like GPU load (test round 7)
+constexpr int32_t PoolBuffers = 2;
 
 bool HasProperty(const wchar_t* type, const wchar_t* property) noexcept {
   try {
@@ -92,18 +97,32 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
   Render::Crop mCrop;// the user's trim (CT-12), applied when drawing
   bool mShownNotDrawn {false};
   bool mComparing {false};
+  // Whether the check in flight holds the candidate back (a still window),
+  // or only looks at a frame already drawn (a live one)
+  bool mCompareGates {false};
+  // When the check last found a change
+  TimeUtil::TimePoint mLastChange {};
   winrt::com_ptr<ID3D11ComputeShader> mCompare;
   winrt::com_ptr<ID3D11Buffer> mResult;
   winrt::com_ptr<ID3D11UnorderedAccessView> mResultView;
   winrt::com_ptr<ID3D11Buffer> mReadback;
   std::unique_ptr<D3D11Util::PrivateContextState> mContextState;
   std::atomic<uint64_t> mUnchanged {0};
+  std::atomic<uint64_t> mDrawnAtOnce {0};
   // From composition to drawn, per stats line (render thread only): a
   // steady delay keeps frames evenly spaced; a varying one is a hitch
   mutable uint64_t mLatencyCount {0};
   mutable double mLatencySumMs {0};
   mutable double mLatencyMaxMs {0};
   mutable uint64_t mLatencyOver10 {0};
+  // Hitches (test round 7: "every second it loses a couple of frames"), per
+  // drawn frame of a window that keeps changing: was the gap the window's
+  // own (Windows composed it late), or ours (drawn much later than usual)?
+  TimeUtil::TimePoint mPreviousComposed {};
+  double mPreviousDelayMs {0};
+  double mTypicalIntervalMs {0};// a running average of the window's frame interval
+  std::atomic<uint64_t> mWindowGaps {0};
+  std::atomic<uint64_t> mLateDraws {0};
   winrt::com_ptr<IDWriteTextFormat> mTextFormat;
   winrt::com_ptr<ID2D1SolidColorBrush> mBrush;
 
@@ -173,7 +192,7 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
     if (size.Width <= 0 || size.Height <= 0) {
       return false;// still opening: retried (CP-7)
     }
-    auto pool = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(mDevice, Format, 2, size);
+    auto pool = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(mDevice, Format, PoolBuffers, size);
     auto session = pool.CreateCaptureSession(item);
     // We draw our own pointer feedback
     if (HasProperty(L"Windows.Graphics.Capture.GraphicsCaptureSession", L"IsCursorCaptureEnabled")) {
@@ -243,7 +262,7 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
     {
       std::scoped_lock lock(mMutex);
       if (size.Width != mPoolSize.Width || size.Height != mPoolSize.Height) {
-        pool.Recreate(mDevice, Format, 2, size);// the window was resized
+        pool.Recreate(mDevice, Format, PoolBuffers, size);// the window was resized
         mPoolSize = size;
       }
       if (mPending) {
@@ -338,25 +357,41 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
     return true;
   }
 
+  // CP-10. The GPU check's answer is read back, and with a game running the
+  // GPU gets to it late: about 44 ms in test round 7, so a video waiting for
+  // it drew 18 of its 30 frames a second. So only a still window waits for
+  // it (most of its frames are identical: dropped). A live one's frames are
+  // drawn at once; the check runs alongside, one at a time, only to notice
+  // when the window has gone still.
   Render::Readiness Prepare() {
     auto* context = mGpu.Context();
+    const auto now = TimeUtil::Now();
     if (mComparing) {
       D3D11_MAPPED_SUBRESOURCE mapped {};
       const auto hr = context->Map(mReadback.get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
       if (hr == DXGI_ERROR_WAS_STILL_DRAWING) {
-        return Render::Readiness::Pending;
+        if (mCompareGates) {
+          return Render::Readiness::Pending;
+        }
+        // Checking a frame already drawn: nothing waits for it
+      } else {
+        mComparing = false;
+        bool changed = true;// if the answer can't be read, assume a change
+        if (SUCCEEDED(hr)) {
+          changed = *static_cast<const uint32_t*>(mapped.pData) != 0;
+          context->Unmap(mReadback.get(), 0);
+        }
+        if (changed) {
+          mLastChange = now;
+        }
+        if (mCompareGates) {
+          if (changed) {
+            Accept();
+            return Render::Readiness::Ready;
+          }
+          ++mUnchanged;// identical: dropped
+        }
       }
-      mComparing = false;
-      bool changed = true;// if the answer can't be read, assume a change
-      if (SUCCEEDED(hr)) {
-        changed = *static_cast<const uint32_t*>(mapped.pData) != 0;
-        context->Unmap(mReadback.get(), 0);
-      }
-      if (changed) {
-        Accept();
-        return Render::Readiness::Ready;
-      }
-      ++mUnchanged;// identical: dropped
     }
 
     wgc::Direct3D11CaptureFrame frame {nullptr};
@@ -383,15 +418,52 @@ struct WindowCaptureSource::State : std::enable_shared_from_this<State> {
           = TimeUtil::TimePoint {std::chrono::duration_cast<TimeUtil::Duration>(frame.SystemRelativeTime())};
         ++mCopied;
         frame.Close();
-        if (!mShown.mTexture || !(mShown.mSize == size) || !StartCompare()) {
+        if (!mShown.mTexture || !(mShown.mSize == size)) {
           Accept();// nothing comparable: a first frame, a new size
           return Render::Readiness::Ready;
         }
+        if (now - mLastChange < LiveWindow) {
+          if (!mComparing && StartCompare()) {
+            mCompareGates = false;
+          }
+          Accept();
+          ++mDrawnAtOnce;
+          return Render::Readiness::Ready;
+        }
+        if (!StartCompare()) {
+          Accept();
+          return Render::Readiness::Ready;
+        }
+        mCompareGates = true;
         return Render::Readiness::Pending;
       }
       frame.Close();
     }
     return mShownNotDrawn ? Render::Readiness::Ready : Render::Readiness::Unchanged;
+  }
+
+  // A frame being drawn, composed at `composed`, `delayMs` after that
+  void CountHitch(TimeUtil::TimePoint composed, double delayMs) {
+    const double interval = TimeUtil::ToMilliseconds(composed - mPreviousComposed);
+    // Only within a run of frames: a window that sat still for a while
+    // before changing again isn't hitching
+    if (mPreviousComposed != TimeUtil::TimePoint {} && interval > 0 && interval <= 250) {
+      if (mTypicalIntervalMs > 0) {
+        // Much longer than usual: the window (or Windows) skipped frames
+        if (interval > mTypicalIntervalMs * 1.6 && interval > mTypicalIntervalMs + 10) {
+          ++mWindowGaps;
+        }
+        // Drawn more than about half a frame later than the frame before
+        if (delayMs - mPreviousDelayMs > std::max(8.0, mTypicalIntervalMs * 0.6)) {
+          ++mLateDraws;
+        }
+        mTypicalIntervalMs += (std::min(interval, mTypicalIntervalMs * 3) - mTypicalIntervalMs) * 0.1;
+      } else {
+        mTypicalIntervalMs = interval;
+      }
+    }
+    mPreviousComposed = composed;
+    mPreviousDelayMs = delayMs;
   }
 
   void DrawWaiting(ID2D1DeviceContext2* context, Render::PixelSize size) {
@@ -455,6 +527,7 @@ void WindowCaptureSource::Render(ID2D1DeviceContext2* context, Render::PixelSize
         state.mLatencySumMs += latency;
         state.mLatencyMaxMs = std::max(state.mLatencyMaxMs, latency);
         state.mLatencyOver10 += latency > 10 ? 1 : 0;
+        state.CountHitch(shown.mComposedAt, latency);
       }
     }
     state.mShownNotDrawn = false;
@@ -465,11 +538,15 @@ void WindowCaptureSource::Render(ID2D1DeviceContext2* context, Render::PixelSize
 
 std::string WindowCaptureSource::StatsText() const {
   auto& state = *mState;
-  auto text = std::format("frames {} arrived, {} identical skipped", state.mArrived.load(), state.mUnchanged.load());
+  auto text = std::format("frames {} arrived, {} identical skipped, {} drawn without waiting for the check", state.mArrived.load(),
+    state.mUnchanged.load(), state.mDrawnAtOnce.load());
   if (state.mLatencyCount > 0) {
     text += std::format(", drawn {:.1f} ms after Windows composed them on average, at most {:.1f} ms ({} over 10 ms)",
       state.mLatencySumMs / static_cast<double>(state.mLatencyCount), state.mLatencyMaxMs, state.mLatencyOver10);
   }
+  // Totals, like the frame counts
+  text += std::format("; hitches: {} late from Windows (the window or its capture), {} drawn late by us",
+    state.mWindowGaps.load(), state.mLateDraws.load());
   // Per stats line
   state.mLatencyCount = 0;
   state.mLatencySumMs = 0;
@@ -480,6 +557,18 @@ std::string WindowCaptureSource::StatsText() const {
 
 uint64_t WindowCaptureSource::FramesUnchanged() const noexcept {
   return mState->mUnchanged.load();
+}
+
+uint64_t WindowCaptureSource::FramesDrawnAtOnce() const noexcept {
+  return mState->mDrawnAtOnce.load();
+}
+
+uint64_t WindowCaptureSource::WindowGaps() const noexcept {
+  return mState->mWindowGaps.load();
+}
+
+uint64_t WindowCaptureSource::LateDraws() const noexcept {
+  return mState->mLateDraws.load();
 }
 
 void WindowCaptureSource::SetActive(bool active) {

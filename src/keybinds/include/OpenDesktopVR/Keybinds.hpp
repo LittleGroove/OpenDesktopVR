@@ -106,6 +106,8 @@ struct Action {
 std::string ActionName(ActionKind kind);
 // "Ctrl + F13", "T.16000M: button 5", "T.16000M: hat 1 up"
 std::string ButtonName(const Button& button);
+// A controller code without its device: "button 5", "hat 1 up"
+std::string ControllerCodeName(uint32_t code);
 std::string BindingName(const Binding& binding);
 
 // The stored form. Untrusted (TH-9): anything malformed reads as empty.

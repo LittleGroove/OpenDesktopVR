@@ -61,6 +61,11 @@ class LayerStats {
   void PreviousSlotShown() noexcept {
     ++mPreviousSlot;
   }
+  // Frames the host drew that the game never showed (a newer one came
+  // first): the frames a video loses on the way (test round 7)
+  void HostFramesSkipped(uint64_t count) noexcept {
+    mHostFramesSkipped += count;
+  }
   void HandFrame(double coverage) noexcept {
     ++mHandFrames;
     mHandCoverage += coverage;
@@ -85,8 +90,8 @@ class LayerStats {
   void Write(const char* title) const noexcept {
     const double frames = static_cast<double>(std::max<uint64_t>(mFrames, 1));
     Log::Info(
-      "{}: {} frames ({} with panels, {} with no game layers); images {} ({} from the slot before the newest); "
-      "kept previous {}; forced waits {}; panels dropped {}; hand frames {} (coverage {:.1f}%); "
+      "{}: {} frames ({} with panels, {} with no game layers); images {} ({} from the slot before the newest; "
+      "{} host frames never shown); kept previous {}; forced waits {}; panels dropped {}; hand frames {} (coverage {:.1f}%); "
       "CPU avg {:.3f} ms, max {:.3f} ms (host link {:.3f}, swapchain creation {:.3f}, images {:.3f}); "
       "frames over {} ms: {}",
       title,
@@ -95,6 +100,7 @@ class LayerStats {
       mZeroLayerFrames,
       mImagesReleased,
       mPreviousSlot,
+      mHostFramesSkipped,
       mKeptPrevious,
       mForcedWaits,
       mPanelsDropped,
@@ -112,7 +118,7 @@ class LayerStats {
  private:
   void Reset() noexcept {
     mFrames = mZeroLayerFrames = mFramesWithPanels = mPanelsDropped = 0;
-    mImagesReleased = mKeptPrevious = mForcedWaits = mHandFrames = mPreviousSlot = 0;
+    mImagesReleased = mKeptPrevious = mForcedWaits = mHandFrames = mPreviousSlot = mHostFramesSkipped = 0;
     mHandCoverage = mCpuTotalMs = mCpuMaxMs = 0;
     mSlowFrames = 0;
     mSlowest = {};
@@ -127,6 +133,7 @@ class LayerStats {
   uint64_t mKeptPrevious {0};
   uint64_t mForcedWaits {0};
   uint64_t mPreviousSlot {0};
+  uint64_t mHostFramesSkipped {0};
   uint64_t mHandFrames {0};
   double mHandCoverage {0};
   double mCpuTotalMs {0};

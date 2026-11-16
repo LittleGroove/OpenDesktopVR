@@ -29,6 +29,16 @@ constexpr UINT DeviceChangeDebounceMs = 250;
 constexpr auto CheckInterval = 1s;          // notices a lost device
 constexpr auto PolledInterval = 10ms;       // devices that send no events
 constexpr std::size_t MaxControllers = 32;  // events in one wait, with room
+constexpr auto MissLogInterval = 5s;        // "didn't fire" lines, at most
+
+// "button 5, hat 1 up": the device's name is said once, before
+std::string CodeNames(const std::vector<uint32_t>& codes) {
+  std::string names;
+  for (const auto code: codes) {
+    names += (names.empty() ? "" : ", ") + ControllerCodeName(code);
+  }
+  return names;
+}
 
 std::string GuidText(const GUID& guid) {
   wchar_t text[64] {};
@@ -108,6 +118,7 @@ struct InputThread::Impl {
     Backoff mBackoff;
     TimeUtil::TimePoint mNextAttempt {};
     std::vector<uint32_t> mHeld;// sorted
+    std::vector<uint32_t> mLoggedOn;// last logged "on from the start"
 
     ~Controller() {
       if (mDevice) {
@@ -146,6 +157,7 @@ struct InputThread::Impl {
   ChordTracker mTracker;
   TimeUtil::TimePoint mNextCheck {};
   bool mEnumerated {false};
+  TimeUtil::RateLimiter mMissLog {MissLogInterval};
 
   void Main();
   bool CreateWindowAndInputs();
@@ -474,6 +486,14 @@ void InputThread::Impl::Read(Controller& controller) {
     controller.mResync = false;
     controller.mHeld = held;
     mTracker.Resync(DeviceKind::Controller, controller.mInfo.mDevice, held);
+    // Switches and detents: on from the start, so they don't block keybinds.
+    // Said once per change (test round 7: a HOTAS whose bindings never fired).
+    if (!held.empty() && held != controller.mLoggedOn) {
+      Log::Info("Keybinds: '{}' has {} on from the start (switches or detents; they don't block keybinds): {}",
+        controller.mInfo.mName, held.size() == 1 ? "1 button" : std::format("{} buttons", held.size()),
+        CodeNames(held));
+    }
+    controller.mLoggedOn = held;
     return;
   }
   const auto button = [&](uint32_t code) {
@@ -503,6 +523,15 @@ void InputThread::Impl::Feed(const Button& button, bool pressed) {
     capture->Prime(mTracker.Held());// before this button counts as held
   }
   const auto action = mTracker.OnButton(button, pressed);
+  // A controller binding that didn't fire because of other buttons pressed
+  // with it: say which, so a report can tell why (never keyboard keys)
+  if (auto miss = mTracker.TakeMiss(); miss && !capture && mMissLog.Allow()) {
+    std::string also;
+    for (const auto& extra: miss->mAlsoPressed) {
+      also += (also.empty() ? "" : ", ") + ButtonName(extra);
+    }
+    Log::Info("Keybinds: {} didn't fire: also pressed with it: {}", BindingName(miss->mBinding), also);
+  }
   if (capture) {
     const auto state = capture->State();
     if (state == BindCapture::State::Waiting || state == BindCapture::State::Holding) {

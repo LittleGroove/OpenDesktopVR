@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: LicenseRef-Proprietary
 // Copyright (c) 2026 Robert McGough. All rights reserved.
 //
-// Window capture (doc 04; CP-1, CP-3, CP-5, CP-6, CP-7): match rules, and a
-// real window (the click-target tool, in its own process) captured into a
-// panel texture: client area only, resize, frames dropped while inactive,
-// window closed and reopened.
+// Window capture (doc 04; CP-1, CP-3, CP-5, CP-6, CP-7, CP-10): match rules,
+// and a real window (the click-target tool, in its own process) captured
+// into a panel texture: client area only, resize, frames dropped while
+// inactive, window closed and reopened; a changing window drawn at its own
+// rate, also while a game-like load fills the GPU, and a window repainting
+// the same pixels still skipped.
 //
 //   capture-test <click-target exe>
 
 #include "check.hpp"
+#include "gpu-load.hpp"
 
 #include <OpenDesktopVR/FrameWakeup.hpp>
 #include <OpenDesktopVR/GpuDevice.hpp>
@@ -117,6 +120,71 @@ uint32_t RenderAndSample(Render::GpuDevice& gpu, Capture::WindowCaptureSource& s
   const auto pixel = *reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(mapped.pData) + y * mapped.RowPitch + x * 4);
   gpu.Context()->Unmap(staging.get(), 0);
   return pixel;
+}
+
+struct DrawCounts {
+  int mDrawn {0};
+  uint64_t mArrived {0};
+  uint64_t mIdentical {0};
+  uint64_t mAtOnce {0};
+  uint64_t mWindowGaps {0};
+  uint64_t mLateDraws {0};
+
+  void Print(const char* label) const {
+    std::printf("  (%s: %llu frames arrived, %d drawn, %llu judged identical, %llu drawn without waiting for the check; "
+                "hitches: %llu the window's own, %llu ours)\n",
+      label, static_cast<unsigned long long>(mArrived), mDrawn, static_cast<unsigned long long>(mIdentical),
+      static_cast<unsigned long long>(mAtOnce), static_cast<unsigned long long>(mWindowGaps),
+      static_cast<unsigned long long>(mLateDraws));
+  }
+};
+
+// As the render loop does: check every 2 ms (a precise timer), draw each
+// frame Prepare says is ready, and signal and flush like a ring slot. With
+// `load`, game-like GPU work stays queued ahead of everything.
+DrawCounts DrawFor(Render::GpuDevice& gpu, Capture::WindowCaptureSource& video, std::chrono::milliseconds duration,
+  Testing::GpuLoad* load = nullptr) {
+  std::unique_ptr<Render::PanelRing> ring;
+  const HANDLE timer = FrameWakeup::CreateTimer();
+  const LARGE_INTEGER due {.QuadPart = -20'000};
+  SetWaitableTimer(timer, &due, 2, nullptr, nullptr, FALSE);
+  const auto arrived = video.FramesArrived();
+  const auto unchanged = video.FramesUnchanged();
+  const auto atOnce = video.FramesDrawnAtOnce();
+  const auto windowGaps = video.WindowGaps();
+  const auto lateDraws = video.LateDraws();
+  DrawCounts counts;
+  const auto start = TimeUtil::Now();
+  while (TimeUtil::Now() - start < duration) {
+    WaitForSingleObject(timer, 100);
+    if (load) {
+      load->Pump();
+    }
+    if (video.Prepare() != Render::Readiness::Ready) {
+      continue;
+    }
+    const auto size = video.Size();
+    if (!ring || !ring->Fits(size)) {
+      const auto capacity = Render::PanelRing::CapacityFor(size, {});
+      ring = Render::PanelRing::Create(gpu, capacity.mWidth, capacity.mHeight, DXGI_FORMAT_B8G8R8A8_UNORM);
+    }
+    const auto slot = ring->NextSlot();
+    auto* d2d = gpu.D2D();
+    d2d->SetTarget(ring->Target(slot));
+    d2d->BeginDraw();
+    video.Render(d2d, size, TimeUtil::Now());
+    d2d->EndDraw();
+    d2d->SetTarget(nullptr);
+    ring->Finish(gpu.Context(), slot);
+    ++counts.mDrawn;
+  }
+  CloseHandle(timer);
+  counts.mArrived = video.FramesArrived() - arrived;
+  counts.mIdentical = video.FramesUnchanged() - unchanged;
+  counts.mAtOnce = video.FramesDrawnAtOnce() - atOnce;
+  counts.mWindowGaps = video.WindowGaps() - windowGaps;
+  counts.mLateDraws = video.LateDraws() - lateDraws;
+  return counts;
 }
 
 }// namespace
@@ -289,41 +357,86 @@ int main(int argc, char** argv) {
     const auto animatedInfo = WindowUtil::Describe(animatedWindow);
     Capture::WindowCaptureSource video {*gpu, {WindowMatch::FromWindow(*animatedInfo), L"Video"}, [] {}};
     Check(WaitFor([&] { return video.FramesArrived() > 0; }, 5s, [&] { video.Maintain(TimeUtil::Now()); }), "frames arrive");
-    // As the render loop does: check every 2 ms (a precise timer), draw
-    // each frame the GPU check says is new
-    std::unique_ptr<Render::PanelRing> ring;
-    const HANDLE timer = FrameWakeup::CreateTimer();
-    const LARGE_INTEGER due {.QuadPart = -20'000};
-    SetWaitableTimer(timer, &due, 2, nullptr, nullptr, FALSE);
-    const auto arrived = video.FramesArrived();
-    const auto unchanged = video.FramesUnchanged();
-    int drawn = 0;
-    const auto start = TimeUtil::Now();
-    while (TimeUtil::Now() - start < 3s) {
-      WaitForSingleObject(timer, 100);
-      if (video.Prepare() != Render::Readiness::Ready) {
-        continue;
-      }
-      const auto size = video.Size();
-      if (!ring || !ring->Fits(size)) {
-        const auto capacity = Render::PanelRing::CapacityFor(size, {});
-        ring = Render::PanelRing::Create(*gpu, capacity.mWidth, capacity.mHeight, DXGI_FORMAT_B8G8R8A8_UNORM);
-      }
-      auto* d2d = gpu->D2D();
-      d2d->SetTarget(ring->Target(0));
-      d2d->BeginDraw();
-      video.Render(d2d, size, TimeUtil::Now());
-      d2d->EndDraw();
-      d2d->SetTarget(nullptr);
-      ++drawn;
+    const auto counts = DrawFor(*gpu, video, 3s);
+    counts.Print("3 s");
+    Check(counts.mDrawn >= 75, std::format("at least 25 a second drawn ({} in 3 s)", counts.mDrawn));
+    Check(counts.mIdentical * 4 < counts.mArrived, "changed frames aren't mistaken for identical ones");
+    Check(counts.mLateDraws <= 1, std::format("no hitches of ours ({})", counts.mLateDraws));
+
+    // Test round 7: with Elite filling the GPU, the check's answer came back
+    // about 55 ms late and the video drew 18 of its 30 frames a second
+    if (gpu->IsWarp()) {
+      std::printf("  (WARP: no GPU to load; the next part is skipped)\n");
+      return;
     }
-    CloseHandle(timer);
-    const auto frames = video.FramesArrived() - arrived;
-    const auto identical = video.FramesUnchanged() - unchanged;
-    std::printf("  (3 s: %llu frames arrived, %d drawn, %llu judged identical)\n", static_cast<unsigned long long>(frames), drawn,
-      static_cast<unsigned long long>(identical));
-    Check(drawn >= 75, std::format("at least 25 a second drawn ({} in 3 s)", drawn));
-    Check(identical * 4 < frames, "changed frames aren't mistaken for identical ones");
+    Testing::GpuLoad load {gpu->Device(), gpu->Context()};
+    Check(load.IsReady(), "a game-like GPU load");
+    if (!load.IsReady()) {
+      return;
+    }
+    load.Pump();
+    const double loadedMs = Testing::GpuLoad::RoundTripMs(gpu->Device(), gpu->Context());
+    std::printf("  (load: batches of %.1f ms, 3 queued; our GPU work completes after %.1f ms)\n", load.BatchMs(), loadedMs);
+    Check(loadedMs >= 20, std::format("the load delays our GPU work like the game did ({:.1f} ms)", loadedMs));
+    DrawFor(*gpu, video, 600ms, &load);// back to drawing while live
+    const auto loaded = DrawFor(*gpu, video, 3s, &load);
+    loaded.Print("under load, 3 s");
+    Check(loaded.mDrawn >= 75, std::format("under load, still at least 25 a second drawn ({} in 3 s; CP-10)", loaded.mDrawn));
+    Check(loaded.mArrived == 0 || static_cast<uint64_t>(loaded.mDrawn) * 10 >= loaded.mArrived * 9,
+      "nearly every frame that arrived was drawn");
+    Check(loaded.mLateDraws <= 1, std::format("no hitches of ours under load ({})", loaded.mLateDraws));
+  });
+
+  Scenario("A window changing 60 times a second, under the same load: drawn about 60 times a second (test round 7, CP-10)", [&] {
+    if (gpu->IsWarp()) {
+      std::printf("  (WARP: skipped)\n");
+      return;
+    }
+    Target animated {L" 0 60"};
+    HWND animatedWindow = nullptr;
+    WaitFor([&] { return (animatedWindow = animated.Window()) != nullptr; }, 5s);
+    Check(animatedWindow != nullptr, "the animated window is open");
+    if (!animatedWindow) {
+      return;
+    }
+    const auto info = WindowUtil::Describe(animatedWindow);
+    Capture::WindowCaptureSource video {*gpu, {WindowMatch::FromWindow(*info), L"Video 60"}, [] {}};
+    Check(WaitFor([&] { return video.FramesArrived() > 0; }, 5s, [&] { video.Maintain(TimeUtil::Now()); }), "frames arrive");
+    const auto idle = DrawFor(*gpu, video, 2s);
+    idle.Print("2 s");
+    Testing::GpuLoad load {gpu->Device(), gpu->Context()};
+    DrawFor(*gpu, video, 600ms, &load);
+    const auto loaded = DrawFor(*gpu, video, 3s, &load);
+    loaded.Print("under load, 3 s");
+    // Relative to what this desktop delivers without the load: a remote
+    // session composes at about 30 a second, so 60 can't be seen there
+    const double idleRate = static_cast<double>(idle.mArrived) / 2.0;
+    const double loadedRate = static_cast<double>(loaded.mDrawn) / 3.0;
+    if (idleRate < 50) {
+      std::printf("  (this desktop delivers %.0f frames a second, not 60: judged against that)\n", idleRate);
+    }
+    Check(loadedRate >= idleRate * 0.9, std::format("under load, drawn as often as frames arrive without it ({:.1f} vs {:.1f} a second)",
+      loadedRate, idleRate));
+    Check(loaded.mLateDraws <= 2, std::format("no hitches of ours under load ({})", loaded.mLateDraws));
+  });
+
+  Scenario("A window repainting the same pixels: its frames are still skipped (CP-10 keeps the check for still windows)", [&] {
+    Target repainting {L" 0 30 same"};
+    HWND repaintingWindow = nullptr;
+    WaitFor([&] { return (repaintingWindow = repainting.Window()) != nullptr; }, 5s);
+    Check(repaintingWindow != nullptr, "the repainting window is open");
+    if (!repaintingWindow) {
+      return;
+    }
+    const auto info = WindowUtil::Describe(repaintingWindow);
+    Capture::WindowCaptureSource still {*gpu, {WindowMatch::FromWindow(*info), L"Still"}, [] {}};
+    Check(WaitFor([&] { return still.FramesArrived() > 0; }, 5s, [&] { still.Maintain(TimeUtil::Now()); }), "frames arrive");
+    DrawFor(*gpu, still, 1s);// the first frame, and any paint while it opened
+    const auto counts = DrawFor(*gpu, still, 2s);
+    std::printf("  (2 s: %llu frames arrived, %d drawn, %llu judged identical)\n", static_cast<unsigned long long>(counts.mArrived),
+      counts.mDrawn, static_cast<unsigned long long>(counts.mIdentical));
+    Check(counts.mArrived >= 20, "frames keep arriving");
+    Check(counts.mDrawn <= 1, std::format("but nothing new is drawn ({})", counts.mDrawn));
   });
 
   return Finish();

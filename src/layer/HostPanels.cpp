@@ -139,6 +139,17 @@ bool HostPanels::Bring(
     return true;// unchanged: the runtime keeps showing the last released image
   }
 
+  // For the stats: host frames between the one shown and the one about to
+  // be shown were never seen in the game
+  const bool sameRingShown = swapchain.HasReleasedImage() && record.mShownGeneration == resources.mGeneration
+    && record.mShownTextureGeneration == entry.mTextureGeneration;
+  const uint64_t shownVersion = swapchain.ShownKey();
+  const auto countSkipped = [&](uint64_t version) {
+    if (sameRingShown && version > shownVersion + 1) {
+      mStats.HostFramesSkipped(version - shownVersion - 1);
+    }
+  };
+
   const uint64_t completed = resources.mFence->GetCompletedValue();
   // Progress is tracked per fence: a new host or ring starts with none
   // (found by test: an old host's last value made a stuck fence look alive)
@@ -175,6 +186,7 @@ bool HostPanels::Bring(
         const bool presented = swapchain.Present(mContext, previous, previousVersion, content->mWidth, content->mHeight);
         mCosts.mImageMs += MillisecondsSince(start);
         if (presented) {
+          countSkipped(previousVersion);
           record.mShownGeneration = resources.mGeneration;
           record.mShownTextureGeneration = entry.mTextureGeneration;
           record.mLateSince.reset();
@@ -249,6 +261,7 @@ bool HostPanels::Bring(
       return swapchain.HasReleasedImage();
     }
   }
+  countSkipped(entry.mContentVersion);
   record.mShownGeneration = resources.mGeneration;
   record.mShownTextureGeneration = entry.mTextureGeneration;
   record.mLateSince.reset();
