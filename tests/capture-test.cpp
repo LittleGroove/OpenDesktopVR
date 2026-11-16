@@ -239,7 +239,8 @@ int main(int argc, char** argv) {
     Check(untrimmed.mWidth == static_cast<uint32_t>(client.right) && untrimmed.mHeight == static_cast<uint32_t>(client.bottom),
       "the window's size before trimming is known (the settings window's ranges)");
     Check(RenderAndSample(*gpu, source, 0, 0) != 0, "and draws");
-    SetWindowPos(window, nullptr, 0, 0, 700, 450, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    // Not 700 x 450: the next scenario resizes to that to get a new frame
+    SetWindowPos(window, nullptr, 0, 0, 760, 480, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     GetClientRect(window, &client);
     const bool followed = WaitFor([&] {
       source.Prepare();
