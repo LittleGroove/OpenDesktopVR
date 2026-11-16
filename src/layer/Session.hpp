@@ -8,6 +8,7 @@
 #pragma once
 
 #include "Dispatch.hpp"
+#include "Hands.hpp"
 #include "HostPanels.hpp"
 #include "LayerStats.hpp"
 #include "TestPanel.hpp"
@@ -74,6 +75,7 @@ class Session {
   std::array<ComposedPanel, MaxPanels> mPanels {};
   std::unique_ptr<TestPanel> mTestPanel;
   std::unique_ptr<HostPanels> mHostPanels;
+  std::unique_ptr<Hands> mHands;
   SharedAbi::LayerStatus mReport {};
   TimeUtil::PeriodicTimer mReportTimer {std::chrono::seconds(1)};
 

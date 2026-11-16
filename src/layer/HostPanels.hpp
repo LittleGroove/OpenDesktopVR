@@ -80,6 +80,10 @@ class HostPanels {
   void WakeHost() noexcept {
     mLink.WakeHost();
   }
+  // The link itself, for hands (samples out, hand state in)
+  HostLink::Client& Link() noexcept {
+    return mLink;
+  }
 
   struct Counters {
     uint64_t mCopies {0};

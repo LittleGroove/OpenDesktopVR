@@ -3,17 +3,20 @@
 //
 // The layer's pure logic: layer room (XR-9), composition order and limits,
 // the hand-tracking extension policy (XR-7), the per-game off list (VR-8),
-// the test card, and the OpenXR helpers (XR-10).
+// the test card, the OpenXR helpers (XR-10), and where the hands fall in
+// each eye's image (XR-13).
 
 #include "check.hpp"
 
 #include <OpenDesktopVR/Layer/Composition.hpp>
 #include <OpenDesktopVR/Layer/ExtensionPolicy.hpp>
+#include <OpenDesktopVR/Layer/HandBounds.hpp>
 #include <OpenDesktopVR/Layer/LayerConfig.hpp>
 #include <OpenDesktopVR/Layer/TestPattern.hpp>
 #include <OpenDesktopVR/Product.hpp>
 #include <OpenDesktopVR/XrUtil.hpp>
 
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <format>
@@ -254,6 +257,41 @@ int main() {
     Check(!XrUtil::GazeDistance(head, behind, size, 0.1f), "behind the head: never");
     const XrPosef turned {XrUtil::FromYaw(1.5707963f), {0, 0, -1}};// edge-on
     Check(!XrUtil::GazeDistance(head, turned, size, 0), "edge-on: a miss");
+  });
+
+  Scenario("Where hands fall in an eye's image: drawn and cleared only there (XR-13)", [] {
+    const XrPosef eye {{0, 0, 0, 1}, {0, 0, 0}};// looking down -Z
+    const XrFovf fov {-0.785398f, 0.785398f, 0.785398f, -0.785398f};// 90 degrees each way: tangents -1 to 1
+    const auto in = [&](std::initializer_list<Sphere> spheres, const XrPosef& from = XrPosef {{0, 0, 0, 1}, {0, 0, 0}}) {
+      return SpheresInView(from, fov, 1000, 1000, std::span<const Sphere> {spheres.begin(), spheres.size()}, 0);
+    };
+    const auto ahead = in({{{0, 0, -1}, 0.01f}});
+    Check(!ahead.IsEmpty() && ahead.mLeft >= 490 && ahead.mRight <= 510 && ahead.mTop >= 490 && ahead.mBottom <= 510,
+      std::format("a 1 cm sphere 1 m ahead: about 10 px wide in the middle ({}, {}, {}, {})", ahead.mLeft, ahead.mTop,
+        ahead.mRight, ahead.mBottom));
+    const auto right = in({{{0.5f, 0.25f, -1}, 0.01f}});
+    Check(!right.IsEmpty() && right.mLeft > 740 && right.mRight < 760 && right.mTop > 365 && right.mBottom < 385,
+      "right and up: right of the middle, above it (y grows downward)");
+    Check(in({{{0, 0, 1}, 0.05f}}).IsEmpty(), "behind the eye: nothing");
+    Check(in({{{3, 0, -1}, 0.05f}}).IsEmpty(), "far outside the field of view: nothing");
+    const auto edge = in({{{1.0f, 0, -1}, 0.05f}});
+    Check(!edge.IsEmpty() && edge.mRight == 1000 && edge.mLeft > 900, "across the right edge: up to the edge");
+    const auto whole = in({{{0, 0, -0.02f}, 0.05f}});
+    Check(whole == PixelRect {0, 0, 1000, 1000}, "reaching the eye's plane: the whole view");
+    const auto two = in({{{-0.2f, 0, -1}, 0.01f}, {{0.2f, 0, -1}, 0.01f}});
+    Check(two.mLeft < 410 && two.mRight > 590, "two spheres: one rectangle around both");
+    // An eye turned 90 degrees to the left sees what's to the left
+    const XrPosef turned {XrUtil::FromYaw(1.5707963f), {0, 0, 0}};
+    const auto left = in({{{-1, 0, 0}, 0.01f}}, turned);
+    Check(!left.IsEmpty() && left.mLeft >= 490 && left.mRight <= 510, "a turned eye: the sphere it faces is in the middle");
+    const auto margin = SpheresInView(eye, fov, 1000, 1000, std::array<Sphere, 1> {{{{0, 0, -1}, 0.01f}}}, 4);
+    Check(margin.mLeft == ahead.mLeft - 4 && margin.mBottom == ahead.mBottom + 4, "the margin grows it on every side");
+    const Sphere bad {{std::numeric_limits<float>::quiet_NaN(), 0, -1}, 0.01f};
+    Check(SpheresInView(eye, fov, 1000, 1000, std::array<Sphere, 1> {bad}, 0).IsEmpty(), "a NaN joint adds nothing");
+
+    Check(Union(PixelRect {}, PixelRect {1, 2, 3, 4}) == PixelRect {1, 2, 3, 4}, "an empty rectangle adds nothing to a union");
+    Check(Union(PixelRect {0, 0, 10, 10}, PixelRect {5, 5, 20, 20}) == PixelRect {0, 0, 20, 20}, "a union holds both");
+    Check(Pad(PixelRect {0, 5, 10, 10}, 2, 11, 100) == PixelRect {0, 3, 11, 12}, "padding stays within the image");
   });
 
   return Finish();

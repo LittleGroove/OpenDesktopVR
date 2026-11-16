@@ -25,9 +25,13 @@ inline constexpr uint32_t Magic = 0x5244444F;// "ODDR" little-endian: Open Deskt
 // 2: the header's viewer heartbeat
 // 3: each ring slot's content size; ring textures only grow (RN-7)
 // 4: the host's wake event; the panel the head points at (gaze focus)
-inline constexpr uint32_t AbiVersion = 4;
+// 5: hands: the tracking ring (layer to host), the hand state (host to
+//    layer) and the host's tracking event
+inline constexpr uint32_t AbiVersion = 5;
 inline constexpr uint32_t MaxPanels = 16;
 inline constexpr uint32_t RingSlots = 3;
+inline constexpr uint32_t TrackingSlots = 8;
+inline constexpr uint32_t HandJointCount = 26;// XR_HAND_JOINT_SET_DEFAULT_EXT
 
 // Kernel object names (with Product::KernelObjectName and AbiVersion)
 inline constexpr wchar_t BlockObject[] = L"Shared";
@@ -49,7 +53,10 @@ struct Header {
   // sets when its report changed something the host acts on at once: the
   // focused panel. The layer pulls it, like the textures (SY-9).
   uint64_t mWakeEvent;
-  uint8_t mReserved[16];
+  // An auto-reset event (a handle value in the host process) the layer
+  // sets after writing a tracking sample; the host's hand thread waits on it
+  uint64_t mTrackingEvent;
+  uint8_t mReserved[8];
 };
 static_assert(sizeof(Header) == 64);
 
@@ -134,12 +141,78 @@ static_assert(sizeof(LayerStatus) == 512);
 
 enum class GraphicsApi : uint32_t { Unknown = 0, D3D11 = 1, D3D12 = 2, Vulkan = 3, OpenGL = 4 };
 
+// One hand joint, in the layer's LOCAL space
+struct JointPose {
+  float mPose[7];// position (x, y, z), orientation (x, y, z, w)
+  float mRadius; // meters
+};
+static_assert(sizeof(JointPose) == 32);
+
+struct HandSample {
+  // 1 when every joint was valid and finite this frame (XR-10); otherwise
+  // the joints are zero and the hand is untracked
+  uint32_t mTracked;
+  uint32_t mPad0;
+  JointPose mJoints[HandJointCount];// XrHandJointEXT order
+};
+static_assert(sizeof(HandSample) == 8 + HandJointCount * sizeof(JointPose));
+
+namespace SampleFlags {
+inline constexpr uint32_t HeadValid = 1u << 0;
+}// namespace SampleFlags
+
+// What the layer saw in one frame (doc 03 "Layer to host"). Written only
+// while panels are composed: no samples for 250 ms means "absent" (XR-19).
+struct TrackingSample {
+  uint64_t mSequence;// seqlock, per slot
+  uint64_t mIndex;   // which sample this slot holds: 1, 2, ...
+  int64_t mDisplayTime;// XrTime the joints were located at (nanoseconds)
+  int64_t mWrittenAt;  // QueryPerformanceCounter when written: one clock for every process
+  uint32_t mFlags;     // SampleFlags
+  uint32_t mPad0;
+  float mHead[7];// the head (VIEW space) in LOCAL: position, orientation
+  float mPad1;
+  HandSample mHands[2];// left, right
+};
+static_assert(sizeof(TrackingSample) == 72 + 2 * sizeof(HandSample));
+
+// Written by the layer that owns the status section, read by the host: the
+// newest sample is mSlots[mWritten % TrackingSlots]. A reader that falls
+// more than TrackingSlots behind skips the oldest; a slot whose mIndex
+// isn't the one expected was overwritten and is skipped too.
+struct TrackingRing {
+  uint64_t mWritten;// samples written so far (atomic)
+  uint8_t mReserved[56];
+  TrackingSample mSlots[TrackingSlots];
+};
+static_assert(sizeof(TrackingRing) == 64 + TrackingSlots * sizeof(TrackingSample));
+
+namespace HandFlags {
+// The host wants tracking samples (hands are on in its settings)
+inline constexpr uint32_t WantsSamples = 1u << 0;
+}// namespace HandFlags
+
+// Written by the host's hand thread, read by the layer (doc 03 "Host to
+// layer"): how much of each hand to draw. The host decides (the pointing
+// pose, settings); the layer draws in the same frame it tracks.
+struct HandState {
+  uint64_t mSequence;// seqlock
+  float mVisibility[2];// left, right: 0 = hidden, 1 = fully shown
+  uint32_t mFlags;     // HandFlags
+  uint32_t mPad0;
+  uint64_t mAnsweredSample;// the sample these values came from
+  uint8_t mReserved[32];
+};
+static_assert(sizeof(HandState) == 64);
+
 struct Block {
   Header mHeader;
   PanelTable mPanelTable;
   LayerStatus mStatus;
+  HandState mHands;
+  TrackingRing mTracking;
 };
-static_assert(sizeof(Block) == 64 + sizeof(PanelTable) + 512);
+static_assert(sizeof(Block) == 64 + sizeof(PanelTable) + 512 + 64 + sizeof(TrackingRing));
 static_assert(alignof(Block) == 8);
 
 // The header a host writes; the fields a layer checks

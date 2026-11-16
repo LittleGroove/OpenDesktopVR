@@ -13,11 +13,13 @@
 //   Opening the settings window re-reads the file once.
 //
 // It also holds what isn't stored: which panels are hidden for now (PN-6,
-// Visibility.hpp), and the global keybinds' slots (stored in "keybinds").
+// Visibility.hpp); and some global settings: the keybinds' slots (stored in
+// "keybinds") and the hand settings ("hands").
 // Changed() fires after every change, on the UI thread.
 #pragma once
 
 #include <OpenDesktopVR/Events.hpp>
+#include <OpenDesktopVR/HandService.hpp>
 #include <OpenDesktopVR/HostPanel.hpp>
 #include <OpenDesktopVR/RenderLoop.hpp>
 #include <OpenDesktopVR/SettingsStore.hpp>
@@ -74,6 +76,12 @@ class PanelManager {
   }
   void SetToggleAllKeybinds(const Keybinds::Slots& slots);
 
+  // Tapping and scrolling with the hands (doc 05)
+  const HandSettings& Hands() const noexcept {
+    return mHands;
+  }
+  void SetHands(const HandSettings& hands);
+
   Events::Event<>& Changed() noexcept {
     return mChanged;
   }
@@ -92,6 +100,7 @@ class PanelManager {
   std::vector<PanelDefinition> mTestPanels;
   Visibility::Hidden mHidden;
   Keybinds::Slots mToggleAllKeybinds;
+  HandSettings mHands;
   Events::Event<> mChanged;
 };
 

@@ -24,6 +24,7 @@ struct FrameCosts {
   double mLinkMs {0};     // the host link: connecting, opening shared textures
   double mSwapchainMs {0};// creating panel swapchains
   double mImageMs {0};    // acquiring, waiting for, copying and releasing images
+  double mHandsMs {0};    // tracking and drawing hands
 };
 
 class LayerStats {
@@ -92,7 +93,7 @@ class LayerStats {
     Log::Info(
       "{}: {} frames ({} with panels, {} with no game layers); images {} ({} from the slot before the newest; "
       "{} host frames never shown); kept previous {}; forced waits {}; panels dropped {}; hand frames {} (coverage {:.1f}%); "
-      "CPU avg {:.3f} ms, max {:.3f} ms (host link {:.3f}, swapchain creation {:.3f}, images {:.3f}); "
+      "CPU avg {:.3f} ms, max {:.3f} ms (host link {:.3f}, swapchain creation {:.3f}, images {:.3f}, hands {:.3f}); "
       "frames over {} ms: {}",
       title,
       mFrames,
@@ -111,6 +112,7 @@ class LayerStats {
       mSlowest.mLinkMs,
       mSlowest.mSwapchainMs,
       mSlowest.mImageMs,
+      mSlowest.mHandsMs,
       SlowFrameMs,
       mSlowFrames);
   }

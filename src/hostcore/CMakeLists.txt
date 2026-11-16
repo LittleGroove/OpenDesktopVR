@@ -12,7 +12,10 @@ odvr_module(
   PanelConfig.cpp
   RenderLoop.cpp
   Visibility.cpp
+  HandService.cpp
+  HandConfig.cpp
   DEPS
+  odvr::interaction
   odvr::keybinds
   odvr::render
   odvr::capture

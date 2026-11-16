@@ -83,11 +83,18 @@ bool Session::Initialize(const XrSessionCreateInfo& info) {
     Log::Warning("No private context state; copies only (they don't change pipeline state)");
   }
 
-  // Layer limit (XR-9)
+  // Layer limit (XR-9), and whether the headset tracks hands
+  XrSystemHandTrackingPropertiesEXT handProperties {XR_TYPE_SYSTEM_HAND_TRACKING_PROPERTIES_EXT};
   XrSystemProperties system {XR_TYPE_SYSTEM_PROPERTIES};
+  if (mInstance.mHandTrackingEnabled) {
+    system.next = &handProperties;
+  }
+  bool systemTracksHands = false;
   if (XR_SUCCEEDED(mNext.xrGetSystemProperties(mInstance.mInstance, info.systemId, &system))) {
     mMaxLayers = system.graphicsProperties.maxLayerCount;
-    Log::Info("System '{}': up to {} composition layers", system.systemName, mMaxLayers);
+    systemTracksHands = mInstance.mHandTrackingEnabled && handProperties.supportsHandTracking;
+    Log::Info("System '{}': up to {} composition layers; hand tracking: {}", system.systemName, mMaxLayers,
+      systemTracksHands ? "yes" : "no");
   } else {
     Log::Warning("Couldn't read system properties; assuming 16 layers (the OpenXR minimum)");
   }
@@ -130,6 +137,9 @@ bool Session::Initialize(const XrSessionCreateInfo& info) {
     mNext, mSession, mLocalSpace, mDevice.get(), mContext.get(), *mContextState, mPanelFormat, mStats);
   if (!mHostPanels->IsUsable()) {
     Log::Warning("Host panels are unavailable on this device (shared fences need Windows 10 1703 or later)");
+  } else {
+    mHands = std::make_unique<Hands>(
+      mNext, mSession, mLocalSpace, mDevice.get(), mContext.get(), *mContextState, mPanelFormat, systemTracksHands, mStats);
   }
   PrepareReport();
 
@@ -147,6 +157,7 @@ Session::~Session() {
     mStats.TotalFrames(),
     mStats.AverageCpuMs());
   // Children before the session itself; the game destroys the session after
+  mHands.reset();
   mHostPanels.reset();
   mTestPanel.reset();
   for (const auto space: {mLocalSpace, mViewSpace}) {
@@ -198,11 +209,13 @@ XrFrameEndInfo Session::Compose(const XrFrameEndInfo& game) noexcept {
   if (!mPassthrough && !zeroLayers) {
     try {
       std::size_t panelCount = 0;
+      std::size_t hostPanelCount = 0;
       std::optional<XrPosef> head;
       bool headLocated = false;
       if (mHostPanels) {
         const auto hostPanels = mHostPanels->Compose(start, {mPanels.data(), mPanels.size()});
         panelCount += hostPanels;
+        hostPanelCount = hostPanels;
         costs = mHostPanels->LastFrameCosts();
         // Gaze focus: only while there are panels (or one was focused)
         if (hostPanels > 0 || mHostPanels->FocusedPanel() != 0) {
@@ -234,6 +247,22 @@ XrFrameEndInfo Session::Compose(const XrFrameEndInfo& game) noexcept {
           mPanels[panelCount++] = {quad, 0, false};
         }
       }
+      // Hands (doc 03 steps 2 and 4): a sample for the host while host
+      // panels show, and the hand layer
+      const XrCompositionLayerBaseHeader* handLayer = nullptr;
+      double handCoverage = 0;
+      if (mHands && mHostPanels) {
+        const auto handsStart = TimeUtil::Now();
+        if (!headLocated && hostPanelCount > 0 && mHands->WantsHead(mHostPanels->Link())) {
+          head = LocateHead(game.displayTime);
+          headLocated = true;
+        }
+        handLayer = mHands->Frame(
+          {game.displayTime, {game.layers, game.layerCount}, {mPanels.data(), hostPanelCount}, head},
+          mHostPanels->Link(),
+          handCoverage);
+        costs.mHandsMs = TimeUtil::ToMilliseconds(TimeUtil::Now() - handsStart);
+      }
       // Distances only matter when there's an order to decide
       if (panelCount > 1) {
         if (!headLocated) {
@@ -246,7 +275,10 @@ XrFrameEndInfo Session::Compose(const XrFrameEndInfo& game) noexcept {
         }
       }
       const auto result = mComposer->Compose(
-        {game.layers, game.layerCount}, {mPanels.data(), panelCount}, nullptr, mMaxLayers);
+        {game.layers, game.layerCount}, {mPanels.data(), panelCount}, handLayer, mMaxLayers);
+      if (result.mHandLayerComposed) {
+        mStats.HandFrame(handCoverage);
+      }
       frame.layers = result.mLayers.data();
       frame.layerCount = static_cast<uint32_t>(result.mLayers.size());
       panelsComposed = result.mPanelsComposed;

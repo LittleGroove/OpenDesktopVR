@@ -181,6 +181,22 @@ void HandRenderer::Render(
   const D3D11_VIEWPORT& viewport,
   const Eye& eye,
   std::span<const RenderHand> hands) {
+  const D3D11_RECT scissor {
+    .left = static_cast<LONG>(viewport.TopLeftX),
+    .top = static_cast<LONG>(viewport.TopLeftY),
+    .right = static_cast<LONG>(viewport.TopLeftX + viewport.Width),
+    .bottom = static_cast<LONG>(viewport.TopLeftY + viewport.Height),
+  };
+  Render(ctx, rtv, viewport, scissor, eye, hands);
+}
+
+void HandRenderer::Render(
+  ID3D11DeviceContext* ctx,
+  ID3D11RenderTargetView* rtv,
+  const D3D11_VIEWPORT& viewport,
+  const D3D11_RECT& scissor,
+  const Eye& eye,
+  std::span<const RenderHand> hands) {
   Constants constants {};
 
   // OpenXR is right-handed, with the eye looking along -Z
@@ -243,12 +259,6 @@ void HandRenderer::Render(
   ctx->ClearDepthStencilView(
     mDepthStencilView.get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
 
-  const D3D11_RECT scissor {
-    .left = static_cast<LONG>(viewport.TopLeftX),
-    .top = static_cast<LONG>(viewport.TopLeftY),
-    .right = static_cast<LONG>(viewport.TopLeftX + viewport.Width),
-    .bottom = static_cast<LONG>(viewport.TopLeftY + viewport.Height),
-  };
   ctx->OMSetRenderTargets(1, &rtv, mDepthStencilView.get());
   ctx->RSSetState(mRasterizerState.get());
   ctx->RSSetViewports(1, &viewport);

@@ -18,9 +18,13 @@
 // - each panel's look (opacity, brightness, tint: PN-4, PN-5) is applied
 //   as it's drawn, with its "looked at" opacity while the layer reports the
 //   head pointing at it (the layer sets a wake event: no polling);
-// - writes a stats line every 60 s (LG-2).
+// - writes a stats line every 60 s (LG-2), one line per panel;
+// - carries hands between the layer and the hand thread: the tracking
+//   event and ring, the hand state, and the panels the hands may touch as
+//   last published (doc 03 "Layer to host", "Host to layer").
 #pragma once
 
+#include <OpenDesktopVR/HandService.hpp>
 #include <OpenDesktopVR/HostPanel.hpp>
 #include <OpenDesktopVR/SharedAbi.hpp>
 
@@ -90,6 +94,13 @@ class RenderLoop {
   // A panel's content size before trimming (a window's client area), for
   // the settings window's trim ranges; nullopt while unknown. Any thread.
   std::optional<Render::PixelSize> UntrimmedSize(uint64_t panelID) const noexcept;
+
+  // The hand thread's link to the layer: samples in, hand state out. The
+  // last hand state written is kept and written again when the shared
+  // block is (re)created. Valid for the render loop's lifetime.
+  TrackingChannel& Tracking() noexcept;
+  // The panels the layer shows, as last published (any thread)
+  std::shared_ptr<const TouchPanels> TouchablePanels() const;
 
  private:
   struct Impl;

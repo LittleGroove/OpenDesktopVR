@@ -43,6 +43,21 @@ odvr_simulator_test(sim-early-lookups-no-hands --early-lookups-fail --no-hand-tr
 odvr_simulator_test(sim-bench-test-panel ${ODVR_SIM_ARGS} ${ODVR_SIM_OUT} --bench 3)
 set_tests_properties(sim-bench-test-panel PROPERTIES PASS_REGULAR_EXPRESSION "Layer GPU time per frame")
 
+# M4: the simulator's hand scenarios against the real host app (a private
+# instance with its built-in test panels), started by with-host
+odvr_executable(with-host SOURCES with-host.cpp)
+set_target_properties(with-host PROPERTIES FOLDER "tests")
+add_dependencies(with-host OpenDesktopVR openxr-simulator ${ODVR_LAYER_FILE_STEM})
+function(odvr_hands_test name)
+  add_test(NAME ${name} COMMAND with-host $<TARGET_FILE:OpenDesktopVR> -- $<TARGET_FILE:openxr-simulator> ${ARGN})
+  set_tests_properties(${name} PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL" PASS_REGULAR_EXPRESSION "PASSED" TIMEOUT 200)
+endfunction()
+# Hands tracked, shown while pointing and not when flat, drawn in the game's
+# exact views where the hand is (XR-10, XR-11, XR-13, XR-14)
+odvr_hands_test(sim-hands ${ODVR_SIM_ARGS} ${ODVR_SIM_OUT}/hands)
+# The game in STAGE, offset from LOCAL: hands still where they are (XR-12)
+odvr_hands_test(sim-hands-stage --stage-offset ${ODVR_SIM_ARGS} ${ODVR_SIM_OUT}/hands-stage)
+
 # The real layer DLL against a minimal fake runtime (WARP; runs without a GPU)
 odvr_executable(layer-dll-test SOURCES layer-dll-test.cpp DEPS odvr::core odvr::openxr_headers odvr::cppwinrt d3d11)
 target_include_directories(layer-dll-test PRIVATE "${PROJECT_SOURCE_DIR}/tests/support")
@@ -55,6 +70,8 @@ odvr_test(shared-abi-test SOURCES shared-abi-test.cpp DEPS odvr::xrshared)
 odvr_test(panels-test SOURCES panels-test.cpp DEPS odvr::panels)
 # The host's panel model: trims, facing, the settings format, ring growth (M3b)
 odvr_test(hostcore-test SOURCES hostcore-test.cpp DEPS odvr::hostcore)
+# The host's hand thread (M4a): taps, scrolling, tracking gaps (XR-19)
+odvr_test(hand-service-test SOURCES hand-service-test.cpp DEPS odvr::hostcore)
 # Keybinds (M3c): when bindings fire, capture, back-off, the input thread
 odvr_test(keybinds-test SOURCES keybinds-test.cpp DEPS odvr::keybinds)
 

@@ -47,6 +47,16 @@ class HandRenderer final {
     const D3D11_VIEWPORT&,
     const Eye&,
     std::span<const HandInteraction::RenderHand>);
+  // The same, drawing only inside `scissor` (within the viewport): the
+  // layer clears only around the hands, so nothing may land outside that
+  // area (added in the port, M4a)
+  void Render(
+    ID3D11DeviceContext*,
+    ID3D11RenderTargetView*,
+    const D3D11_VIEWPORT&,
+    const D3D11_RECT& scissor,
+    const Eye&,
+    std::span<const HandInteraction::RenderHand>);
 
  private:
   winrt::com_ptr<ID3D11Device> mDevice;

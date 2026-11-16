@@ -65,6 +65,44 @@ struct RenderLoop::Impl {
   HANDLE mStop {CreateEventW(nullptr, TRUE, FALSE, nullptr)};
   // Set by a layer when the focused panel changes (shared through the block)
   HANDLE mLayerWake {CreateEventW(nullptr, FALSE, FALSE, nullptr)};
+  // Set by a layer after each tracking sample; the hand thread waits on it
+  HANDLE mTrackingEvent {CreateEventW(nullptr, FALSE, FALSE, nullptr)};
+
+  // The block, for the hand thread, once it exists (it then lives as long
+  // as the render loop)
+  std::atomic<Publisher*> mSharedPublisher {nullptr};
+  struct Channel final : TrackingChannel {
+    Impl& mImpl;
+    std::mutex mMutex;
+    SharedAbi::HandState mLast {};
+    explicit Channel(Impl& impl) : mImpl(impl) {
+    }
+    void* Event() const noexcept override {
+      return mImpl.mTrackingEvent;
+    }
+    uint64_t Written() const noexcept override {
+      const auto* publisher = mImpl.mSharedPublisher.load(std::memory_order_acquire);
+      return publisher ? publisher->TrackingWritten() : 0;
+    }
+    bool Read(uint64_t index, SharedAbi::TrackingSample& out) const noexcept override {
+      const auto* publisher = mImpl.mSharedPublisher.load(std::memory_order_acquire);
+      return publisher && publisher->ReadTrackingSample(index, out);
+    }
+    void WriteHandState(const SharedAbi::HandState& state) noexcept override {
+      std::scoped_lock lock(mMutex);
+      mLast = state;
+      if (auto* publisher = mImpl.mSharedPublisher.load(std::memory_order_acquire)) {
+        publisher->WriteHandState(state);
+      }
+    }
+    // The render thread, when the block is created
+    void Rewrite(Publisher& publisher) noexcept {
+      std::scoped_lock lock(mMutex);
+      publisher.WriteHandState(mLast);
+    }
+  } mChannel {*this};
+  mutable std::mutex mTouchMutex;
+  std::shared_ptr<const TouchPanels> mTouchPanels {std::make_shared<const TouchPanels>()};
   bool mHighResolutionTimer {false};
   HANDLE mTimer {FrameWakeup::CreateTimer(&mHighResolutionTimer)};
 
@@ -96,6 +134,7 @@ struct RenderLoop::Impl {
     CloseHandle(mStop);
     CloseHandle(mTimer);
     CloseHandle(mLayerWake);
+    CloseHandle(mTrackingEvent);
   }
 
   void Main();
@@ -122,6 +161,15 @@ RenderLoop::RenderLoop(RenderLoopOptions options, SourceFactory factory) : mImpl
 
 RenderLoop::~RenderLoop() {
   Stop();
+}
+
+TrackingChannel& RenderLoop::Tracking() noexcept {
+  return mImpl->mChannel;
+}
+
+std::shared_ptr<const TouchPanels> RenderLoop::TouchablePanels() const {
+  std::scoped_lock lock(mImpl->mTouchMutex);
+  return mImpl->mTouchPanels;
 }
 
 void RenderLoop::SetPanels(std::vector<PanelDefinition> panels, std::set<uint64_t> hidden) {
@@ -308,9 +356,11 @@ void RenderLoop::Impl::EnsurePublisher(TimeUtil::TimePoint now) {
     return;
   }
   SharedMemory::Status status {};
-  mPublisher = Publisher::Create(status, mLayerWake);
+  mPublisher = Publisher::Create(status, mLayerWake, mTrackingEvent);
   if (mPublisher) {
     Log::Info("Shared memory created; layers can attach");
+    mSharedPublisher.store(&*mPublisher, std::memory_order_release);
+    mChannel.Rewrite(*mPublisher);
     for (auto& panel: mPanels) {
       panel->mDirty->Mark(Panels::Dirty::Structural);
     }
@@ -431,8 +481,31 @@ void RenderLoop::Impl::Publish() {
     entries[i] = EntryFor(*mPanels[i]);
   }
   mPublisher->PublishPanels({entries.data(), count});
-  std::scoped_lock lock(mStatsMutex);
-  ++mStats.mPublishes;
+  {
+    std::scoped_lock lock(mStatsMutex);
+    ++mStats.mPublishes;
+  }
+  // The panels the hands may touch: what the layer now shows
+  TouchPanels touchable;
+  for (std::size_t i = 0; i < count; ++i) {
+    const auto& entry = entries[i];
+    if (!(entry.mFlags & SharedAbi::PanelFlags::Visible)) {
+      continue;
+    }
+    const auto& definition = mPanels[i]->mDefinition;
+    TouchPanel panel {.mID = definition.mID, .mName = definition.mName, .mTouch = definition.mTouch, .mScroll = definition.mScroll};
+    panel.mGeometry = {
+      .mID = definition.mID,
+      .mPosition = {entry.mPose[0], entry.mPose[1], entry.mPose[2]},
+      .mOrientation = {entry.mPose[3], entry.mPose[4], entry.mPose[5], entry.mPose[6]},
+      .mSize = {entry.mSizeMeters[0], entry.mSizeMeters[1]},
+    };
+    touchable.push_back(std::move(panel));
+  }
+  std::scoped_lock lock(mTouchMutex);
+  if (*mTouchPanels != touchable) {
+    mTouchPanels = std::make_shared<const TouchPanels>(std::move(touchable));
+  }
 }
 
 // A panel's look (brightness and tint on the colours, opacity on alpha,
@@ -584,30 +657,37 @@ void RenderLoop::Impl::IssueDueSignals(TimeUtil::TimePoint now) {
 }
 
 void RenderLoop::Impl::WriteStatsLine() {
-  std::string perPanel;
-  for (const auto& panel: mPanels) {
-    perPanel += std::format(" '{}' {}", StringUtil::Narrow(panel->mDefinition.mName), panel->mRenders);
-    if (panel->mSource) {
-      if (const auto text = panel->mSource->StatsText(); !text.empty()) {
-        perPanel += " (" + text + ")";
-      }
-    }
-  }
   RenderStats stats;
   {
     std::scoped_lock lock(mStatsMutex);
     stats = mStats;
   }
-  Log::Info(
-    "Host stats (60 s): {} frames, {} panel renders ({:.1f}/s); total renders per panel:{}; viewers {}; layer process {}",
+  Log::Info("Host stats (60 s): {} frames, {} panel renders ({:.1f}/s), {} panels; viewers {}; layer process {}",
     mFramesSinceStats,
     mRendersSinceStats,
     static_cast<double>(mRendersSinceStats) / 60.0,
-    perPanel,
+    mPanels.size(),
     stats.mHasViewers ? "yes" : "none",
     stats.mLayerProcessID);
   mFramesSinceStats = 0;
   mRendersSinceStats = 0;
+  // One line per panel: with several panels, one line overran the log's
+  // message limit and lost the later panels (round 9)
+  for (const auto& panel: mPanels) {
+    std::string text;
+    if (panel->mSource) {
+      text = panel->mSource->StatsText();
+    }
+    // A long name can't push the stats past the message limit
+    const auto name = StringUtil::Narrow(panel->mDefinition.mName);
+    Log::Info("Host stats, '{}': {} renders this minute, {} in all{}{}",
+      StringUtil::TruncateUtf8(name, 60),
+      panel->mRenders - panel->mRendersAtLastStats,
+      panel->mRenders,
+      text.empty() ? "" : "; ",
+      text);
+    panel->mRendersAtLastStats = panel->mRenders;
+  }
 }
 
 void RenderLoop::Impl::Main() {

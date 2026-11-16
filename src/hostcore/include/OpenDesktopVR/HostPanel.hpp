@@ -52,6 +52,10 @@ struct PanelDefinition {
   // covers it, with the app helper loaded into it (CT-3, Q10, ADR-031). On
   // by default; changing it doesn't restart the capture.
   bool mKeepUpdatingWhenCovered {true};
+  // Hands (doc 05, doc 09 "Interaction"): tap, hold and drag with a
+  // pointing finger; scroll with two fingers
+  bool mTouch {true};
+  bool mScroll {true};
   // Its keybinds (UI-3), indexed like Keybinds::PanelActions
   std::array<Keybinds::Slots, Keybinds::PanelActions.size()> mKeybinds {};
   // Fields this version doesn't know, kept for a newer one (ST-5)
@@ -98,6 +102,7 @@ struct HostPanel {
   uint32_t mTextureGeneration {0};
   TimeUtil::TimePoint mLastPublish {};
   uint64_t mRenders {0};
+  uint64_t mRendersAtLastStats {0};
 };
 
 // The panels a fresh install shows: an animated test pattern on the left, a

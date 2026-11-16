@@ -722,6 +722,11 @@ void SettingsWindow::BuildUi() {
         KeybindsPage(panels);
         ImGui::EndTabItem();
       }
+      const auto handsFlags = std::exchange(mSelectHands, false) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+      if (ImGui::BeginTabItem("Hands", nullptr, handsFlags)) {
+        HandsPage();
+        ImGui::EndTabItem();
+      }
       ImGui::EndTabBar();
     }
     WindowPicker();
@@ -923,6 +928,13 @@ void SettingsWindow::PanelDetails(PanelDefinition panel) {
   }
   Help("A colour over the panel, for night flying. Click the colour to change it.");
   ImGui::TextDisabled("Keybinds for this panel (show or hide, brighter, dimmer, tint) are on the Keybinds tab.");
+
+  // Doc 05, doc 09 "Interaction"
+  ImGui::SeparatorText("Hands");
+  changed |= ImGui::Checkbox("Tap and drag with your finger", &panel.mTouch);
+  Help("Point with your index finger and touch the panel to click. Hold your finger on it to drag.");
+  changed |= ImGui::Checkbox("Scroll with two fingers", &panel.mScroll);
+  Help("Touch with your index and middle fingers out, then move them up or down.");
 
   ImGui::SeparatorText("Updates");
   int rate = static_cast<int>(std::lround(panel.mMaxUpdatesPerSecond));
@@ -1135,6 +1147,36 @@ void SettingsWindow::Pick(const WindowUtil::WindowInfo& window) {
 }
 
 // ---- Keybinds (doc 09 "Keybinds", "Bind UI") ---------------------------
+
+// Hands (doc 05): stored in "hands"
+void SettingsWindow::HandsPage() {
+  if (!ImGui::BeginChild("hands", {0, 0}, ImGuiChildFlags_Borders)) {
+    ImGui::EndChild();
+    return;
+  }
+  auto hands = mPanels.Hands();
+  ImGui::PushItemWidth(ImGui::GetFontSize() * 14);
+  ImGui::Checkbox("Use my hands on panels", &hands.mEnabled);
+  Help(
+    "Uses your headset's hand tracking: put the controllers down. Point with your index finger to tap; use two "
+    "fingers to scroll. Each panel can turn these off (Panels tab, Hands).");
+  ImGui::BeginDisabled(!hands.mEnabled);
+  ImGui::Checkbox("Show my hand while pointing", &hands.mShowWhilePointing);
+  Help("A see-through hand appears while you point, so you can see where you'll touch.");
+  ImGui::SliderFloat("Move taps up", &hands.mTapOffsetUpMillimeters, -HandSettings::MaxTapOffsetMillimeters,
+    HandSettings::MaxTapOffsetMillimeters, "%.0f mm", Clamp);
+  Help("If your taps land below where you aim, move them up. Below zero moves them down.");
+  ImGui::Checkbox("Reverse two-finger scrolling", &hands.mReverseScroll);
+  Help("Normally what's on the panel follows your fingers, like a phone. Tick this for the other way.");
+  ImGui::EndDisabled();
+  ImGui::PopItemWidth();
+  // Whole millimetres: the slider's steps
+  hands.mTapOffsetUpMillimeters = std::round(hands.mTapOffsetUpMillimeters);
+  if (hands != mPanels.Hands()) {
+    mPanels.SetHands(hands);
+  }
+  ImGui::EndChild();
+}
 
 void SettingsWindow::KeybindsPage(const std::vector<PanelDefinition>& panels) {
   if (!ImGui::BeginChild("keybinds", {0, 0}, ImGuiChildFlags_Borders)) {

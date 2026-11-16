@@ -12,10 +12,12 @@ odvr_module(
   Composition.cpp
   TestPattern.cpp
   LayerConfig.cpp
+  HandBounds.cpp
   DEPS
   odvr::core
   odvr::settings
   odvr::openxr_headers
+  odvr::xrutil
 )
 
 set(ODVR_LAYER_TARGET ${ODVR_LAYER_FILE_STEM})
@@ -26,10 +28,11 @@ add_library(
   PanelSwapchain.cpp
   TestPanel.cpp
   HostPanels.cpp
+  Hands.cpp
 )
 target_link_libraries(
   ${ODVR_LAYER_TARGET}
-  PRIVATE odvr::layerlogic odvr::hostlink odvr::xrutil odvr::gfx odvr::core odvr::cppwinrt d3d11 dxgi
+  PRIVATE odvr::layerlogic odvr::hostlink odvr::xrutil odvr::gfx odvr::core odvr::handrender odvr::interaction odvr::cppwinrt d3d11 dxgi
 )
 target_compile_options(${ODVR_LAYER_TARGET} PRIVATE ${ODVR_NEW_CODE_WARNINGS})
 set_target_properties(${ODVR_LAYER_TARGET} PROPERTIES FOLDER "layer")

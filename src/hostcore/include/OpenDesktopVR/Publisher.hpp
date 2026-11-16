@@ -3,7 +3,9 @@
 //
 // The host's side of the shared block: creates it (only the host does,
 // SY-8), writes the header and the panel table, and reads what the layer
-// reports. The render thread is the only writer of the panel table.
+// reports. The render thread is the only writer of the panel table; the
+// hand thread is the only reader of the tracking ring and the only writer
+// of the hand state (both safe from any one thread at a time).
 #pragma once
 
 #include <OpenDesktopVR/SharedAbi.hpp>
@@ -12,6 +14,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <utility>
 
 namespace OpenDesktopVR::Host {
 
@@ -20,8 +23,9 @@ class Publisher {
   // Null if the block can't be created; `status` says why (an elevated game
   // holding the name is "access denied"). `wakeEvent` (owned by the
   // caller, outliving the block) is set by a layer whose report needs
-  // acting on at once.
-  static std::optional<Publisher> Create(SharedMemory::Status& status, void* wakeEvent = nullptr) noexcept;
+  // acting on at once; `trackingEvent` (likewise) after each tracking sample.
+  static std::optional<Publisher> Create(
+    SharedMemory::Status& status, void* wakeEvent = nullptr, void* trackingEvent = nullptr) noexcept;
 
   Publisher(Publisher&&) noexcept = default;
   Publisher& operator=(Publisher&&) noexcept = default;
@@ -37,6 +41,13 @@ class Publisher {
 
   // The layer's latest report; nullopt if none is consistent right now
   std::optional<SharedAbi::LayerStatus> ReadStatus() const noexcept;
+
+  // Samples written so far (the newest sample's index)
+  uint64_t TrackingWritten() const noexcept;
+  // Copies sample `index` if it's still in the ring and consistent
+  bool ReadTrackingSample(uint64_t index, SharedAbi::TrackingSample& out) const noexcept;
+  // What the layer draws of each hand, and whether it should send samples
+  void WriteHandState(const SharedAbi::HandState& state) noexcept;
 
  private:
   explicit Publisher(SharedMemory memory) noexcept : mMemory(std::move(memory)) {

@@ -70,6 +70,9 @@ class SettingsWindow {
   // "<png>.idle.txt" (no paints is a pass: RN-12), and quit the host
   void RequestScreenshot(std::filesystem::path path, bool withPicker);
   // Opens on the Keybinds tab (tests, and later a tray item)
+  void ShowHandsTab() noexcept {
+    mSelectHands = true;
+  }
   void ShowKeybindsTab() noexcept {
     mSelectKeybinds = true;
   }
@@ -111,6 +114,7 @@ class SettingsWindow {
   // The Keybinds tab (doc 09 "Bind UI"): every action's two slots, and the
   // "press the keys you want" capture (KY-4)
   void KeybindsPage(const std::vector<PanelDefinition>& panels);
+  void HandsPage();
   void SlotButton(const Keybinds::Action& action, std::size_t slot, const Keybinds::Binding& binding);
   void StartCapture(const Keybinds::Action& action, std::size_t slot);
   void CapturePopup();
@@ -144,6 +148,7 @@ class SettingsWindow {
   Keybinds::Action mConflictWith {};
   bool mOpenCapture {false};
   bool mSelectKeybinds {false};
+  bool mSelectHands {false};
 
   HWND mWindow {nullptr};
   // Made in the background at start and kept while the host runs (an idle

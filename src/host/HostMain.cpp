@@ -26,6 +26,7 @@
 //                    picker), save it as a PNG, check that it stops
 //                    painting when idle, then quit (SettingsWindow.hpp)
 // --settings-keybinds   tests: open the settings window on its Keybinds tab
+// --settings-hands      tests: open the settings window on its Hands tab
 // --settings-delay <ms>  tests: open the settings window this long after
 //                    start, as a user would (its device is made by then)
 
@@ -74,6 +75,7 @@ struct Options {
   bool mOpenSettings {false};
   int mSettingsDelayMs {0};
   bool mSettingsKeybinds {false};
+  bool mSettingsHands {false};
   std::wstring mScreenshot;
   bool mScreenshotPicker {false};
 };
@@ -106,6 +108,8 @@ Options ParseOptions() {
       options.mOpenSettings = true;
     } else if (arg == L"--settings-keybinds") {
       options.mSettingsKeybinds = true;
+    } else if (arg == L"--settings-hands") {
+      options.mSettingsHands = true;
     } else if (arg == L"--settings-delay" && i + 1 < argc) {
       options.mSettingsDelayMs = std::clamp(_wtoi(argv[++i]), 0, 10'000);
     } else if ((arg == L"--settings-screenshot" || arg == L"--picker-screenshot") && i + 1 < argc) {
@@ -232,6 +236,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     panels.Load();
     renderer.Start();
 
+    // Hands (doc 05): samples from the layer, touches out. Made after the
+    // renderer, whose shared block it reads, so it stops first. M4a logs
+    // touches; the injector (M4b) becomes its sink.
+    Host::HandService hands {renderer.Tracking(), [&renderer] { return renderer.TouchablePanels(); }, nullptr};
+    hands.SetSettings(panels.Hands());
+    const auto handSettings = panels.Changed().Subscribe([&] { hands.SetSettings(panels.Hands()); });
+    hands.Start();
+
     // Keybinds: the keyboard and game controllers, on their own thread
     Host::KeybindService keybinds {instance, panels};
     if (options.mTestKeybind != 0 && options.mTestInstance) {
@@ -253,9 +265,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       if (options.mSettingsKeybinds) {
         settings.ShowKeybindsTab();
       }
+      if (options.mSettingsHands) {
+        settings.ShowHandsTab();
+      }
       settings.Show();
     }
     exitCode = tray.Run();
+    hands.Stop();
     renderer.Stop();
   });
 

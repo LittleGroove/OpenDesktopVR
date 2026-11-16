@@ -24,6 +24,9 @@
 //   answer "unsupported" before then).
 // --no-hand-tracking: a runtime without XR_EXT_hand_tracking; only instance
 //   creation is checked.
+// --stage-offset: the game submits in a STAGE space that is offset (moved
+//   and turned) from LOCAL, as some games and shims do; the drawn hand must
+//   still be where the hand is (XR-12). Added in the port (M4a).
 // --bench <s> [hover]: measure the layer's GPU time per frame and what it
 //   hands the runtime to composite, optionally with a pointing hand hovering
 //   in front of the panel. No read-backs.
@@ -124,6 +127,9 @@ struct Runtime {
   bool mEarlyLookupsFail {false};
   // '--no-hand-tracking': a runtime without XR_EXT_hand_tracking
   bool mNoHandTracking {false};
+  // '--stage-offset': where STAGE's origin is in the world (LOCAL)
+  bool mStageOffset {false};
+  RigidPose mStage {};
   bool mInstanceCreated {false};
   std::map<uint64_t, XrReferenceSpaceType> mSpaces;
   std::map<uint64_t, FakeSwapchain> mSwapchains;
@@ -141,6 +147,11 @@ struct Runtime {
   // Frames where the hand layer's views didn't use the game's own pose and
   // field of view, over their whole image
   int mHandLayerViewMismatches {0};
+  // While set, each hand layer is checked: the right index fingertip must
+  // fall inside the drawn hand in the left eye's image
+  bool mCheckHandPlacement {false};
+  int mHandPlacementChecks {0};
+  int mHandPlacementMisses {0};
 
   // Panel layers in the last frame
   int mQuadCount {0};
@@ -192,7 +203,10 @@ RigidPose SpacePose(XrSpace space) {
   if (it != gRuntime.mSpaces.end() && it->second == XR_REFERENCE_SPACE_TYPE_VIEW) {
     return HMDPose;
   }
-  // LOCAL and STAGE are both the world origin here
+  if (it != gRuntime.mSpaces.end() && it->second == XR_REFERENCE_SPACE_TYPE_STAGE && gRuntime.mStageOffset) {
+    return gRuntime.mStage;
+  }
+  // LOCAL (and STAGE without --stage-offset) is the world origin here
   return {};
 }
 
@@ -535,6 +549,10 @@ void InspectHandLayer(const XrCompositionLayerProjection& layer) {
     gRuntime.mContext->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped));
   const bool isBGRA = (fake.mTextureFormat == DXGI_FORMAT_B8G8R8A8_TYPELESS);
   int coverage = 0;
+  int left = static_cast<int>(width);
+  int top = static_cast<int>(height);
+  int right = -1;
+  int bottom = -1;
   std::vector<uint8_t> bgra(static_cast<std::size_t>(width) * height * 4);
   for (uint32_t y = 0; y < height; ++y) {
     const auto row = static_cast<const uint8_t*>(mapped.pData)
@@ -547,6 +565,10 @@ void InspectHandLayer(const XrCompositionLayerProjection& layer) {
       const float alpha = src[3] / 255.0f;
       if (src[3] > 0) {
         ++coverage;
+        left = std::min(left, static_cast<int>(x));
+        right = std::max(right, static_cast<int>(x));
+        top = std::min(top, static_cast<int>(y));
+        bottom = std::max(bottom, static_cast<int>(y));
       }
       // Premultiplied, over a dark grey background
       uint8_t* dst = &bgra[(static_cast<std::size_t>(y) * width + x) * 4];
@@ -558,6 +580,33 @@ void InspectHandLayer(const XrCompositionLayerProjection& layer) {
   }
   gRuntime.mContext->Unmap(staging.get(), 0);
   gRuntime.mHandLayerCoverage = coverage;
+
+  // Where the right index fingertip really is, in the left eye's image
+  // (world space, so a wrong space transform shows up here; XR-12)
+  if (gRuntime.mCheckHandPlacement && gRuntime.mHands[1].mIsTracked) {
+    RigidPose eye = HMDPose;
+    eye.mPosition += Vector3::Transform(Vector3 {-IPD / 2, 0, 0}, HMDPose.mOrientation);
+    const auto tip = Relative(
+      {gRuntime.mHands[1][Joint::IndexTip].mPosition, Quaternion::Identity}, eye);
+    const auto& fov = view.fov;
+    const float forward = -tip.mPosition.z;
+    ++gRuntime.mHandPlacementChecks;
+    bool inside = false;
+    if (forward > 0 && right >= 0) {
+      const float tanX = tip.mPosition.x / forward;
+      const float tanY = tip.mPosition.y / forward;
+      const float px = (tanX - std::tan(fov.angleLeft))
+        / (std::tan(fov.angleRight) - std::tan(fov.angleLeft)) * width;
+      const float py = (std::tan(fov.angleUp) - tanY)
+        / (std::tan(fov.angleUp) - std::tan(fov.angleDown)) * height;
+      constexpr float margin = 10;
+      inside = px >= left - margin && px <= right + margin && py >= top - margin
+        && py <= bottom + margin;
+    }
+    if (!inside) {
+      ++gRuntime.mHandPlacementMisses;
+    }
+  }
 
   if (gRuntime.mSaveHandLayerTo) {
     TestUtilities::SavePNG(*gRuntime.mSaveHandLayerTo, width, height, bgra);
@@ -1103,6 +1152,12 @@ int main(int rawArgc, char** rawArgv) {
       gRuntime.mEarlyLookupsFail = true;
     } else if (arg == "--no-hand-tracking") {
       gRuntime.mNoHandTracking = true;
+    } else if (arg == "--stage-offset") {
+      gRuntime.mStageOffset = true;
+      gRuntime.mStage = {
+        {0.4f, -1.1f, 0.7f},
+        Quaternion::CreateFromAxisAngle(Vector3::UnitY, 0.6f),
+      };
     } else {
       positional.push_back(rawArgv[i]);
     }
@@ -1113,6 +1168,7 @@ int main(int rawArgc, char** rawArgv) {
     std::printf(
       "Usage: openxr-simulator [--negotiate-export <name>] "
       "[--layer-name <name>] [--early-lookups-fail] [--no-hand-tracking] "
+      "[--stage-offset] "
       "<layer DLL> <output folder> "
       "[click log | --watch <s> | --type-keys ... | --bench <s> [hover]]\n");
     return 1;
@@ -1290,10 +1346,13 @@ int main(int rawArgc, char** rawArgv) {
   XrSpace gameSpace {};
   const XrReferenceSpaceCreateInfo spaceInfo {
     .type = XR_TYPE_REFERENCE_SPACE_CREATE_INFO,
-    .referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL,
+    .referenceSpaceType = gRuntime.mStageOffset ? XR_REFERENCE_SPACE_TYPE_STAGE : XR_REFERENCE_SPACE_TYPE_LOCAL,
     .poseInReferenceSpace = ToXr({}),
   };
   Fake_xrCreateReferenceSpace(session, &spaceInfo, &gameSpace);
+  if (gRuntime.mStageOffset) {
+    std::printf("The game submits in STAGE, offset from LOCAL\n");
+  }
 
   std::array<XrCompositionLayerProjectionView, 2> gameViews {};
   for (int eye = 0; eye < 2; ++eye) {
@@ -1302,7 +1361,8 @@ int main(int rawArgc, char** rawArgv) {
       Vector3 {(eye == 0 ? -IPD : IPD) / 2, 0, 0}, HMDPose.mOrientation);
     gameViews[eye] = {
       .type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW,
-      .pose = ToXr(eyePose),
+      // In the game's space
+      .pose = ToXr(Relative(eyePose, SpacePose(gameSpace))),
       .fov = {-0.9f, 0.9f, 0.9f, -0.9f},
       .subImage = {
         .swapchain = ToHandle<XrSwapchain>(0xDEAD),
@@ -1659,6 +1719,7 @@ int main(int rawArgc, char** rawArgv) {
       gRuntime.mWatchV = TargetV;
       gRuntime.mWatchPanel = true;
     }
+    gRuntime.mCheckHandPlacement = step == Step::Pointing || step == Step::Hovering;
     if (step == Step::Touching && progress > 0.5 && !savedTouching) {
       gRuntime.mSaveHandLayerTo = outputDir / "sim-hand-touching.png";
       savedTouching = true;
@@ -1720,6 +1781,13 @@ int main(int rawArgc, char** rawArgv) {
   checks.Check(
     stats[Step::Touching].mHandLayerFrames > 0,
     "the hand stays visible while touching");
+  checks.Check(
+    gRuntime.mHandPlacementChecks > 0 && gRuntime.mHandPlacementMisses == 0,
+    std::format(
+      "the drawn hand is where the hand is: its fingertip inside the drawn "
+      "hand ({} of {} frames weren't)",
+      gRuntime.mHandPlacementMisses,
+      gRuntime.mHandPlacementChecks));
   checks.Check(
     gRuntime.mHandLayerViewMismatches == 0,
     std::format(

@@ -24,7 +24,7 @@ uint64_t FirstGeneration() noexcept {
 
 }// namespace
 
-std::optional<Publisher> Publisher::Create(SharedMemory::Status& status, void* wakeEvent) noexcept {
+std::optional<Publisher> Publisher::Create(SharedMemory::Status& status, void* wakeEvent, void* trackingEvent) noexcept {
   auto memory = SharedMemory::Create(
     SharedObjectName(SharedAbi::BlockObject, SharedAbi::AbiVersion), sizeof(SharedAbi::Block), status);
   if (!memory.IsValid()) {
@@ -39,6 +39,7 @@ std::optional<Publisher> Publisher::Create(SharedMemory::Status& status, void* w
   block.mHeader.mStatusSize = sizeof(SharedAbi::LayerStatus);
   block.mHeader.mHostProcessID = GetCurrentProcessId();
   block.mHeader.mWakeEvent = reinterpret_cast<uint64_t>(wakeEvent);
+  block.mHeader.mTrackingEvent = reinterpret_cast<uint64_t>(trackingEvent);
   std::atomic_ref<uint64_t> {block.mHeader.mSessionGeneration}.store(FirstGeneration());
   std::atomic_ref<uint32_t> {block.mHeader.mMagic}.store(SharedAbi::Magic, std::memory_order_release);
   return Publisher {std::move(memory)};
@@ -64,6 +65,28 @@ void Publisher::PublishPanels(std::span<const SharedAbi::PanelEntry> panels) noe
 bool Publisher::HasViewers(uint64_t windowMilliseconds) const noexcept {
   const auto beat = std::atomic_ref<uint64_t> {Block().mHeader.mViewerHeartbeat}.load(std::memory_order_relaxed);
   return beat != 0 && GetTickCount64() - beat < windowMilliseconds;
+}
+
+uint64_t Publisher::TrackingWritten() const noexcept {
+  return std::atomic_ref<uint64_t> {Block().mTracking.mWritten}.load(std::memory_order_acquire);
+}
+
+bool Publisher::ReadTrackingSample(uint64_t index, SharedAbi::TrackingSample& out) const noexcept {
+  if (index == 0) {
+    return false;
+  }
+  const auto& slot = Block().mTracking.mSlots[index % SharedAbi::TrackingSlots];
+  // A slot rewritten with a newer sample (the reader fell behind) is skipped
+  return Seqlock::ReadSection(slot, slot.mSequence, out) && out.mIndex == index;
+}
+
+void Publisher::WriteHandState(const SharedAbi::HandState& state) noexcept {
+  auto& section = Block().mHands;
+  Seqlock::WriteSection(section.mSequence, [&] {
+    auto copy = state;
+    copy.mSequence = section.mSequence;
+    std::memcpy(&section, &copy, sizeof(section));
+  });
 }
 
 std::optional<SharedAbi::LayerStatus> Publisher::ReadStatus() const noexcept {

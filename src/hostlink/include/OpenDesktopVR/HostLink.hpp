@@ -99,6 +99,13 @@ class Client {
   // Never waits.
   void WakeHost() noexcept;
 
+  // Hands (doc 03 "Layer to host"). Only the status owner writes samples;
+  // each one sets the host's tracking event. Never waits, never allocates.
+  void WriteTrackingSample(SharedAbi::TrackingSample& sample) noexcept;
+  // The host's latest hand state; all zero (hands off) while not connected
+  // or if a read clashed twice in a row
+  SharedAbi::HandState ReadHandState() noexcept;
+
   ClientCounters Counters() const noexcept {
     return mCounters;
   }
@@ -118,6 +125,8 @@ class Client {
   SharedMemory mMemory;
   HANDLE mHostProcess {nullptr};
   HANDLE mWakeEvent {nullptr};// pulled from the host
+  HANDLE mTrackingEvent {nullptr};// pulled from the host
+  SharedAbi::HandState mHandState {};
   uint32_t mHostProcessID {0};
   uint64_t mGeneration {0};
   SharedAbi::PanelTable mSnapshot {};

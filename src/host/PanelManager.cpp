@@ -3,6 +3,7 @@
 
 #include "PanelManager.hpp"
 
+#include <OpenDesktopVR/HandConfig.hpp>
 #include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/PanelConfig.hpp>
 #include <OpenDesktopVR/Product.hpp>
@@ -30,6 +31,7 @@ void PanelManager::Load() {
   auto loaded = mStore.Load(Spec());
   mDocument = std::move(loaded.mDocument);
   mToggleAllKeybinds = PanelConfig::ReadToggleAllKeybinds(mDocument);
+  mHands = HandConfig::Read(mDocument);
   std::size_t skipped = 0;
   if (auto panels = PanelConfig::Read(mDocument, &skipped)) {
     mPanels = std::move(*panels);
@@ -59,6 +61,7 @@ void PanelManager::Reread() {
   auto loaded = mStore.Load(Spec());
   mDocument = std::move(loaded.mDocument);
   mToggleAllKeybinds = PanelConfig::ReadToggleAllKeybinds(mDocument);
+  mHands = HandConfig::Read(mDocument);
   if (auto panels = PanelConfig::Read(mDocument)) {
     mPanels = std::move(*panels);
   }
@@ -173,6 +176,18 @@ void PanelManager::SetToggleAllKeybinds(const Keybinds::Slots& slots) {
   mToggleAllKeybinds = slots;
   if (mPersistent) {
     PanelConfig::WriteToggleAllKeybinds(mDocument, mToggleAllKeybinds);
+    mStore.Save(Spec().mPath, mDocument);// debounced (ST-1)
+  }
+  mChanged.Emit();
+}
+
+void PanelManager::SetHands(const HandSettings& hands) {
+  if (hands == mHands) {
+    return;
+  }
+  mHands = hands;
+  if (mPersistent) {
+    HandConfig::Write(mDocument, mHands);
     mStore.Save(Spec().mPath, mDocument);// debounced (ST-1)
   }
   mChanged.Emit();

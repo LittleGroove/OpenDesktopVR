@@ -625,11 +625,14 @@ void WindowCaptureSource::Maintain(TimeUtil::TimePoint now) {
     if (state.Start(window->mWindow)) {
       state.mStatus = L"Capturing";
       state.UpdateKeepUpdating();// HK-1: at capture start, never on first input
-      // Elevated windows are a top support topic (CMP-8): log what we saw
+      // Elevated windows are a top support topic (CMP-8); a 32-bit app
+      // can't take the 64-bit helper (ADR-015): log what we saw
+      const auto sameArchitecture = ProcessUtil::SameArchitecture(window->mProcessID);
       Log::Info(
-        "Capture: started on '{}' (its process: {})",
+        "Capture: started on '{}' (its process: {}, {})",
         StringUtil::Narrow(window->mTitle),
-        ProcessUtil::ElevationName(ProcessUtil::ProcessElevation(window->mProcessID)));
+        ProcessUtil::ElevationName(ProcessUtil::ProcessElevation(window->mProcessID)),
+        !sameArchitecture ? "bitness unknown" : *sameArchitecture ? "64-bit" : "32-bit");
     } else {
       state.mStatus = L"The window isn't ready yet. Retrying...";// CP-7
     }

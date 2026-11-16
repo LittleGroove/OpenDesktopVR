@@ -50,10 +50,13 @@ void Client::DropResources() noexcept {
 }
 
 void Client::Disconnect(const char* why) noexcept {
-  if (mWakeEvent) {
-    CloseHandle(mWakeEvent);
-    mWakeEvent = nullptr;
+  for (auto* event: {&mWakeEvent, &mTrackingEvent}) {
+    if (*event) {
+      CloseHandle(*event);
+      *event = nullptr;
+    }
   }
+  mHandState = {};
   if (mHostProcess) {
     CloseHandle(mHostProcess);
     mHostProcess = nullptr;
@@ -111,15 +114,20 @@ void Client::TryConnect() noexcept {
     CloseHandle(process);
     return;
   }
-  // The host's wake event, pulled like the textures (SY-9); optional
-  HANDLE wake = nullptr;
-  if (header.mWakeEvent != 0
-      && !DuplicateHandle(process, reinterpret_cast<HANDLE>(header.mWakeEvent), GetCurrentProcess(), &wake, EVENT_MODIFY_STATE, FALSE, 0)) {
-    wake = nullptr;
-  }
+  // The host's events, pulled like the textures (SY-9); optional
+  const auto pullEvent = [&](uint64_t value) -> HANDLE {
+    HANDLE local = nullptr;
+    if (value == 0
+        || !DuplicateHandle(process, reinterpret_cast<HANDLE>(value), GetCurrentProcess(), &local, EVENT_MODIFY_STATE, FALSE, 0)) {
+      return nullptr;
+    }
+    return local;
+  };
   mMemory = std::move(memory);
   mHostProcess = process;
-  mWakeEvent = wake;
+  mWakeEvent = pullEvent(header.mWakeEvent);
+  mTrackingEvent = pullEvent(header.mTrackingEvent);
+  mHandState = {};
   mHostProcessID = header.mHostProcessID;
   mGeneration = std::atomic_ref<uint64_t> {const_cast<uint64_t&>(header.mSessionGeneration)}.load();
   mSnapshot.mPanelCount = 0;
@@ -131,6 +139,38 @@ void Client::WakeHost() noexcept {
   if (mWakeEvent) {
     SetEvent(mWakeEvent);
   }
+}
+
+void Client::WriteTrackingSample(SharedAbi::TrackingSample& sample) noexcept {
+  if (!IsConnected() || !mOwnsStatus) {
+    return;
+  }
+  auto& ring = Block()->mTracking;
+  std::atomic_ref<uint64_t> written {ring.mWritten};
+  // Only the owner writes, so reading then storing is safe
+  const auto index = written.load(std::memory_order_relaxed) + 1;
+  auto& slot = ring.mSlots[index % SharedAbi::TrackingSlots];
+  sample.mIndex = index;
+  LARGE_INTEGER counter {};
+  QueryPerformanceCounter(&counter);
+  sample.mWrittenAt = counter.QuadPart;
+  Seqlock::WriteSection(slot.mSequence, [&] {
+    sample.mSequence = slot.mSequence;
+    std::memcpy(&slot, &sample, sizeof(slot));
+  });
+  written.store(index, std::memory_order_release);
+  if (mTrackingEvent) {
+    SetEvent(mTrackingEvent);
+  }
+}
+
+SharedAbi::HandState Client::ReadHandState() noexcept {
+  if (!IsConnected()) {
+    return {};
+  }
+  // A clash keeps the previous copy (SY-6); only the visibilities are used
+  Seqlock::ReadSection(Block()->mHands, Block()->mHands.mSequence, mHandState);
+  return mHandState;
 }
 
 bool Client::HostIsRunning() const noexcept {
