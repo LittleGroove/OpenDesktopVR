@@ -129,6 +129,16 @@ bool DragDegrees(const char* label, float* degrees, float minimum, float maximum
   return ImGui::DragFloat(label, degrees, DragSpeed(0.25f), minimum, maximum, "%.1f\xC2\xB0", flags);
 }
 
+// A level kept as 0.1 to 1, shown and dragged as 10% to 100%
+bool DragPercent(const char* label, float* level) {
+  float percent = *level * 100.0f;
+  if (!ImGui::DragFloat(label, &percent, DragSpeed(0.5f), 10.0f, 100.0f, "%.0f%%", Clamp)) {
+    return false;
+  }
+  *level = percent / 100.0f;
+  return true;
+}
+
 bool DragPixels(const char* label, uint32_t* pixels, uint32_t maximum) {
   int value = static_cast<int>(std::min<uint32_t>(*pixels, static_cast<uint32_t>(INT32_MAX)));
   if (!ImGui::DragInt(label, &value, DragSpeed(1.0f), 0, static_cast<int>(maximum), "%d px", Clamp)) {
@@ -140,8 +150,9 @@ bool DragPixels(const char* label, uint32_t* pixels, uint32_t maximum) {
 
 }// namespace
 
-SettingsWindow::SettingsWindow(HINSTANCE instance, RenderLoop& renderer, PanelManager& panels)
-  : mInstance(instance), mRenderer(renderer), mPanels(panels) {
+SettingsWindow::SettingsWindow(HINSTANCE instance, RenderLoop& renderer, PanelManager& panels, KeybindService& keybinds)
+  : mInstance(instance), mRenderer(renderer), mPanels(panels), mKeybinds(keybinds) {
+  mPanelsChanged = mPanels.Changed().Subscribe([this] { Invalidate(); });
   WNDCLASSEXW windowClass {sizeof(windowClass)};
   windowClass.lpfnWndProc = &SettingsWindow::WindowProc;
   windowClass.hInstance = instance;
@@ -394,6 +405,10 @@ void SettingsWindow::Destroy() {
   mFieldsFor = 0;
   mFieldsEdited = false;
   mListing = {};// never waits for the worker
+  if (mCapture) {
+    mCapture->Cancel();// the session outlives the dialog (KY-4); it just ends
+    mCapture.reset();
+  }
   mWindows.clear();
   if (mWindow) {
     // Messages from here on go to DefWindowProc
@@ -680,25 +695,36 @@ void SettingsWindow::BuildUi() {
       = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize(visibleLabel).x;
     ImGui::SameLine();
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetContentRegionAvail().x - visibleWidth));
-    bool visible = mRenderer.PanelsVisible();
-    if (ImGui::Checkbox(visibleLabel, &visible)) {
-      mRenderer.SetPanelsVisible(visible);
-      Log::Info("Panels {}", visible ? "shown" : "hidden");
+    // Show or hide all (PN-6): ticked while any panel is showing
+    bool showing = mPanels.AnyShowing();
+    if (ImGui::Checkbox(visibleLabel, &showing)) {
+      Log::Info("Panels {} (settings window)", mPanels.ToggleAll() ? "shown" : "hidden");
     }
-    ImGui::Separator();
-    ImGui::Spacing();
+    ImGui::SetItemTooltip("Shows or hides all panels, like the keybind for it");
 
-    PanelList(panels);
-    ImGui::SameLine();
-    const auto current = std::ranges::find(panels, mSelected, &PanelDefinition::mID);
-    if (current != panels.end()) {
-      PanelDetails(*current);
-    } else {
-      ImGui::BeginChild("details");
-      ImGui::TextWrapped("No panels yet. Choose \"Add a window...\" to see one of your windows in VR.");
-      ImGui::EndChild();
+    if (ImGui::BeginTabBar("pages", ImGuiTabBarFlags_DrawSelectedOverline)) {
+      if (ImGui::BeginTabItem("Panels")) {
+        PanelList(panels);
+        ImGui::SameLine();
+        const auto current = std::ranges::find(panels, mSelected, &PanelDefinition::mID);
+        if (current != panels.end()) {
+          PanelDetails(*current);
+        } else {
+          ImGui::BeginChild("details");
+          ImGui::TextWrapped("No panels yet. Choose \"Add a window...\" to see one of your windows in VR.");
+          ImGui::EndChild();
+        }
+        ImGui::EndTabItem();
+      }
+      const auto keybindsFlags = std::exchange(mSelectKeybinds, false) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+      if (ImGui::BeginTabItem("Keybinds", nullptr, keybindsFlags)) {
+        KeybindsPage(panels);
+        ImGui::EndTabItem();
+      }
+      ImGui::EndTabBar();
     }
     WindowPicker();
+    CapturePopup();
   }
   ImGui::End();
 }
@@ -739,7 +765,8 @@ void SettingsWindow::PanelList(const std::vector<PanelDefinition>& panels) {
       const float textTop = corner.y + (rowHeight - line * 2) / 2;
       draw->PushClipRect(corner, ImGui::GetItemRectMax(), true);
       draw->AddText({corner.x + inset, textTop}, ImGui::GetColorU32(ImGuiCol_Text), name.c_str());
-      draw->AddText({corner.x + inset, textTop + line}, ImGui::GetColorU32(ImGuiCol_TextDisabled), showing.c_str());
+      const auto second = panel.mEnabled && mPanels.IsHidden(panel.mID) ? showing + "  \xC2\xB7  hidden for now" : showing;
+      draw->AddText({corner.x + inset, textTop + line}, ImGui::GetColorU32(ImGuiCol_TextDisabled), second.c_str());
       draw->PopClipRect();
       ImGui::PopID();
     }
@@ -878,6 +905,23 @@ void SettingsWindow::PanelDetails(PanelDefinition panel) {
     }
     ImGui::EndDisabled();
   }
+
+  ImGui::SeparatorText("How it looks");
+  changed |= DragPercent("Opacity", &panel.mOpacity);
+  changed |= DragPercent("When you look at it", &panel.mFocusedOpacity);
+  Help("Its opacity while your head points at it. Set Opacity lower and this higher to see through it until you look.");
+  changed |= DragPercent("Brightness", &panel.mBrightness);
+  changed |= ImGui::Checkbox("Tint", &panel.mTintEnabled);
+  ImGui::SameLine();
+  float tint[3] {static_cast<float>((panel.mTintColor >> 16) & 0xFF) / 255.0f,
+    static_cast<float>((panel.mTintColor >> 8) & 0xFF) / 255.0f, static_cast<float>(panel.mTintColor & 0xFF) / 255.0f};
+  if (ImGui::ColorEdit3("Tint colour", tint, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
+    const auto byte = [](float v) { return static_cast<uint32_t>(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)); };
+    panel.mTintColor = (byte(tint[0]) << 16) | (byte(tint[1]) << 8) | byte(tint[2]);
+    changed = true;
+  }
+  Help("A colour over the panel, for night flying. Click the colour to change it.");
+  ImGui::TextDisabled("Keybinds for this panel (show or hide, brighter, dimmer, tint) are on the Keybinds tab.");
 
   ImGui::SeparatorText("Updates");
   int rate = static_cast<int>(std::lround(panel.mMaxUpdatesPerSecond));
@@ -1071,6 +1115,221 @@ void SettingsWindow::Pick(const WindowUtil::WindowInfo& window) {
   mPanels.Update(*panel);
   mFieldsFor = 0;// reload the fields from the new rule
   Log::Info("Panels: '{}' now shows '{}'", Utf8(panel->mName), Utf8(window.mTitle));
+}
+
+// ---- Keybinds (doc 09 "Keybinds", "Bind UI") ---------------------------
+
+void SettingsWindow::KeybindsPage(const std::vector<PanelDefinition>& panels) {
+  if (!ImGui::BeginChild("keybinds", {0, 0}, ImGuiChildFlags_Borders)) {
+    ImGui::EndChild();
+    return;
+  }
+  // What's watched
+  ImGui::TextDisabled("%s", mKeybinds.KeyboardReady() ? "Keyboard: ready." : "Keyboard: not available (see the log).");
+  const auto controllers = mKeybinds.Controllers();
+  std::string names;
+  for (const auto& controller: controllers) {
+    names += (names.empty() ? "" : ", ") + controller.mName;
+  }
+  ImGui::TextDisabled("Game controllers: %s", names.empty() ? "none connected." : names.c_str());
+  ImGui::TextDisabled("Keybinds work while the game has focus. F13 to F24 make good keys for Stream Deck and similar tools.");
+  ImGui::Spacing();
+
+  constexpr auto tableFlags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY;
+  if (ImGui::BeginTable("bindings", 3, tableFlags)) {
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    ImGui::TableSetupColumn("Keybind", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+    ImGui::TableSetupColumn("Or", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+    ImGui::TableHeadersRow();
+    const auto row = [&](const char* label, const Keybinds::Action& action, const Keybinds::Slots& slots, bool indent) {
+      ImGui::PushID(static_cast<int>(action.mKind));
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::AlignTextToFramePadding();
+      if (indent) {
+        ImGui::Indent();
+      }
+      ImGui::TextUnformatted(label);
+      if (indent) {
+        ImGui::Unindent();
+      }
+      for (std::size_t slot = 0; slot < slots.size(); ++slot) {
+        ImGui::TableNextColumn();
+        SlotButton(action, slot, slots[slot]);
+      }
+      ImGui::PopID();
+    };
+    ImGui::PushID("all");
+    row("Show or hide all panels", {Keybinds::ActionKind::ToggleAllPanels}, mPanels.ToggleAllKeybinds(), false);
+    ImGui::PopID();
+    for (const auto& panel: panels) {
+      ImGui::PushID(reinterpret_cast<const void*>(static_cast<uintptr_t>(panel.mID)));
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::AlignTextToFramePadding();
+      ImGui::PushFont(mFonts.mHeading);
+      ImGui::TextUnformatted(Utf8(panel.mName.empty() ? L"(no name)" : panel.mName).c_str());
+      ImGui::PopFont();
+      for (std::size_t i = 0; i < Keybinds::PanelActions.size(); ++i) {
+        const auto kind = Keybinds::PanelActions[i];
+        row(Keybinds::ActionName(kind).c_str(), {kind, panel.mID}, panel.mKeybinds[i], true);
+      }
+      ImGui::PopID();
+    }
+    ImGui::EndTable();
+  }
+  ImGui::EndChild();
+}
+
+void SettingsWindow::SlotButton(const Keybinds::Action& action, std::size_t slot, const Keybinds::Binding& binding) {
+  ImGui::PushID(static_cast<int>(slot));
+  const float clear = binding.IsEmpty() ? 0.0f : ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x;
+  const auto label = binding.IsEmpty() ? std::string {"Not set"} : Keybinds::BindingName(binding);
+  if (binding.IsEmpty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+  }
+  if (ImGui::Button(std::format("{}##set", label).c_str(), {ImGui::GetContentRegionAvail().x - clear, 0})) {
+    StartCapture(action, slot);
+  }
+  if (binding.IsEmpty()) {
+    ImGui::PopStyleColor();
+  }
+  ImGui::SetItemTooltip("Click, then press the keys or buttons you want");
+  if (!binding.IsEmpty()) {
+    ImGui::SameLine();
+    if (ImGui::Button("x", {ImGui::GetFrameHeight(), 0})) {
+      Assign(action, slot, {});
+    }
+    ImGui::SetItemTooltip("Remove this keybind");
+  }
+  ImGui::PopID();
+}
+
+void SettingsWindow::StartCapture(const Keybinds::Action& action, std::size_t slot) {
+  mCapture = mKeybinds.StartCapture();
+  mCaptureAction = action;
+  mCaptureSlot = slot;
+  mCaptureStarted = TimeUtil::Now();
+  mCaptureDoneAt.reset();
+  mConflict.reset();
+  mOpenCapture = true;
+  KeepPainting(TailFrames);
+}
+
+void SettingsWindow::CapturePopup() {
+  constexpr const char* Title = "Set a keybind";
+  constexpr auto Timeout = std::chrono::seconds(10);
+  constexpr auto ShowFor = std::chrono::milliseconds(700);
+  if (mOpenCapture) {
+    mOpenCapture = false;
+    ImGui::OpenPopup(Title);
+  }
+  if (!ImGui::BeginPopupModal(Title, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+    if (mCapture) {
+      mCapture->Cancel();// closed some other way
+      mCapture.reset();
+    }
+    return;
+  }
+  KeepPainting(2);// live while it's open: what's held, the countdown
+  const auto close = [&] {
+    if (mCapture) {
+      mCapture->Cancel();
+      mCapture.reset();
+    }
+    mConflict.reset();
+    ImGui::CloseCurrentPopup();
+  };
+  const auto now = TimeUtil::Now();
+  ImGui::TextUnformatted(mKeybinds.Describe(mCaptureAction).c_str());
+  ImGui::Spacing();
+  if (mConflict) {
+    // Show conflicts (doc 09): used elsewhere, so move it here or keep it there
+    ImGui::Text("%s is already used for \"%s\".", Keybinds::BindingName(*mConflict).c_str(),
+      mKeybinds.Describe(mConflictWith).c_str());
+    ImGui::TextUnformatted("Use it here instead?");
+    ImGui::Spacing();
+    if (ImGui::Button("Use it here")) {
+      if (const auto slots = SlotsFor(mConflictWith)) {
+        for (std::size_t i = 0; i < slots->size(); ++i) {
+          if ((*slots)[i] == *mConflict) {
+            Assign(mConflictWith, i, {});
+          }
+        }
+      }
+      Assign(mCaptureAction, mCaptureSlot, *mConflict);
+      close();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) {
+      close();
+    }
+  } else if (!mCapture) {
+    close();
+  } else if (const auto state = mCapture->State(); state == Keybinds::BindCapture::State::Cancelled) {
+    close();
+  } else if (state == Keybinds::BindCapture::State::Done) {
+    // The whole combination, briefly, before it's set (doc 09)
+    const auto binding = mCapture->Current();
+    ImGui::PushFont(mFonts.mHeading);
+    ImGui::TextUnformatted(Keybinds::BindingName(binding).c_str());
+    ImGui::PopFont();
+    if (!mCaptureDoneAt) {
+      mCaptureDoneAt = now;
+    } else if (now - *mCaptureDoneAt >= ShowFor) {
+      if (const auto other = mKeybinds.UsedBy(binding, mCaptureAction)) {
+        mConflict = binding;
+        mConflictWith = *other;
+      } else {
+        Assign(mCaptureAction, mCaptureSlot, binding);
+        close();
+      }
+    }
+  } else {
+    ImGui::TextUnformatted("Press the keys or buttons you want, then let go.");
+    const auto held = mCapture->Current();
+    ImGui::PushFont(mFonts.mHeading);
+    ImGui::TextUnformatted(held.IsEmpty() ? " " : Keybinds::BindingName(held).c_str());
+    ImGui::PopFont();
+    if (mCapture->ModifierOnly()) {
+      ImGui::TextDisabled("Ctrl, Shift, Alt or Windows on its own can't be a keybind: add another key.");
+    }
+    const auto left = std::chrono::duration_cast<std::chrono::seconds>(Timeout - (now - mCaptureStarted)).count();
+    ImGui::TextDisabled("Escape cancels. Closes by itself in %lld s.", static_cast<long long>(std::max<int64_t>(left, 0)));
+    if (now - mCaptureStarted >= Timeout || ImGui::Button("Cancel")) {
+      close();
+    }
+  }
+  ImGui::EndPopup();
+}
+
+std::optional<Keybinds::Slots> SettingsWindow::SlotsFor(const Keybinds::Action& action) const {
+  if (action.mKind == Keybinds::ActionKind::ToggleAllPanels) {
+    return mPanels.ToggleAllKeybinds();
+  }
+  if (const auto panel = mPanels.Find(action.mPanelID)) {
+    return panel->KeybindsFor(action.mKind);
+  }
+  return std::nullopt;
+}
+
+void SettingsWindow::Assign(const Keybinds::Action& action, std::size_t slot, const Keybinds::Binding& binding) {
+  if (slot >= 2) {
+    return;
+  }
+  if (action.mKind == Keybinds::ActionKind::ToggleAllPanels) {
+    auto slots = mPanels.ToggleAllKeybinds();
+    slots[slot] = binding;
+    mPanels.SetToggleAllKeybinds(slots);
+  } else if (auto panel = mPanels.Find(action.mPanelID)) {// DU-2: it may be gone
+    panel->KeybindsFor(action.mKind)[slot] = binding;
+    mPanels.Update(*panel);
+  } else {
+    return;
+  }
+  Log::Info("Keybinds: {} {}", mKeybinds.Describe(action),
+    binding.IsEmpty() ? std::string {"cleared"} : "set to " + Keybinds::BindingName(binding));
 }
 
 }// namespace OpenDesktopVR::Host

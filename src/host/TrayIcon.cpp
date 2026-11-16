@@ -150,7 +150,7 @@ void TrayIcon::ShowMenu(std::vector<WindowUtil::WindowInfo> listed) {
   }
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(remove), L"Remove a panel");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(menu, MF_STRING, ToggleVisible, mRenderer.PanelsVisible() ? L"Hide panels" : L"Show panels");
+  AppendMenuW(menu, MF_STRING, ToggleVisible, mPanels.AnyShowing() ? L"Hide panels" : L"Show panels");
   AppendMenuW(menu, MF_STRING, OpenLogs, L"Open logs folder");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, Exit, L"Exit");
@@ -208,8 +208,7 @@ LRESULT TrayIcon::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
           mSettings.Show();
           return 0;
         case ToggleVisible:
-          mRenderer.SetPanelsVisible(!mRenderer.PanelsVisible());
-          Log::Info("Panels {}", mRenderer.PanelsVisible() ? "shown" : "hidden");
+          Log::Info("Panels {} (tray menu)", mPanels.ToggleAll() ? "shown" : "hidden");
           mSettings.Invalidate();
           return 0;
         case OpenLogs: {

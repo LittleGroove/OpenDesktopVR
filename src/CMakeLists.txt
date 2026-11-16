@@ -5,6 +5,7 @@
 
 add_subdirectory(core)
 add_subdirectory(settings)
+add_subdirectory(keybinds)
 add_subdirectory(xrutil)
 add_subdirectory(xrshared)
 add_subdirectory(panels)

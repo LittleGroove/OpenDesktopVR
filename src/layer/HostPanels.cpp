@@ -307,12 +307,36 @@ std::size_t HostPanels::Compose(TimeUtil::TimePoint now, std::span<ComposedPanel
       {entry.mPose[0], entry.mPose[1], entry.mPose[2]}};
     const float width = entry.mSizeMeters[0];
     quad.size = {width, width * static_cast<float>(shownHeight) / static_cast<float>(shownWidth)};
-    out[added++] = {&quad, 0, (entry.mFlags & SharedAbi::PanelFlags::Focused) != 0};
+    mComposedIDs[added] = entry.mPanelID;
+    out[added++] = {&quad, 0, entry.mPanelID == mFocusedID};
   }
   return added;
 }
 
+bool HostPanels::UpdateFocus(const std::optional<XrPosef>& head, std::span<ComposedPanel> panels) noexcept {
+  constexpr float Degrees = 3.14159265f / 180.0f;
+  uint64_t focused = 0;
+  if (head) {
+    float nearest = 0;
+    for (std::size_t i = 0; i < panels.size() && i < mComposedIDs.size(); ++i) {
+      const auto& quad = *panels[i].mQuad;
+      const float tolerance = (mComposedIDs[i] == mFocusedID ? 3.0f : 1.5f) * Degrees;
+      if (const auto distance = XrUtil::GazeDistance(*head, quad.pose, quad.size, tolerance)) {
+        if (focused == 0 || *distance < nearest) {
+          focused = mComposedIDs[i];
+          nearest = *distance;
+        }
+      }
+    }
+  }
+  for (std::size_t i = 0; i < panels.size() && i < mComposedIDs.size(); ++i) {
+    panels[i].mFocused = focused != 0 && mComposedIDs[i] == focused;
+  }
+  return std::exchange(mFocusedID, focused) != focused;
+}
+
 void HostPanels::Report(SharedAbi::LayerStatus& status) noexcept {
+  status.mFocusedPanelID = mFocusedID;
   status.mPanelsCopied = mCounters.mCopies;
   status.mKeptPrevious = mCounters.mKeptPrevious;
   status.mForcedWaits = mCounters.mForcedWaits;

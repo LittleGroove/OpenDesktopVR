@@ -41,6 +41,8 @@ struct FakeRuntime {
   uint64_t mNextHandle {0x100};
   uint32_t mMaxLayers {16};
   bool mFailNextWait {false};
+  // Where xrLocateSpace says the head is (tests turn it for gaze focus)
+  XrPosef mHeadPose {{0, 0, 0, 1}, {0, 1.2f, 0}};
   int mSwapchainsCreated {0};
   int mSwapchainsDestroyed {0};
   int mReleases {0};
@@ -104,7 +106,7 @@ inline XRAPI_ATTR XrResult XRAPI_CALL F_xrDestroySpace(XrSpace) {
 }
 inline XRAPI_ATTR XrResult XRAPI_CALL F_xrLocateSpace(XrSpace, XrSpace, XrTime, XrSpaceLocation* location) {
   location->locationFlags = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
-  location->pose = {{0, 0, 0, 1}, {0, 1.2f, 0}};
+  location->pose = gRT.mHeadPose;
   return XR_SUCCESS;
 }
 inline XRAPI_ATTR XrResult XRAPI_CALL F_xrEnumerateSwapchainFormats(XrSession, uint32_t capacity, uint32_t* count, int64_t* formats) {

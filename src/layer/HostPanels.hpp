@@ -65,8 +65,21 @@ class HostPanels {
   // first appears or changes size.
   std::size_t Compose(TimeUtil::TimePoint now, std::span<ComposedPanel> out) noexcept;
 
-  // The layer's report for the host (adapter, formats, counters)
+  // The layer's report for the host (adapter, formats, counters, focus)
   void Report(SharedAbi::LayerStatus& status) noexcept;
+
+  // Gaze focus (doc 05): of the panels the last Compose added, the one the
+  // head points at (nearest, with a small tolerance; the focused one keeps
+  // a wider one, so focus doesn't flicker at an edge). Marks it in
+  // `panels`: it wins depth ties. True if it changed: report, then wake the
+  // host, which draws it with its "looked at" opacity (PN-4).
+  bool UpdateFocus(const std::optional<XrPosef>& head, std::span<ComposedPanel> panels) noexcept;
+  uint64_t FocusedPanel() const noexcept {
+    return mFocusedID;
+  }
+  void WakeHost() noexcept {
+    mLink.WakeHost();
+  }
 
   struct Counters {
     uint64_t mCopies {0};
@@ -121,6 +134,9 @@ class HostPanels {
   std::array<Record, SharedAbi::MaxPanels> mRecords;
   Counters mCounters;
   FrameCosts mCosts;
+  // The panel ID behind each quad the last Compose added
+  std::array<uint64_t, SharedAbi::MaxPanels> mComposedIDs {};
+  uint64_t mFocusedID {0};
   bool mWasConnected {false};
   bool mReportDue {false};
 };

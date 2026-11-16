@@ -9,6 +9,7 @@
 #include <openxr/openxr.h>
 
 #include <cmath>
+#include <optional>
 #include <string_view>
 
 namespace OpenDesktopVR::XrUtil {
@@ -80,5 +81,11 @@ XrPosef PlaceInFront(const XrPosef& head, float forward, float drop) noexcept;
 // Distance from `point` to the closest point of a rectangle centred on
 // `rectPose` (in its XY plane), for back-to-front panel order
 float DistanceToRect(const XrPosef& rectPose, const XrExtent2Df& size, const XrVector3f& point) noexcept;
+
+// Gaze (doc 05 "Gaze focus"): how far along the head's forward ray (-Z) it
+// meets the rectangle, which counts as `toleranceRadians` larger on every
+// side; nullopt if it misses, or the rectangle is behind the head
+std::optional<float> GazeDistance(
+  const XrPosef& head, const XrPosef& rectPose, const XrExtent2Df& size, float toleranceRadians) noexcept;
 
 }// namespace OpenDesktopVR::XrUtil

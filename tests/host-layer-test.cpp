@@ -19,7 +19,14 @@
 // - static panels: nothing copied while nothing changes (bench gate);
 // - an exited host's block, held open by another viewer: never connected to
 //   (test round 5);
-// - panels resized every frame: no swapchain re-created (RN-7).
+// - panels resized every frame: no swapchain re-created (RN-7);
+// - gaze focus: the head turned to a panel, the layer reports it and wakes
+//   the host; turned away, focus clears (PN-4, doc 05);
+// - a panel's look: tinted red at half brightness, its pixels in the game's
+//   swapchain have no green or blue left (PN-5);
+// - a keybind (F24, sent from outside) hides and shows all panels in the
+//   game: Raw Input, the host's input and UI threads, the renderer, the
+//   layer (PN-6, KY-1, KY-3).
 
 #include "check.hpp"
 #include "fake-openxr.hpp"
@@ -101,6 +108,45 @@ FrameRun RunFrames(Game& game, std::chrono::milliseconds limit, const std::funct
 
 int Quads() {
   return CountType(XR_TYPE_COMPOSITION_LAYER_QUAD);
+}
+
+// The largest green or blue value and the largest red one, over the first
+// image of a swapchain (a static panel is copied once, into image 0)
+struct ChannelPeaks {
+  int mRed {-1};
+  int mGreenOrBlue {-1};
+};
+ChannelPeaks Peaks(XrSwapchain swapchain, uint32_t width, uint32_t height) {
+  const auto images = gRT.mSwapchains.find(reinterpret_cast<uint64_t>(swapchain));
+  if (images == gRT.mSwapchains.end() || images->second.empty()) {
+    return {};
+  }
+  D3D11_TEXTURE2D_DESC desc {};
+  images->second.front()->GetDesc(&desc);
+  desc.Usage = D3D11_USAGE_STAGING;
+  desc.BindFlags = 0;
+  desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  desc.MiscFlags = 0;
+  winrt::com_ptr<ID3D11Texture2D> staging;
+  if (FAILED(gRT.mDevice->CreateTexture2D(&desc, nullptr, staging.put()))) {
+    return {};
+  }
+  gRT.mContext->CopyResource(staging.get(), images->second.front().get());
+  D3D11_MAPPED_SUBRESOURCE mapped {};
+  if (FAILED(gRT.mContext->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped))) {
+    return {};
+  }
+  ChannelPeaks peaks {0, 0};
+  for (uint32_t y = 0; y < height && y < desc.Height; y += 4) {
+    const auto* row = static_cast<const uint8_t*>(mapped.pData) + y * mapped.RowPitch;
+    for (uint32_t x = 0; x < width && x < desc.Width; x += 4) {
+      const auto* p = row + x * 4;// B8G8R8A8
+      peaks.mRed = std::max<int>(peaks.mRed, p[2]);
+      peaks.mGreenOrBlue = std::max<int>({peaks.mGreenOrBlue, p[0], p[1]});
+    }
+  }
+  gRT.mContext->Unmap(staging.get(), 0);
+  return peaks;
 }
 
 std::optional<SharedAbi::LayerStatus> ReadLayerStatus() {
@@ -242,6 +288,78 @@ int main(int argc, char** argv) {
       std::format("no swapchain created while they changed size ({})", gRT.mSwapchainsCreated - created));
     Check(withinImages, "each quad shows the top-left part of its image, its frame's size");
     Check(run.mMaxEndFrameMs < 5, std::format("no stall (max {:.2f} ms)", run.mMaxEndFrameMs));
+  });
+
+  Scenario("Gaze focus: the layer reports the panel the head points at (PN-4, doc 05)", [&] {
+    RunFrames(game, 3s, [] { return Quads() == 0; });
+    HostProcess host {L"--static-panels"};
+    RunFrames(game, 10s, [] { return Quads() == 2; });
+    // The animated test panel is at (-0.22, -0.12, -0.55): turn and tilt
+    // the head toward its centre, from the origin
+    const float yaw = std::atan2(0.22f, 0.55f);
+    const float pitch = -std::atan2(0.12f, std::sqrt(0.22f * 0.22f + 0.55f * 0.55f));
+    const XrQuaternionf turn {0, std::sin(yaw / 2), 0, std::cos(yaw / 2)};
+    const XrQuaternionf tilt {std::sin(pitch / 2), 0, 0, std::cos(pitch / 2)};
+    const auto focused = [] {
+      const auto status = ReadLayerStatus();
+      return status ? status->mFocusedPanelID : 0;
+    };
+    // Before: the head looks far above the panels
+    gRT.mHeadPose = {{0, 0, 0, 1}, {0, 1.2f, 0}};
+    RunFrames(game, 300ms);
+    Check(focused() == 0, "looking elsewhere: nothing focused");
+    gRT.mHeadPose = {{turn.w * tilt.x, turn.y * tilt.w, -turn.y * tilt.x, turn.w * tilt.w}, {0, 0, 0}};
+    const auto start = TimeUtil::Now();
+    RunFrames(game, 3s, [&] { return focused() == 0x0D0E'0001; });
+    Check(focused() == 0x0D0E'0001,
+      std::format("looking at the left panel: it's focused ({:.0f} ms)", TimeUtil::ToMilliseconds(TimeUtil::Now() - start)));
+    gRT.mHeadPose = {{0, 0, 0, 1}, {0, 0, 0}};// straight ahead: between the two panels
+    RunFrames(game, 3s, [&] { return focused() == 0; });
+    Check(focused() == 0, "looking between them: nothing focused");
+    gRT.mHeadPose = {{0, 0, 0, 1}, {0, 1.2f, 0}};
+  });
+
+  Scenario("A panel tinted red at half brightness: no green or blue left in the game's image (PN-5)", [&] {
+    RunFrames(game, 3s, [] { return Quads() == 0; });
+    HostProcess host {L"--static-panels --test-look"};
+    RunFrames(game, 10s, [] { return Quads() == 2; });
+    RunFrames(game, 500ms);
+    std::vector<ChannelPeaks> peaks;
+    for (const auto& quad: gRT.mLastQuads) {
+      peaks.push_back(Peaks(quad.subImage.swapchain, quad.subImage.imageRect.extent.width, quad.subImage.imageRect.extent.height));
+    }
+    // Which is which: the tinted one is the one without green or blue
+    std::ranges::sort(peaks, {}, &ChannelPeaks::mGreenOrBlue);
+    Check(peaks.size() == 2, "both panels' images read");
+    if (peaks.size() == 2) {
+      std::printf("  (tinted: red up to %d, green/blue up to %d; plain: red up to %d, green/blue up to %d)\n", peaks[0].mRed,
+        peaks[0].mGreenOrBlue, peaks[1].mRed, peaks[1].mGreenOrBlue);
+      Check(peaks[0].mGreenOrBlue <= 2, "the tinted panel: no green or blue");
+      Check(peaks[0].mRed > 40 && peaks[0].mRed < 200, "its red dimmed, not gone");
+      Check(peaks[1].mGreenOrBlue > 100, "the other panel is untouched");
+    }
+  });
+
+  Scenario("A keybind hides and shows all panels in the game: Raw Input to the layer (PN-6, KY-1, KY-3)", [&] {
+    RunFrames(game, 3s, [] { return Quads() == 0; });
+    HostProcess host {std::format(L"--static-panels --test-keybind {}", VK_F24)};
+    RunFrames(game, 10s, [] { return Quads() == 2; });
+    Check(Quads() == 2, "both panels showing");
+    RunFrames(game, 500ms);// the host's input thread is watching by now
+    const auto press = [] {
+      INPUT keys[2] {};
+      keys[0].type = keys[1].type = INPUT_KEYBOARD;
+      keys[0].ki.wVk = keys[1].ki.wVk = VK_F24;
+      keys[1].ki.dwFlags = KEYEVENTF_KEYUP;
+      SendInput(2, keys, sizeof(INPUT));
+    };
+    press();
+    const auto hidden = RunFrames(game, 3s, [] { return Quads() == 0; });
+    Check(Quads() == 0, std::format("F24 (sent from outside): all hidden after {} frames", hidden.mFrames));
+    press();
+    const auto shown = RunFrames(game, 3s, [] { return Quads() == 2; });
+    Check(Quads() == 2, std::format("F24 again: all back after {} frames (the captures were kept)", shown.mFrames));
+    Check(hidden.mMaxEndFrameMs < 5 && shown.mMaxEndFrameMs < 5, "no stall");
   });
 
   Scenario("A version mismatch passes through, with one log line (SY-7)", [&] {

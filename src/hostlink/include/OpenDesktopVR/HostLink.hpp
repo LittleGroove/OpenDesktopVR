@@ -95,6 +95,9 @@ class Client {
   bool OwnsStatus() const noexcept {
     return mOwnsStatus;
   }
+  // Tells the host to read the report now (it changed the focused panel).
+  // Never waits.
+  void WakeHost() noexcept;
 
   ClientCounters Counters() const noexcept {
     return mCounters;
@@ -114,6 +117,7 @@ class Client {
   winrt::com_ptr<ID3D11Device5> mDevice5;
   SharedMemory mMemory;
   HANDLE mHostProcess {nullptr};
+  HANDLE mWakeEvent {nullptr};// pulled from the host
   uint32_t mHostProcessID {0};
   uint64_t mGeneration {0};
   SharedAbi::PanelTable mSnapshot {};

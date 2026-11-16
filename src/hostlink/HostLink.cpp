@@ -50,6 +50,10 @@ void Client::DropResources() noexcept {
 }
 
 void Client::Disconnect(const char* why) noexcept {
+  if (mWakeEvent) {
+    CloseHandle(mWakeEvent);
+    mWakeEvent = nullptr;
+  }
   if (mHostProcess) {
     CloseHandle(mHostProcess);
     mHostProcess = nullptr;
@@ -107,13 +111,26 @@ void Client::TryConnect() noexcept {
     CloseHandle(process);
     return;
   }
+  // The host's wake event, pulled like the textures (SY-9); optional
+  HANDLE wake = nullptr;
+  if (header.mWakeEvent != 0
+      && !DuplicateHandle(process, reinterpret_cast<HANDLE>(header.mWakeEvent), GetCurrentProcess(), &wake, EVENT_MODIFY_STATE, FALSE, 0)) {
+    wake = nullptr;
+  }
   mMemory = std::move(memory);
   mHostProcess = process;
+  mWakeEvent = wake;
   mHostProcessID = header.mHostProcessID;
   mGeneration = std::atomic_ref<uint64_t> {const_cast<uint64_t&>(header.mSessionGeneration)}.load();
   mSnapshot.mPanelCount = 0;
   ++mCounters.mConnects;
   Log::Info("Host link: connected to the host app (process {})", mHostProcessID);
+}
+
+void Client::WakeHost() noexcept {
+  if (mWakeEvent) {
+    SetEvent(mWakeEvent);
+  }
 }
 
 bool Client::HostIsRunning() const noexcept {

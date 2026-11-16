@@ -11,11 +11,17 @@
 // - settings-window edits (every slider step) work on the copy in memory,
 //   so 300 slider steps are 300 cheap updates and about one disk write.
 //   Opening the settings window re-reads the file once.
+//
+// It also holds what isn't stored: which panels are hidden for now (PN-6,
+// Visibility.hpp), and the global keybinds' slots (stored in "keybinds").
+// Changed() fires after every change, on the UI thread.
 #pragma once
 
+#include <OpenDesktopVR/Events.hpp>
 #include <OpenDesktopVR/HostPanel.hpp>
 #include <OpenDesktopVR/RenderLoop.hpp>
 #include <OpenDesktopVR/SettingsStore.hpp>
+#include <OpenDesktopVR/Visibility.hpp>
 
 #include <functional>
 #include <optional>
@@ -46,8 +52,35 @@ class PanelManager {
   // Settings-window edits: replace the panel with this ID (ST-6: only it)
   void Update(const PanelDefinition& panel);
 
+  // Showing and hiding (PN-6): hides are runtime only
+  bool AnyShowing() const noexcept {
+    return Visibility::AnyShowing(mPanels, mHidden);
+  }
+  bool IsHidden(uint64_t panelID) const noexcept {
+    return mHidden.contains(panelID);
+  }
+  // True if panels are now showing
+  bool ToggleAll();
+  // True if the panel is now showing
+  bool TogglePanel(uint64_t panelID);
+
+  // Keybind actions on one panel's look (stored); the new value
+  std::optional<float> ChangeBrightness(uint64_t panelID, float step);
+  std::optional<bool> ToggleTint(uint64_t panelID);
+
+  // The global "show or hide all" keybinds
+  const Keybinds::Slots& ToggleAllKeybinds() const noexcept {
+    return mToggleAllKeybinds;
+  }
+  void SetToggleAllKeybinds(const Keybinds::Slots& slots);
+
+  Events::Event<>& Changed() noexcept {
+    return mChanged;
+  }
+
  private:
   void Edit(const std::function<void(std::vector<PanelDefinition>&)>& edit, bool reread);
+  void Reread();
   void Push();
   Settings::DocumentSpec Spec() const;
 
@@ -57,6 +90,9 @@ class PanelManager {
   JsonUtil::Json mDocument;// the whole settings file, as last read
   std::vector<PanelDefinition> mPanels;
   std::vector<PanelDefinition> mTestPanels;
+  Visibility::Hidden mHidden;
+  Keybinds::Slots mToggleAllKeybinds;
+  Events::Event<> mChanged;
 };
 
 }// namespace OpenDesktopVR::Host

@@ -90,8 +90,9 @@ std::string ReadText(const std::wstring& path) {
 // Runs the host with a screenshot option; the image if it worked. With
 // `delayMs`, the window opens that long after start (its device and fonts
 // are made by then, as when a user opens it), and its opening is timed.
-std::optional<ImageFile::Image> Screenshot(const std::wstring& option, const std::wstring& png, int delayMs = 0) {
-  const auto run = RunHost(std::format(L"{} \"{}\" --settings-delay {}", option, png, delayMs));
+std::optional<ImageFile::Image> Screenshot(const std::wstring& option, const std::wstring& png, int delayMs = 0,
+  const std::wstring& extra = L"") {
+  const auto run = RunHost(std::format(L"{} \"{}\" --settings-delay {} {}", option, png, delayMs, extra));
   Check(run.mExited && run.mExitCode == 0, "the host opened the window, saved it and quit cleanly");
   // "idle paints: N", "input messages: M (last 0x...)", "opened in: T ms"
   unsigned paints = ~0u;
@@ -148,6 +149,17 @@ int wmain(int argc, wchar_t** argv) {
     const auto corner = &image->mBgra[(static_cast<std::size_t>(image->mWidth) * 2 + 2) * 4];
     Check(Near(corner, Dimmed(Theme::Background), 4), "the settings behind the picker are dimmed");
     Check(CountNear(*image, Theme::Surface, 3) > 10'000, "the picker is drawn on the theme's surface colour");
+  });
+
+  Scenario("The Keybinds tab: every action with two slots, in the theme (M3c)", [&] {
+    const auto image = Screenshot(L"--settings-screenshot", folder.Path() + L"\\keybinds.png", 0, L"--settings-keybinds");
+    if (!image) {
+      return;
+    }
+    const auto corner = &image->mBgra[(static_cast<std::size_t>(image->mWidth) * 2 + 2) * 4];
+    Check(Near(corner, Theme::Background, 3), "the background is the theme's");
+    Check(CountNear(*image, Theme::Accent, 10) > 20, "the selected tab is marked in the accent colour");
+    Check(CountNear(*image, Theme::TextDim, 12) > 300, "rows of dim \"Not set\" slots");
   });
 
   return Finish();

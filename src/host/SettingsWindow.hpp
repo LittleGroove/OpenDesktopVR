@@ -19,6 +19,7 @@
 //   re-applied on every keystroke.
 #pragma once
 
+#include "KeybindService.hpp"
 #include "PanelManager.hpp"
 
 #include <OpenDesktopVR/RenderLoop.hpp>
@@ -47,7 +48,7 @@ namespace OpenDesktopVR::Host {
 
 class SettingsWindow {
  public:
-  SettingsWindow(HINSTANCE instance, RenderLoop& renderer, PanelManager& panels);
+  SettingsWindow(HINSTANCE instance, RenderLoop& renderer, PanelManager& panels, KeybindService& keybinds);
   ~SettingsWindow();
   SettingsWindow(const SettingsWindow&) = delete;
   SettingsWindow& operator=(const SettingsWindow&) = delete;
@@ -66,6 +67,10 @@ class SettingsWindow {
   // many input messages it had then, and how long it took to open, to
   // "<png>.idle.txt" (no paints is a pass: RN-12), and quit the host
   void RequestScreenshot(std::filesystem::path path, bool withPicker);
+  // Opens on the Keybinds tab (tests, and later a tray item)
+  void ShowKeybindsTab() noexcept {
+    mSelectKeybinds = true;
+  }
 
  private:
   struct Gpu {
@@ -100,6 +105,15 @@ class SettingsWindow {
   void BuildUi();
   void PanelList(const std::vector<PanelDefinition>& panels);
   void PanelDetails(PanelDefinition panel);
+
+  // The Keybinds tab (doc 09 "Bind UI"): every action's two slots, and the
+  // "press the keys you want" capture (KY-4)
+  void KeybindsPage(const std::vector<PanelDefinition>& panels);
+  void SlotButton(const Keybinds::Action& action, std::size_t slot, const Keybinds::Binding& binding);
+  void StartCapture(const Keybinds::Action& action, std::size_t slot);
+  void CapturePopup();
+  void Assign(const Keybinds::Action& action, std::size_t slot, const Keybinds::Binding& binding);
+  std::optional<Keybinds::Slots> SlotsFor(const Keybinds::Action& action) const;
   void WindowPicker();
   void StartListing();
   void OpenPicker(bool retarget);
@@ -114,6 +128,19 @@ class SettingsWindow {
   HINSTANCE mInstance {nullptr};
   RenderLoop& mRenderer;
   PanelManager& mPanels;
+  KeybindService& mKeybinds;
+  Events::Subscription mPanelsChanged;// repaints when keybinds hide panels
+
+  // A keybind being set
+  std::shared_ptr<Keybinds::CaptureSession> mCapture;
+  Keybinds::Action mCaptureAction {};
+  std::size_t mCaptureSlot {0};
+  TimeUtil::TimePoint mCaptureStarted {};
+  std::optional<TimeUtil::TimePoint> mCaptureDoneAt;
+  std::optional<Keybinds::Binding> mConflict;// the binding, while asking
+  Keybinds::Action mConflictWith {};
+  bool mOpenCapture {false};
+  bool mSelectKeybinds {false};
 
   HWND mWindow {nullptr};
   // Made in the background at start and kept while the host runs (an idle

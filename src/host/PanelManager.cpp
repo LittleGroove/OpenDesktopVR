@@ -9,6 +9,7 @@
 #include <OpenDesktopVR/StringUtil.hpp>
 
 #include <algorithm>
+#include <cmath>
 
 namespace OpenDesktopVR::Host {
 
@@ -28,6 +29,7 @@ void PanelManager::Load() {
   }
   auto loaded = mStore.Load(Spec());
   mDocument = std::move(loaded.mDocument);
+  mToggleAllKeybinds = PanelConfig::ReadToggleAllKeybinds(mDocument);
   std::size_t skipped = 0;
   if (auto panels = PanelConfig::Read(mDocument, &skipped)) {
     mPanels = std::move(*panels);
@@ -49,11 +51,16 @@ void PanelManager::Refresh() {
   if (!mPersistent) {
     return;
   }
+  Reread();
+  Push();
+}
+
+void PanelManager::Reread() {
   auto loaded = mStore.Load(Spec());
   mDocument = std::move(loaded.mDocument);
+  mToggleAllKeybinds = PanelConfig::ReadToggleAllKeybinds(mDocument);
   if (auto panels = PanelConfig::Read(mDocument)) {
     mPanels = std::move(*panels);
-    Push();
   }
 }
 
@@ -73,12 +80,7 @@ void PanelManager::Edit(const std::function<void(std::vector<PanelDefinition>&)>
     return;
   }
   if (reread) {
-    // Another program may have changed other sections
-    auto loaded = mStore.Load(Spec());
-    mDocument = std::move(loaded.mDocument);
-    if (auto panels = PanelConfig::Read(mDocument)) {
-      mPanels = std::move(*panels);
-    }
+    Reread();// another program may have changed other sections
   }
   edit(mPanels);
   PanelConfig::Write(mDocument, mPanels);
@@ -121,6 +123,61 @@ void PanelManager::Update(const PanelDefinition& panel) {
   }, false);
 }
 
+bool PanelManager::ToggleAll() {
+  auto result = Visibility::ToggleAll(mPanels, mHidden);
+  mHidden = std::move(result.mHidden);
+  if (result.mEnableAll) {
+    // Nothing was even enabled: enable them all (stored), so the toggle
+    // never seems to do nothing
+    Edit([](std::vector<PanelDefinition>& panels) {
+      for (auto& panel: panels) {
+        panel.mEnabled = true;
+      }
+    }, false);
+  } else {
+    Push();
+  }
+  return AnyShowing();
+}
+
+bool PanelManager::TogglePanel(uint64_t panelID) {
+  mHidden = Visibility::TogglePanel(mPanels, mHidden, panelID);
+  Push();
+  const auto panel = Find(panelID);
+  return panel && Visibility::IsShowing(*panel, mHidden);
+}
+
+std::optional<float> PanelManager::ChangeBrightness(uint64_t panelID, float step) {
+  auto panel = Find(panelID);
+  if (!panel) {
+    return std::nullopt;
+  }
+  // In 10% steps, kept on the step (so ten presses always get back)
+  const float level = std::round((panel->mBrightness + step) * 10.0f) / 10.0f;
+  panel->mBrightness = std::clamp(level, PanelDefinition::MinimumLevel, 1.0f);
+  Update(*panel);
+  return panel->mBrightness;
+}
+
+std::optional<bool> PanelManager::ToggleTint(uint64_t panelID) {
+  auto panel = Find(panelID);
+  if (!panel) {
+    return std::nullopt;
+  }
+  panel->mTintEnabled = !panel->mTintEnabled;
+  Update(*panel);
+  return panel->mTintEnabled;
+}
+
+void PanelManager::SetToggleAllKeybinds(const Keybinds::Slots& slots) {
+  mToggleAllKeybinds = slots;
+  if (mPersistent) {
+    PanelConfig::WriteToggleAllKeybinds(mDocument, mToggleAllKeybinds);
+    mStore.Save(Spec().mPath, mDocument);// debounced (ST-1)
+  }
+  mChanged.Emit();
+}
+
 void PanelManager::Push() {
   std::vector<PanelDefinition> enabled;
   for (const auto& panel: mPanels) {
@@ -128,7 +185,9 @@ void PanelManager::Push() {
       enabled.push_back(panel);
     }
   }
-  mRenderer.SetPanels(std::move(enabled));
+  mHidden = Visibility::Prune(mPanels, mHidden);
+  mRenderer.SetPanels(std::move(enabled), mHidden);
+  mChanged.Emit();
 }
 
 }// namespace OpenDesktopVR::Host

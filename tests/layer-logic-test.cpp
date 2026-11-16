@@ -241,5 +241,20 @@ int main() {
     Check(Near(composed.position.x, 1) && Near(composed.position.z, 1), "composing poses rotates then translates");
   });
 
+  Scenario("Gaze focus: the head's forward ray against a panel, with a tolerance (doc 05)", [] {
+    const XrPosef head {{0, 0, 0, 1}, {0, 0, 0}};// looking down -Z
+    const XrPosef ahead {{0, 0, 0, 1}, {0, 0, -1}};
+    const XrExtent2Df size {0.4f, 0.3f};
+    const auto hit = XrUtil::GazeDistance(head, ahead, size, 0);
+    Check(hit && std::abs(*hit - 1.0f) < 1e-4f, "straight ahead, 1 m: hit at 1 m");
+    const XrPosef aside {{0, 0, 0, 1}, {0.25f, 0, -1}};// its edge 5 cm to the right of the ray
+    Check(!XrUtil::GazeDistance(head, aside, size, 0), "5 cm off its edge: a miss");
+    Check(XrUtil::GazeDistance(head, aside, size, 3.0f * 3.14159265f / 180.0f).has_value(), "with 3 degrees (5.2 cm at 1 m): a hit");
+    const XrPosef behind {{0, 0, 0, 1}, {0, 0, 1}};
+    Check(!XrUtil::GazeDistance(head, behind, size, 0.1f), "behind the head: never");
+    const XrPosef turned {XrUtil::FromYaw(1.5707963f), {0, 0, -1}};// edge-on
+    Check(!XrUtil::GazeDistance(head, turned, size, 0), "edge-on: a miss");
+  });
+
   return Finish();
 }

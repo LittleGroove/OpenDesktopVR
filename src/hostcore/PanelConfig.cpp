@@ -38,6 +38,28 @@ bool Finite(float v) {
   return std::isfinite(v);
 }
 
+// "#RRGGBB"
+std::optional<uint32_t> ParseColor(const std::string& text) {
+  if (text.size() != 7 || text[0] != '#') {
+    return std::nullopt;
+  }
+  uint32_t value = 0;
+  for (std::size_t i = 1; i < text.size(); ++i) {
+    const char c = text[i];
+    value <<= 4;
+    if (c >= '0' && c <= '9') {
+      value |= static_cast<uint32_t>(c - '0');
+    } else if (c >= 'a' && c <= 'f') {
+      value |= static_cast<uint32_t>(c - 'a' + 10);
+    } else if (c >= 'A' && c <= 'F') {
+      value |= static_cast<uint32_t>(c - 'A' + 10);
+    } else {
+      return std::nullopt;
+    }
+  }
+  return value;
+}
+
 }// namespace
 
 std::optional<PanelDefinition> FromJson(const Json& json) noexcept {
@@ -80,6 +102,21 @@ std::optional<PanelDefinition> FromJson(const Json& json) noexcept {
     panel.mPitchDegrees = JsonUtil::GetOr<float>(json, "pitchDegrees", 0.0f);
     panel.mWidthMeters = JsonUtil::GetOr<float>(json, "widthMeters", 0.4f);
     panel.mMaxUpdatesPerSecond = JsonUtil::GetOr<double>(json, "maxUpdatesPerSecond", 0.0);
+    // How it looks: odd values are brought into range, not refused
+    const auto level = [&](const char* key) {
+      const float value = JsonUtil::GetOr<float>(json, key, 1.0f);
+      return std::isfinite(value) ? std::clamp(value, PanelDefinition::MinimumLevel, 1.0f) : 1.0f;
+    };
+    panel.mOpacity = level("opacity");
+    panel.mFocusedOpacity = level("focusedOpacity");
+    panel.mBrightness = level("brightness");
+    panel.mTintEnabled = JsonUtil::GetOr<bool>(json, "tintEnabled", false);
+    panel.mTintColor = ParseColor(JsonUtil::GetOr<std::string>(json, "tintColor", "")).value_or(PanelDefinition::DefaultTintColor);
+    if (const auto keybinds = JsonUtil::Get<Json>(json, "keybinds"); keybinds && keybinds->is_object()) {
+      for (std::size_t i = 0; i < Keybinds::PanelActions.size(); ++i) {
+        panel.mKeybinds[i] = Keybinds::SlotsFromJson(JsonUtil::GetOr<Json>(*keybinds, Keybinds::ActionKey(Keybinds::PanelActions[i]), Json {}));
+      }
+    }
     panel.mEnabled = JsonUtil::GetOr<bool>(json, "enabled", true);
     // Trims in pixels (left, top, right, bottom). Fractions ("crop", test
     // rounds 4 and 5) are dropped: their size in pixels isn't known here.
@@ -134,7 +171,32 @@ Json ToJson(const PanelDefinition& panel) {
   json["enabled"] = panel.mEnabled;
   const auto& crop = panel.mCrop;
   json["cropPixels"] = Json::array({crop.mLeft, crop.mTop, crop.mRight, crop.mBottom});
+  json["opacity"] = panel.mOpacity;
+  json["focusedOpacity"] = panel.mFocusedOpacity;
+  json["brightness"] = panel.mBrightness;
+  json["tintEnabled"] = panel.mTintEnabled;
+  json["tintColor"] = std::format("#{:06X}", panel.mTintColor & 0xFFFFFF);
+  Json keybinds = Json::object();
+  for (std::size_t i = 0; i < Keybinds::PanelActions.size(); ++i) {
+    keybinds[Keybinds::ActionKey(Keybinds::PanelActions[i])] = Keybinds::ToJson(panel.mKeybinds[i]);
+  }
+  json["keybinds"] = std::move(keybinds);
   return json;
+}
+
+Keybinds::Slots ReadToggleAllKeybinds(const Json& settings) {
+  const auto keybinds = JsonUtil::GetOr<Json>(settings, "keybinds", Json {});
+  return Keybinds::SlotsFromJson(JsonUtil::GetOr<Json>(keybinds, Keybinds::ActionKey(Keybinds::ActionKind::ToggleAllPanels), Json {}));
+}
+
+void WriteToggleAllKeybinds(Json& settings, const Keybinds::Slots& slots) {
+  // Other entries in "keybinds" (a newer version's) are kept (ST-5)
+  Json keybinds = JsonUtil::GetOr<Json>(settings, "keybinds", Json::object());
+  if (!keybinds.is_object()) {
+    keybinds = Json::object();
+  }
+  keybinds[Keybinds::ActionKey(Keybinds::ActionKind::ToggleAllPanels)] = Keybinds::ToJson(slots);
+  settings["keybinds"] = std::move(keybinds);
 }
 
 std::optional<std::vector<PanelDefinition>> Read(const Json& settings, std::size_t* skipped) {

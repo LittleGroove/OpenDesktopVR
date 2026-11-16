@@ -83,6 +83,30 @@ XrPosef PlaceInFront(const XrPosef& head, float forward, float drop) noexcept {
   };
 }
 
+std::optional<float> GazeDistance(
+  const XrPosef& head, const XrPosef& rectPose, const XrExtent2Df& size, float toleranceRadians) noexcept {
+  // The ray in the rectangle's own space, where it lies in z = 0
+  const auto toLocal = Inverse(rectPose.orientation);
+  const XrVector3f relative {
+    head.position.x - rectPose.position.x, head.position.y - rectPose.position.y, head.position.z - rectPose.position.z};
+  const auto origin = Rotate(toLocal, relative);
+  const auto direction = Rotate(toLocal, Rotate(head.orientation, XrVector3f {0, 0, -1}));
+  if (std::abs(direction.z) < 1e-6f) {
+    return std::nullopt;// edge-on
+  }
+  const float t = -origin.z / direction.z;
+  if (!(t > 0)) {
+    return std::nullopt;
+  }
+  const float x = origin.x + t * direction.x;
+  const float y = origin.y + t * direction.y;
+  const float margin = t * std::tan(toleranceRadians);
+  if (std::abs(x) > size.width / 2 + margin || std::abs(y) > size.height / 2 + margin) {
+    return std::nullopt;
+  }
+  return t;
+}
+
 float DistanceToRect(const XrPosef& rectPose, const XrExtent2Df& size, const XrVector3f& point) noexcept {
   const XrVector3f relative {
     point.x - rectPose.position.x, point.y - rectPose.position.y, point.z - rectPose.position.z};

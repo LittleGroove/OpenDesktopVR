@@ -11,10 +11,13 @@ odvr_module(
   HostPanel.cpp
   PanelConfig.cpp
   RenderLoop.cpp
+  Visibility.cpp
   DEPS
+  odvr::keybinds
   odvr::render
   odvr::capture
   odvr::panels
   odvr::xrshared
   odvr::core
+  dxguid
 )

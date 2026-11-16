@@ -18,8 +18,10 @@ namespace OpenDesktopVR::Host {
 class Publisher {
  public:
   // Null if the block can't be created; `status` says why (an elevated game
-  // holding the name is "access denied")
-  static std::optional<Publisher> Create(SharedMemory::Status& status) noexcept;
+  // holding the name is "access denied"). `wakeEvent` (owned by the
+  // caller, outliving the block) is set by a layer whose report needs
+  // acting on at once.
+  static std::optional<Publisher> Create(SharedMemory::Status& status, void* wakeEvent = nullptr) noexcept;
 
   Publisher(Publisher&&) noexcept = default;
   Publisher& operator=(Publisher&&) noexcept = default;

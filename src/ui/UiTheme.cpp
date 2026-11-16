@@ -93,6 +93,13 @@ void Apply(float dpiScale) {
   c[ImGuiCol_TableRowBg] = Vec(Theme::Surface, 0.0f);
   c[ImGuiCol_TableRowBgAlt] = Vec(Theme::SurfaceHigh, 0.35f);
   c[ImGuiCol_NavCursor] = Vec(Theme::Accent);
+  c[ImGuiCol_Tab] = Vec(Theme::SurfaceHigh);
+  c[ImGuiCol_TabHovered] = Vec(Theme::Line);
+  c[ImGuiCol_TabSelected] = Vec(Theme::Surface);
+  c[ImGuiCol_TabSelectedOverline] = Vec(Theme::Accent);
+  c[ImGuiCol_TabDimmed] = Vec(Theme::SurfaceHigh);
+  c[ImGuiCol_TabDimmedSelected] = Vec(Theme::Surface);
+  c[ImGuiCol_TabDimmedSelectedOverline] = Vec(Theme::AccentDim);
 }
 
 Fonts LoadFonts(float dpiScale) {

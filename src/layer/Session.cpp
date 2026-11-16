@@ -198,18 +198,30 @@ XrFrameEndInfo Session::Compose(const XrFrameEndInfo& game) noexcept {
   if (!mPassthrough && !zeroLayers) {
     try {
       std::size_t panelCount = 0;
+      std::optional<XrPosef> head;
+      bool headLocated = false;
       if (mHostPanels) {
-        panelCount += mHostPanels->Compose(start, {mPanels.data(), mPanels.size()});
+        const auto hostPanels = mHostPanels->Compose(start, {mPanels.data(), mPanels.size()});
+        panelCount += hostPanels;
         costs = mHostPanels->LastFrameCosts();
+        // Gaze focus: only while there are panels (or one was focused)
+        if (hostPanels > 0 || mHostPanels->FocusedPanel() != 0) {
+          head = LocateHead(game.displayTime);
+          headLocated = true;
+        }
+        const bool focusChanged = mHostPanels->UpdateFocus(head, {mPanels.data(), hostPanels});
         const bool reportNow = mHostPanels->TakeReportDue();
-        if (mReportTimer.Due(start) || reportNow) {
+        if (mReportTimer.Due(start) || reportNow || focusChanged) {
           mReport.mFramesSinceAttach = mStats.TotalFrames();
           mHostPanels->Report(mReport);
         }
+        if (focusChanged) {
+          mHostPanels->WakeHost();// the host redraws it with its focused opacity now
+        }
       }
-      std::optional<XrPosef> head;
-      if (mTestPanel && mTestPanel->NeedsHeadPose()) {
+      if (mTestPanel && mTestPanel->NeedsHeadPose() && !headLocated) {
         head = LocateHead(game.displayTime);
+        headLocated = true;
       }
       if (mTestPanel) {
         if (mTestPanel->Prepare(head)) {
@@ -224,10 +236,12 @@ XrFrameEndInfo Session::Compose(const XrFrameEndInfo& game) noexcept {
       }
       // Distances only matter when there's an order to decide
       if (panelCount > 1) {
-        if (const auto now = LocateHead(game.displayTime)) {
+        if (!headLocated) {
+          head = LocateHead(game.displayTime);
+        }
+        if (head) {
           for (std::size_t i = 0; i < panelCount; ++i) {
-            mPanels[i].mDistance
-              = XrUtil::DistanceToRect(mPanels[i].mQuad->pose, mPanels[i].mQuad->size, now->position);
+            mPanels[i].mDistance = XrUtil::DistanceToRect(mPanels[i].mQuad->pose, mPanels[i].mQuad->size, head->position);
           }
         }
       }

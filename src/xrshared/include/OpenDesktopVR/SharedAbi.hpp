@@ -24,7 +24,8 @@ namespace OpenDesktopVR::SharedAbi {
 inline constexpr uint32_t Magic = 0x5244444F;// "ODDR" little-endian: Open Desktop, data region
 // 2: the header's viewer heartbeat
 // 3: each ring slot's content size; ring textures only grow (RN-7)
-inline constexpr uint32_t AbiVersion = 3;
+// 4: the host's wake event; the panel the head points at (gaze focus)
+inline constexpr uint32_t AbiVersion = 4;
 inline constexpr uint32_t MaxPanels = 16;
 inline constexpr uint32_t RingSlots = 3;
 
@@ -44,7 +45,11 @@ struct Header {
   // GetTickCount64() of the last time any viewer (a layer, the mirror) was
   // looking. The host draws nothing while nobody watches.
   uint64_t mViewerHeartbeat;
-  uint8_t mReserved[24];
+  // An auto-reset event (a handle value in the host process) the layer
+  // sets when its report changed something the host acts on at once: the
+  // focused panel. The layer pulls it, like the textures (SY-9).
+  uint64_t mWakeEvent;
+  uint8_t mReserved[16];
 };
 static_assert(sizeof(Header) == 64);
 
@@ -120,7 +125,10 @@ struct LayerStatus {
   // the same channel order
   uint32_t mPreferredPanelFormat;
   uint32_t mPad0;
-  uint8_t mReserved[48];
+  // The panel the head points at (doc 05 "Gaze focus"), or 0: the host
+  // draws it with its "looked at" opacity (PN-4)
+  uint64_t mFocusedPanelID;
+  uint8_t mReserved[40];
 };
 static_assert(sizeof(LayerStatus) == 512);
 

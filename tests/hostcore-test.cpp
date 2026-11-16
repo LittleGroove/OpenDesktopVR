@@ -8,13 +8,18 @@
 //   turn and tilt set by hand (PN-2; test round 5 asked for tilt);
 // - the settings file: tilt and pixel trims round-trip, the old fraction
 //   trims are dropped, bad values are refused (ST-5, TH-9);
-// - ring textures only grow, in steps (RN-7).
+// - ring textures only grow, in steps (RN-7);
+// - showing and hiding (PN-6): the global toggle's three cases, one panel
+//   while all are hidden, hides of removed panels;
+// - a panel's look (PN-4, PN-5): stored, odd values brought into range, the
+//   colour multipliers; its keybinds and the global ones, stored.
 
 #include "check.hpp"
 
 #include <OpenDesktopVR/HostPanel.hpp>
 #include <OpenDesktopVR/PanelConfig.hpp>
 #include <OpenDesktopVR/PanelRing.hpp>
+#include <OpenDesktopVR/Visibility.hpp>
 
 #include <algorithm>
 #include <array>
@@ -195,6 +200,98 @@ int main() {
     Check(wider == Render::PixelSize {1280, 768}, std::format("wider: grows one step ({}x{}), keeps its height", wider.mWidth, wider.mHeight));
     Check(PanelRing::CapacityFor({16000, 100}, {}).mWidth == 16128, "16000 wide: 16128, within Direct3D's 16384");
     Check(PanelRing::CapacityFor({256, 256}, {}) == Render::PixelSize {256, 256}, "an exact step stays");
+  });
+
+  Scenario("Show or hide all (PN-6): any showing hides all; none showing shows all; none enabled enables all", [] {
+    std::vector<PanelDefinition> panels(3);
+    for (int i = 0; i < 3; ++i) {
+      panels[i].mID = static_cast<uint64_t>(i + 1);
+    }
+    panels[2].mEnabled = false;
+    Visibility::Hidden hidden {2};
+    Check(Visibility::AnyShowing(panels, hidden), "panel 1 is showing");
+    auto result = Visibility::ToggleAll(panels, hidden);
+    Check(result.mHidden == Visibility::Hidden {1, 2} && !result.mEnableAll, "all enabled panels hidden");
+    Check(!Visibility::AnyShowing(panels, result.mHidden), "none showing");
+    result = Visibility::ToggleAll(panels, result.mHidden);
+    Check(result.mHidden.empty() && !result.mEnableAll, "toggled again: every hide cleared");
+    Check(Visibility::IsShowing(panels[0], result.mHidden) && Visibility::IsShowing(panels[1], result.mHidden), "both enabled panels show");
+    Check(!Visibility::IsShowing(panels[2], result.mHidden), "the disabled one stays off");
+    for (auto& panel: panels) {
+      panel.mEnabled = false;
+    }
+    result = Visibility::ToggleAll(panels, {});
+    Check(result.mEnableAll, "none enabled: the toggle enables them all, so it never seems to do nothing");
+  });
+
+  Scenario("One panel's toggle while all are hidden shows just that one; removed panels' hides go", [] {
+    std::vector<PanelDefinition> panels(2);
+    panels[0].mID = 1;
+    panels[1].mID = 2;
+    auto hidden = Visibility::ToggleAll(panels, {}).mHidden;
+    hidden = Visibility::TogglePanel(panels, hidden, 2);
+    Check(!Visibility::IsShowing(panels[0], hidden) && Visibility::IsShowing(panels[1], hidden), "only panel 2 shows");
+    hidden = Visibility::TogglePanel(panels, hidden, 2);
+    Check(!Visibility::AnyShowing(panels, hidden), "toggled again: hidden");
+    panels[0].mEnabled = false;
+    Check(Visibility::TogglePanel(panels, hidden, 1) == hidden, "a disabled panel's toggle changes nothing");
+    panels.pop_back();
+    Check(!Visibility::Prune(panels, hidden).contains(2), "a removed panel's hide is dropped");
+  });
+
+  Scenario("A panel's look is stored; odd values are brought into range (PN-4, PN-5)", [] {
+    auto panel = WindowPanel();
+    panel.mOpacity = 0.6f;
+    panel.mFocusedOpacity = 1.0f;
+    panel.mBrightness = 0.3f;
+    panel.mTintEnabled = true;
+    panel.mTintColor = 0xFF2010;
+    auto json = PanelConfig::ToJson(panel);
+    Check(json.value("tintColor", "") == "#FF2010", "the tint is written as #RRGGBB");
+    auto back = PanelConfig::FromJson(json);
+    Check(back && back->SameLook(panel), "read back the same");
+    json["opacity"] = 0.0;
+    json["brightness"] = 7.5;
+    json["tintColor"] = "red";
+    back = PanelConfig::FromJson(json);
+    Check(back && back->mOpacity == PanelDefinition::MinimumLevel, "opacity 0: 10% (never invisible)");
+    Check(back && back->mBrightness == 1.0f, "brightness 7.5: 100%");
+    Check(back && back->mTintColor == PanelDefinition::DefaultTintColor, "a bad colour: the default");
+    json.erase("opacity");
+    json.erase("brightness");
+    back = PanelConfig::FromJson(json);
+    Check(back && back->mOpacity == 1.0f && back->mBrightness == 1.0f, "a file without them: 100%");
+  });
+
+  Scenario("The look as colour multipliers: brightness times tint on colour, opacity on alpha", [] {
+    PanelDefinition panel;
+    Check(panel.IsPlain(false) && panel.IsPlain(true), "the defaults are plain: drawn as they are");
+    panel.mBrightness = 0.5f;
+    panel.mTintEnabled = true;
+    panel.mTintColor = 0xFF8000;
+    panel.mOpacity = 0.4f;
+    panel.mFocusedOpacity = 0.9f;
+    const auto normal = LookMultipliers(panel, false);
+    Check(Near(normal[0], 0.5f) && Near(normal[1], 0.5f * 128 / 255, 1e-3f) && Near(normal[2], 0) && Near(normal[3], 0.4f),
+      std::format("({:.3f}, {:.3f}, {:.3f}, {:.3f})", normal[0], normal[1], normal[2], normal[3]));
+    Check(Near(LookMultipliers(panel, true)[3], 0.9f), "looked at: its focused opacity");
+    panel.mTintEnabled = false;
+    panel.mBrightness = 1;
+    panel.mOpacity = 1;
+    Check(panel.IsPlain(false) && !panel.IsPlain(true), "plain until looked at, when the focused opacity applies");
+  });
+
+  Scenario("Keybinds are stored with the panel and in the global section (UI-2, UI-3)", [] {
+    auto panel = WindowPanel();
+    const auto f13 = Keybinds::Binding::From({Keybinds::Button {Keybinds::DeviceKind::Keyboard, {}, VK_F13}});
+    panel.KeybindsFor(Keybinds::ActionKind::ToggleTint)[1] = f13;
+    const auto back = PanelConfig::FromJson(PanelConfig::ToJson(panel));
+    Check(back && back->KeybindsFor(Keybinds::ActionKind::ToggleTint)[1] == f13, "a panel's tint keybind round-trips");
+    Check(back && back->KeybindsFor(Keybinds::ActionKind::TogglePanel)[0].IsEmpty(), "the others stay empty");
+    JsonUtil::Json settings {{"keybinds", {{"futureAction", 1}}}};
+    PanelConfig::WriteToggleAllKeybinds(settings, {f13, {}});
+    Check(PanelConfig::ReadToggleAllKeybinds(settings)[0] == f13, "the global keybind round-trips");
+    Check(settings["keybinds"].contains("futureAction"), "a newer version's keybinds are kept (ST-5)");
   });
 
   return Testing::Finish();

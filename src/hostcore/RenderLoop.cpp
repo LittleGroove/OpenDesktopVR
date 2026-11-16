@@ -11,6 +11,8 @@
 
 #include <Windows.h>
 
+#include <d2d1effects.h>
+
 #include <winrt/base.h>
 
 #include <algorithm>
@@ -18,6 +20,7 @@
 #include <format>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <utility>
 
 namespace OpenDesktopVR::Host {
@@ -48,14 +51,20 @@ struct RenderLoop::Impl {
   std::unique_ptr<Render::GpuDevice> mGpu;
   std::optional<Publisher> mPublisher;
   DXGI_FORMAT mRingFormat {DXGI_FORMAT_B8G8R8A8_UNORM};
-  bool mLastVisible {true};
   bool mLastViewers {false};
+  // The panel the layer says the head points at (gaze focus)
+  uint64_t mFocusedPanel {0};
+  // Applies a panel's look (brightness, tint, opacity) as it's drawn
+  winrt::com_ptr<ID2D1Effect> mLookEffect;
 
   std::mutex mPendingMutex;
   std::optional<std::vector<PanelDefinition>> mPendingPanels;
+  std::set<uint64_t> mPendingHidden;
 
   std::thread mThread;
   HANDLE mStop {CreateEventW(nullptr, TRUE, FALSE, nullptr)};
+  // Set by a layer when the focused panel changes (shared through the block)
+  HANDLE mLayerWake {CreateEventW(nullptr, FALSE, FALSE, nullptr)};
   bool mHighResolutionTimer {false};
   HANDLE mTimer {FrameWakeup::CreateTimer(&mHighResolutionTimer)};
 
@@ -86,17 +95,21 @@ struct RenderLoop::Impl {
   ~Impl() {
     CloseHandle(mStop);
     CloseHandle(mTimer);
+    CloseHandle(mLayerWake);
   }
 
-  void Main(const std::atomic<bool>& visible);
+  void Main();
+  void FollowFocus();
+  bool PrepareLook(HostPanel& panel, D2D1_SIZE_U capacity, Render::PixelSize size, TimeUtil::TimePoint now);
+  void DrawLook(HostPanel& panel);
   void ApplyPendingPanels();
   void MakeSource(HostPanel& panel);
   bool EnsureGpu(std::optional<LUID> adapter);
   void EnsurePublisher(TimeUtil::TimePoint now);
   void FollowLayer();
   bool RenderPanel(HostPanel& panel, TimeUtil::TimePoint now);
-  void Publish(bool visible);
-  SharedAbi::PanelEntry EntryFor(const HostPanel& panel, bool visible) const;
+  void Publish();
+  SharedAbi::PanelEntry EntryFor(const HostPanel& panel) const;
   void IssueDueSignals(TimeUtil::TimePoint now);
   void WriteStatsLine();
   void UpdateUntrimmedSizes();
@@ -111,10 +124,11 @@ RenderLoop::~RenderLoop() {
   Stop();
 }
 
-void RenderLoop::SetPanels(std::vector<PanelDefinition> panels) {
+void RenderLoop::SetPanels(std::vector<PanelDefinition> panels, std::set<uint64_t> hidden) {
   {
     std::scoped_lock lock(mImpl->mPendingMutex);
     mImpl->mPendingPanels = std::move(panels);
+    mImpl->mPendingHidden = std::move(hidden);
   }
   FrameWakeup::RequestFrameSoon();
 }
@@ -127,7 +141,7 @@ void RenderLoop::Start() {
     ThreadUtil::SetCurrentThreadName(L"Panel renderer");
     ThreadUtil::CatchAll("panel render thread", [this] {
       winrt::init_apartment(winrt::apartment_type::multi_threaded);// capture uses WinRT
-      mImpl->Main(mPanelsVisible);
+      mImpl->Main();
     });
   });
 }
@@ -138,11 +152,6 @@ void RenderLoop::Stop() noexcept {
   }
   SetEvent(mImpl->mStop);
   mImpl->mThread.join();
-}
-
-void RenderLoop::SetPanelsVisible(bool visible) noexcept {
-  mPanelsVisible.store(visible);
-  FrameWakeup::RequestFrameSoon();
 }
 
 RenderStats RenderLoop::Stats() const noexcept {
@@ -194,9 +203,11 @@ void RenderLoop::Impl::MakeSource(HostPanel& panel) {
 
 void RenderLoop::Impl::ApplyPendingPanels() {
   std::optional<std::vector<PanelDefinition>> pending;
+  std::set<uint64_t> hidden;
   {
     std::scoped_lock lock(mPendingMutex);
     pending = std::exchange(mPendingPanels, std::nullopt);
+    hidden = mPendingHidden;
   }
   if (!pending) {
     return;
@@ -218,6 +229,7 @@ void RenderLoop::Impl::ApplyPendingPanels() {
     // source; a new crop redraws; placement and rate changes only publish.
     const bool newContent = !panel || !panel->mDefinition.SameContent(definition);
     const bool newCrop = panel && !(panel->mDefinition.mCrop == definition.mCrop);
+    const bool newLook = panel && !panel->mDefinition.SameLook(definition);
     if (!panel) {
       panel = std::make_unique<HostPanel>();
     }
@@ -228,13 +240,35 @@ void RenderLoop::Impl::ApplyPendingPanels() {
     } else if (newCrop && panel->mSource) {
       panel->mSource->SetCrop(panel->mDefinition.mCrop);
       panel->mDirty->Mark(Panels::Dirty::Structural);
+    } else if (newLook) {
+      panel->mDirty->Mark(Panels::Dirty::Structural);
     }
+    panel->mHidden = hidden.contains(panel->mDefinition.mID);
     next.push_back(std::move(panel));
   }
   // Removed panels (and their sources) go here
   mPendingSignals.clear();
   mPanels = std::move(next);
-  Publish(mLastVisible);
+  Publish();
+}
+
+void RenderLoop::Impl::FollowFocus() {
+  if (!mPublisher) {
+    return;
+  }
+  const auto status = mPublisher->ReadStatus();
+  const uint64_t focused = (status && status->mLayerProcessID != 0) ? status->mFocusedPanelID : 0;
+  if (focused == mFocusedPanel) {
+    return;
+  }
+  // Redraw the panels whose look depends on it: the old and the new
+  for (auto& panel: mPanels) {
+    const auto id = panel->mDefinition.mID;
+    if ((id == focused || id == mFocusedPanel) && panel->mDefinition.mOpacity != panel->mDefinition.mFocusedOpacity) {
+      panel->mDirty->Mark(Panels::Dirty::Structural);
+    }
+  }
+  mFocusedPanel = focused;
 }
 
 bool RenderLoop::Impl::EnsureGpu(std::optional<LUID> adapter) {
@@ -269,7 +303,7 @@ void RenderLoop::Impl::EnsurePublisher(TimeUtil::TimePoint now) {
     return;
   }
   SharedMemory::Status status {};
-  mPublisher = Publisher::Create(status);
+  mPublisher = Publisher::Create(status, mLayerWake);
   if (mPublisher) {
     Log::Info("Shared memory created; layers can attach");
     for (auto& panel: mPanels) {
@@ -333,12 +367,15 @@ void RenderLoop::Impl::FollowLayer() {
   }
 }
 
-SharedAbi::PanelEntry RenderLoop::Impl::EntryFor(const HostPanel& panel, bool visible) const {
+SharedAbi::PanelEntry RenderLoop::Impl::EntryFor(const HostPanel& panel) const {
   SharedAbi::PanelEntry entry {};
   const auto& definition = panel.mDefinition;
   entry.mPanelID = definition.mID;
   const bool ready = panel.mRing && panel.mSource && panel.mContentVersion > 0;
-  entry.mFlags = (visible && ready) ? SharedAbi::PanelFlags::Visible : 0;
+  entry.mFlags = (!panel.mHidden && ready) ? SharedAbi::PanelFlags::Visible : 0;
+  if (definition.mID == mFocusedPanel) {
+    entry.mFlags |= SharedAbi::PanelFlags::Focused;
+  }
   if (!ready) {
     return entry;
   }
@@ -379,18 +416,70 @@ SharedAbi::PanelEntry RenderLoop::Impl::EntryFor(const HostPanel& panel, bool vi
   return entry;
 }
 
-void RenderLoop::Impl::Publish(bool visible) {
+void RenderLoop::Impl::Publish() {
   if (!mPublisher) {
     return;
   }
   std::array<SharedAbi::PanelEntry, SharedAbi::MaxPanels> entries {};
   const auto count = std::min<std::size_t>(mPanels.size(), entries.size());
   for (std::size_t i = 0; i < count; ++i) {
-    entries[i] = EntryFor(*mPanels[i], visible);
+    entries[i] = EntryFor(*mPanels[i]);
   }
   mPublisher->PublishPanels({entries.data(), count});
   std::scoped_lock lock(mStatsMutex);
   ++mStats.mPublishes;
+}
+
+// A panel's look (brightness and tint on the colours, opacity on alpha,
+// premultiplied) takes two steps. First, before the ring slot is drawn: the
+// content, into the panel's own bitmap. False if that can't be done (the
+// plain content is drawn instead).
+bool RenderLoop::Impl::PrepareLook(HostPanel& panel, D2D1_SIZE_U capacity, Render::PixelSize size, TimeUtil::TimePoint now) {
+  auto* d2d = mGpu->D2D();
+  if (!mLookEffect && FAILED(d2d->CreateEffect(CLSID_D2D1ColorMatrix, mLookEffect.put()))) {
+    return false;
+  }
+  if (!panel.mLookTarget || panel.mLookTarget->GetPixelSize().width != capacity.width
+      || panel.mLookTarget->GetPixelSize().height != capacity.height) {
+    panel.mLookTarget = nullptr;
+    const D2D1_BITMAP_PROPERTIES1 properties {
+      .pixelFormat = {DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED},
+      .dpiX = 96,
+      .dpiY = 96,
+      .bitmapOptions = D2D1_BITMAP_OPTIONS_TARGET,
+    };
+    if (FAILED(d2d->CreateBitmap(capacity, nullptr, 0, properties, panel.mLookTarget.put()))) {
+      return false;
+    }
+  }
+  d2d->SetTarget(panel.mLookTarget.get());
+  d2d->BeginDraw();
+  d2d->Clear(D2D1_COLOR_F {0, 0, 0, 0});
+  d2d->PushAxisAlignedClip(
+    D2D1_RECT_F {0, 0, static_cast<float>(size.mWidth), static_cast<float>(size.mHeight)}, D2D1_ANTIALIAS_MODE_ALIASED);
+  panel.mSource->Render(d2d, size, now);
+  d2d->PopAxisAlignedClip();
+  const bool drawn = SUCCEEDED(d2d->EndDraw());
+  d2d->SetTarget(nullptr);
+  return drawn;
+}
+
+// Then, inside the ring slot's draw: that bitmap through the matrix,
+// replacing what's there
+void RenderLoop::Impl::DrawLook(HostPanel& panel) {
+  auto* d2d = mGpu->D2D();
+  const auto multipliers = LookMultipliers(panel.mDefinition, panel.mDefinition.mID == mFocusedPanel);
+  const D2D1_MATRIX_5X4_F matrix {
+    multipliers[0], 0, 0, 0,
+    0, multipliers[1], 0, 0,
+    0, 0, multipliers[2], 0,
+    0, 0, 0, multipliers[3],
+    0, 0, 0, 0,
+  };
+  mLookEffect->SetInput(0, panel.mLookTarget.get());
+  mLookEffect->SetValue(D2D1_COLORMATRIX_PROP_COLOR_MATRIX, matrix);
+  mLookEffect->SetValue(D2D1_COLORMATRIX_PROP_ALPHA_MODE, D2D1_COLORMATRIX_ALPHA_MODE_PREMULTIPLIED);
+  d2d->DrawImage(mLookEffect.get(), D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_COMPOSITE_MODE_SOURCE_COPY);
 }
 
 bool RenderLoop::Impl::RenderPanel(HostPanel& panel, TimeUtil::TimePoint now) {
@@ -413,6 +502,10 @@ bool RenderLoop::Impl::RenderPanel(HostPanel& panel, TimeUtil::TimePoint now) {
   auto& ring = *panel.mRing;
   const auto slot = ring.NextSlot();
   auto* d2d = mGpu->D2D();
+  // Brightness, tint or opacity: the content goes through the panel's own
+  // bitmap first (doc 08: the host applies the look; the layer only copies)
+  const bool look = !panel.mDefinition.IsPlain(panel.mDefinition.mID == mFocusedPanel)
+    && PrepareLook(panel, D2D1_SIZE_U {ring.Width(), ring.Height()}, size, now);
   d2d->SetTarget(ring.Target(slot));
   d2d->BeginDraw();
   const auto w = static_cast<float>(size.mWidth);
@@ -431,7 +524,11 @@ bool RenderLoop::Impl::RenderPanel(HostPanel& panel, TimeUtil::TimePoint now) {
   }
   // Sources draw only within the content (their Clear too)
   d2d->PushAxisAlignedClip(D2D1_RECT_F {0, 0, w, h}, D2D1_ANTIALIAS_MODE_ALIASED);
-  panel.mSource->Render(d2d, size, now);
+  if (look) {
+    DrawLook(panel);
+  } else {
+    panel.mSource->Render(d2d, size, now);
+  }
   d2d->PopAxisAlignedClip();
   const auto drawn = d2d->EndDraw();
   d2d->SetTarget(nullptr);
@@ -508,7 +605,7 @@ void RenderLoop::Impl::WriteStatsLine() {
   mRendersSinceStats = 0;
 }
 
-void RenderLoop::Impl::Main(const std::atomic<bool>& visible) {
+void RenderLoop::Impl::Main() {
   if (!mHighResolutionTimer) {
     Log::Warning("Frame timer: standard resolution (15.6 ms steps); panels may update less often than their cap");
   }
@@ -523,14 +620,15 @@ void RenderLoop::Impl::Main(const std::atomic<bool>& visible) {
   EnsureGpu(adapter);
   FrameWakeup::RequestFrameSoon();
 
-  const HANDLE handles[] {mStop, mTimer};
+  const HANDLE handles[] {mStop, mTimer, mLayerWake};
   for (;;) {
     // The 1 s timeout keeps the layer report, window re-finding and
     // shared-memory retries going
-    const auto woke = WaitForMultipleObjects(2, handles, FALSE, 1000);
+    const auto woke = WaitForMultipleObjects(3, handles, FALSE, 1000);
     if (woke == WAIT_OBJECT_0) {
       break;
     }
+    const bool layerWoke = woke == WAIT_OBJECT_0 + 2;
     FrameWakeup::FrameStarted();
     const auto now = TimeUtil::Now();
     ++mFramesSinceStats;
@@ -541,9 +639,13 @@ void RenderLoop::Impl::Main(const std::atomic<bool>& visible) {
 
     EnsurePublisher(now);
     ApplyPendingPanels();
+    if (layerWoke) {
+      FollowFocus();// the head points at another panel
+    }
     IssueDueSignals(now);
     if (mSecondTimer.Due(now)) {
       FollowLayer();
+      FollowFocus();// in case a wake was missed (a layer that has gone)
       for (auto& panel: mPanels) {
         if (panel->mSource) {
           ThreadUtil::CatchAll("source maintenance", [&] { panel->mSource->Maintain(now); });
@@ -563,11 +665,9 @@ void RenderLoop::Impl::Main(const std::atomic<bool>& visible) {
       std::scoped_lock lock(mStatsMutex);
       mStats.mHasViewers = viewers;
     }
-    const bool showing = visible.load();
-    bool publish = showing != mLastVisible;
-    mLastVisible = showing;
+    bool publish = false;
     for (auto& panel: mPanels) {
-      const bool active = showing && viewers && panel->mSource;
+      const bool active = !panel->mHidden && viewers && panel->mSource;
       if (active != panel->mActive) {
         panel->mActive = active;
         if (panel->mSource) {
@@ -580,7 +680,7 @@ void RenderLoop::Impl::Main(const std::atomic<bool>& visible) {
     }
     if (!viewers) {
       if (publish) {
-        Publish(showing);
+        Publish();
       }
       continue;
     }
@@ -631,7 +731,7 @@ void RenderLoop::Impl::Main(const std::atomic<bool>& visible) {
       }
     }
     if (publish) {
-      Publish(showing);
+      Publish();
       UpdateUntrimmedSizes();// a window resized, or a new panel's first frame
     }
     if (!mGpu) {

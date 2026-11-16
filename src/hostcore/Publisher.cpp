@@ -24,7 +24,7 @@ uint64_t FirstGeneration() noexcept {
 
 }// namespace
 
-std::optional<Publisher> Publisher::Create(SharedMemory::Status& status) noexcept {
+std::optional<Publisher> Publisher::Create(SharedMemory::Status& status, void* wakeEvent) noexcept {
   auto memory = SharedMemory::Create(
     SharedObjectName(SharedAbi::BlockObject, SharedAbi::AbiVersion), sizeof(SharedAbi::Block), status);
   if (!memory.IsValid()) {
@@ -38,6 +38,7 @@ std::optional<Publisher> Publisher::Create(SharedMemory::Status& status) noexcep
   block.mHeader.mPanelEntrySize = sizeof(SharedAbi::PanelEntry);
   block.mHeader.mStatusSize = sizeof(SharedAbi::LayerStatus);
   block.mHeader.mHostProcessID = GetCurrentProcessId();
+  block.mHeader.mWakeEvent = reinterpret_cast<uint64_t>(wakeEvent);
   std::atomic_ref<uint64_t> {block.mHeader.mSessionGeneration}.store(FirstGeneration());
   std::atomic_ref<uint32_t> {block.mHeader.mMagic}.store(SharedAbi::Magic, std::memory_order_release);
   return Publisher {std::move(memory)};

@@ -3,8 +3,10 @@
 
 #include <OpenDesktopVR/HostPanel.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <utility>
 #include <random>
 
 namespace OpenDesktopVR::Host {
@@ -55,6 +57,33 @@ uint64_t NewPanelID() noexcept {
 
 namespace {
 constexpr float DegreesPerRadian = 180.0f / std::numbers::pi_v<float>;
+}
+
+const Keybinds::Slots& PanelDefinition::KeybindsFor(Keybinds::ActionKind kind) const {
+  for (std::size_t i = 0; i < Keybinds::PanelActions.size(); ++i) {
+    if (Keybinds::PanelActions[i] == kind) {
+      return mKeybinds[i];
+    }
+  }
+  return mKeybinds[0];
+}
+
+Keybinds::Slots& PanelDefinition::KeybindsFor(Keybinds::ActionKind kind) {
+  return const_cast<Keybinds::Slots&>(std::as_const(*this).KeybindsFor(kind));
+}
+
+std::array<float, 4> LookMultipliers(const PanelDefinition& definition, bool focused) noexcept {
+  const float brightness = std::clamp(definition.mBrightness, PanelDefinition::MinimumLevel, 1.0f);
+  const float opacity = std::clamp(focused ? definition.mFocusedOpacity : definition.mOpacity, PanelDefinition::MinimumLevel, 1.0f);
+  float red = 1;
+  float green = 1;
+  float blue = 1;
+  if (definition.mTintEnabled) {
+    red = static_cast<float>((definition.mTintColor >> 16) & 0xFF) / 255.0f;
+    green = static_cast<float>((definition.mTintColor >> 8) & 0xFF) / 255.0f;
+    blue = static_cast<float>(definition.mTintColor & 0xFF) / 255.0f;
+  }
+  return {brightness * red, brightness * green, brightness * blue, opacity};
 }
 
 Facing FacingOrigin(const float position[3]) noexcept {

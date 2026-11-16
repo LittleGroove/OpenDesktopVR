@@ -14,6 +14,9 @@
 //                    signalled, to exercise the layer's bounded staleness
 // --static-panels    test panels that never change (the idle bench gate)
 // --resizing-panels  test panels that change size every frame (RN-7)
+// --test-keybind <vk>  test instances: this key shows or hides all panels
+// --test-look        the static test panel tinted red at half brightness
+//                    (PN-5: its pixels are checked)
 // --window <title>   test instances: a window panel matching this title
 //                    (repeat it for more)
 // --warp             allow software rendering if there's no GPU (CI)
@@ -22,9 +25,11 @@
 //                    tests: open the settings window (with the window
 //                    picker), save it as a PNG, check that it stops
 //                    painting when idle, then quit (SettingsWindow.hpp)
+// --settings-keybinds   tests: open the settings window on its Keybinds tab
 // --settings-delay <ms>  tests: open the settings window this long after
 //                    start, as a user would (its device is made by then)
 
+#include "KeybindService.hpp"
 #include "PanelManager.hpp"
 #include "SettingsWindow.hpp"
 #include "TrayIcon.hpp"
@@ -61,10 +66,13 @@ struct Options {
   bool mAllowWarp {false};
   bool mStaticPanels {false};
   bool mResizingPanels {false};
+  bool mTestLook {false};
+  UINT mTestKeybind {0};
   bool mTestInstance {false};
   std::vector<std::wstring> mTestWindowTitles;
   bool mOpenSettings {false};
   int mSettingsDelayMs {0};
+  bool mSettingsKeybinds {false};
   std::wstring mScreenshot;
   bool mScreenshotPicker {false};
 };
@@ -87,10 +95,16 @@ Options ParseOptions() {
       options.mStaticPanels = true;
     } else if (arg == L"--resizing-panels") {
       options.mResizingPanels = true;
+    } else if (arg == L"--test-look") {
+      options.mTestLook = true;
+    } else if (arg == L"--test-keybind" && i + 1 < argc) {
+      options.mTestKeybind = static_cast<UINT>(std::clamp(_wtoi(argv[++i]), 0, 0xFE));
     } else if (arg == L"--warp") {
       options.mAllowWarp = true;
     } else if (arg == L"--settings") {
       options.mOpenSettings = true;
+    } else if (arg == L"--settings-keybinds") {
+      options.mSettingsKeybinds = true;
     } else if (arg == L"--settings-delay" && i + 1 < argc) {
       options.mSettingsDelayMs = std::clamp(_wtoi(argv[++i]), 0, 10'000);
     } else if ((arg == L"--settings-screenshot" || arg == L"--picker-screenshot") && i + 1 < argc) {
@@ -193,11 +207,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       }
       testPanels.push_back(std::move(panel));
     }
+    if (options.mTestLook && testPanels.empty()) {
+      testPanels = Host::DefaultTestPanels();
+      auto& still = testPanels.back();
+      still.mBrightness = 0.5f;
+      still.mTintEnabled = true;
+      still.mTintColor = 0xFF0000;
+    }
     Host::PanelManager panels {renderer, !options.mTestInstance, std::move(testPanels)};
     panels.Load();
     renderer.Start();
 
-    Host::SettingsWindow settings {instance, renderer, panels};
+    // Keybinds: the keyboard and game controllers, on their own thread
+    Host::KeybindService keybinds {instance, panels};
+    if (options.mTestKeybind != 0 && options.mTestInstance) {
+      Keybinds::Slots slots;
+      slots[0] = Keybinds::Binding::From({Keybinds::Button {Keybinds::DeviceKind::Keyboard, {}, options.mTestKeybind}});
+      panels.SetToggleAllKeybinds(slots);// in memory: a test instance saves nothing
+    }
+    Host::SettingsWindow settings {instance, renderer, panels, keybinds};
     Host::TrayIcon tray {instance, renderer, panels, settings};
     if (options.mExitAfterSeconds > 0) {
       tray.QuitAfter(options.mExitAfterSeconds);
@@ -208,6 +236,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     if (options.mOpenSettings) {
       // Tests only: the message loop hasn't started, so nothing waits on this
       Sleep(static_cast<DWORD>(options.mSettingsDelayMs));
+      if (options.mSettingsKeybinds) {
+        settings.ShowKeybindsTab();
+      }
       settings.Show();
     }
     exitCode = tray.Run();

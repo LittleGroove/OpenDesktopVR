@@ -55,6 +55,8 @@ odvr_test(shared-abi-test SOURCES shared-abi-test.cpp DEPS odvr::xrshared)
 odvr_test(panels-test SOURCES panels-test.cpp DEPS odvr::panels)
 # The host's panel model: trims, facing, the settings format, ring growth (M3b)
 odvr_test(hostcore-test SOURCES hostcore-test.cpp DEPS odvr::hostcore)
+# Keybinds (M3c): when bindings fire, capture, back-off, the input thread
+odvr_test(keybinds-test SOURCES keybinds-test.cpp DEPS odvr::keybinds)
 
 # M2 end to end: the real host (child processes) and the real layer DLL
 odvr_executable(host-layer-test SOURCES host-layer-test.cpp DEPS odvr::xrshared odvr::core odvr::openxr_headers odvr::cppwinrt d3d11 winmm)

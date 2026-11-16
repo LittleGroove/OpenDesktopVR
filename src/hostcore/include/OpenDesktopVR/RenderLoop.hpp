@@ -13,7 +13,11 @@
 //   maintains sources (re-finding windows), retries shared memory (SY-8);
 // - ring textures only grow (RN-7); each frame says how much of them it uses;
 // - panels can be replaced at any time from any thread (SetPanels); a panel
-//   whose content is unchanged keeps its source;
+//   whose content is unchanged keeps its source; a hidden one (PN-6) keeps
+//   it too, idle (CP-5), and isn't shown;
+// - each panel's look (opacity, brightness, tint: PN-4, PN-5) is applied
+//   as it's drawn, with its "looked at" opacity while the layer reports the
+//   head pointing at it (the layer sets a wake event: no polling);
 // - writes a stats line every 60 s (LG-2).
 #pragma once
 
@@ -22,6 +26,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <set>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -73,18 +78,12 @@ class RenderLoop {
   RenderLoop(const RenderLoop&) = delete;
   RenderLoop& operator=(const RenderLoop&) = delete;
 
-  // The panels to show (enabled ones only); safe from any thread, applied
-  // on the render thread's next frame
-  void SetPanels(std::vector<PanelDefinition> panels);
+  // The panels (enabled ones only), and which of them are hidden for now;
+  // safe from any thread, applied on the render thread's next frame
+  void SetPanels(std::vector<PanelDefinition> panels, std::set<uint64_t> hidden = {});
 
   void Start();
   void Stop() noexcept;
-
-  // Global show/hide (doc 09 PN-6); safe from any thread
-  void SetPanelsVisible(bool visible) noexcept;
-  bool PanelsVisible() const noexcept {
-    return mPanelsVisible.load();
-  }
 
   RenderStats Stats() const noexcept;
 
@@ -95,7 +94,6 @@ class RenderLoop {
  private:
   struct Impl;
   std::unique_ptr<Impl> mImpl;
-  std::atomic<bool> mPanelsVisible {true};
 };
 
 }// namespace OpenDesktopVR::Host

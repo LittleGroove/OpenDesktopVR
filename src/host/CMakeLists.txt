@@ -11,8 +11,10 @@ odvr_executable(
   TrayIcon.cpp
   PanelManager.cpp
   SettingsWindow.cpp
+  KeybindService.cpp
   DEPS
   odvr::hostcore
+  odvr::keybinds
   odvr::capture
   odvr::settings
   odvr::registration
