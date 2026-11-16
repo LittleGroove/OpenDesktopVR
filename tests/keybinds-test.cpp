@@ -6,6 +6,9 @@
 //   modifier alone never; per device; the most specific binding; held
 //   buttons forgotten when devices change; a lost device's releases fire
 //   nothing; switches and detents left on don't block (test round 7);
+// - a controller's reads (KY-2): a baseline while it settles after being
+//   found or plugged back in (test round 8), and after the device list
+//   changes;
 // - bind capture (KY-4): Escape cancels; buttons held at the start are
 //   ignored; a modifier alone starts over;
 // - re-acquire back-off (KY-2): 100 ms doubling to 5 s, reset only by a
@@ -18,6 +21,7 @@
 
 #include <OpenDesktopVR/BindCapture.hpp>
 #include <OpenDesktopVR/ChordTracker.hpp>
+#include <OpenDesktopVR/ControllerState.hpp>
 #include <OpenDesktopVR/InputThread.hpp>
 #include <OpenDesktopVR/Keybinds.hpp>
 #include <OpenDesktopVR/TimeUtil.hpp>
@@ -70,6 +74,32 @@ std::vector<Action> RunAt(ChordTracker& tracker, const std::vector<Timed>& event
   std::vector<Action> fired;
   for (const auto& event: events) {
     if (auto action = tracker.OnButton(event.mButton, event.mPressed, Start + std::chrono::milliseconds {event.mAtMs})) {
+      fired.push_back(*action);
+    }
+  }
+  return fired;
+}
+
+// What the input thread does with one read of controller "{a}"
+std::vector<Action> Read(ChordTracker& tracker, ControllerState& state, std::vector<uint32_t> held, int atMs,
+  ControllerState::Changes* changesOut = nullptr) {
+  const auto now = Start + std::chrono::milliseconds {atMs};
+  const auto changes = state.Update(std::move(held), now);
+  if (changesOut) {
+    *changesOut = changes;
+  }
+  std::vector<Action> fired;
+  if (changes.mBaseline) {
+    tracker.Resync(DeviceKind::Controller, "{a}", state.Held());
+    return fired;
+  }
+  for (const auto code: changes.mReleased) {
+    if (auto action = tracker.OnButton(Pad("{a}", code), false, now)) {
+      fired.push_back(*action);
+    }
+  }
+  for (const auto code: changes.mPressed) {
+    if (auto action = tracker.OnButton(Pad("{a}", code), true, now)) {
       fired.push_back(*action);
     }
   }
@@ -201,6 +231,51 @@ int main() {
     RunAt(tracker, {{Pad("{a}", 7), false, 3500}});
     fired = RunAt(tracker, {{Pad("{a}", 5), true, 3600}, {Pad("{a}", 5), false, 3700}});
     Check(fired.size() == 1, "shift let go: button 6 fires again");
+  });
+
+  Scenario("A controller found or plugged back in: its first half second is a baseline (KY-2, test round 8)", [] {
+    const auto hatUp = HatCode(0, HatDirection::Up);
+    ChordTracker tracker;
+    tracker.SetBindings({{Binding::From({Pad("{a}", hatUp)}), ToggleAll}});
+    ControllerState state;
+    ControllerState::Changes changes;
+    state.Restart(Start);
+    Check(state.SettleDue() == Start + ControllerState::SettleTime, "a read is due when it settles");
+    // Round 8's replugged stick: nothing at first (no report yet), then a
+    // first report with a hat pushed and two buttons, then the hat let go
+    auto fired = Read(tracker, state, {}, 0, &changes);
+    Check(changes.mBaseline && !changes.mSettled, "the read right after acquiring is a baseline, not yet settled");
+    fired = Read(tracker, state, {1, 7, hatUp}, 40);
+    auto more = Read(tracker, state, {1, 7}, 160);
+    Check(fired.empty() && more.empty(), "a hat pushed and let go while it settles fires nothing");
+    Read(tracker, state, {1, 7}, 500, &changes);
+    Check(changes.mBaseline && changes.mSettled, "the read when it settles is the final baseline");
+    Check(state.Held() == std::vector<uint32_t> {1, 7}, "with what was held then (said in the log once)");
+    Check(!state.SettleDue(), "and no more reads are due for it");
+    fired = Read(tracker, state, {1, 7, hatUp}, 600, &changes);
+    Check(!changes.mBaseline && changes.mPressed == std::vector<uint32_t> {hatUp}, "after that, a push is a press");
+    fired = Read(tracker, state, {1, 7}, 700, &changes);
+    Check(fired.size() == 1 && fired[0] == ToggleAll, "and the hat fires at once, the buttons on from the start don't block it");
+    Check(!tracker.TakeMiss(), "no miss reported");
+  });
+
+  Scenario("The device list changed: the next read is a baseline, without settling; then presses and releases", [] {
+    ChordTracker tracker;
+    tracker.SetBindings({{Binding::From({Pad("{a}", 3)}), ToggleAll}});
+    ControllerState state;
+    ControllerState::Changes changes;
+    state.Restart(Start);
+    Read(tracker, state, {12}, 600, &changes);
+    Check(changes.mSettled, "settled");
+    tracker.Clear();// another device came or went
+    state.Resync();
+    Read(tracker, state, {12, 30}, 1000, &changes);
+    Check(changes.mBaseline && changes.mSettled && !state.SettleDue(), "a baseline at once (it's already reporting)");
+    Read(tracker, state, {3, 12, 30}, 1100, &changes);
+    Check(changes.mPressed == std::vector<uint32_t> {3} && changes.mReleased.empty(), "button 4 pressed");
+    const auto fired = Read(tracker, state, {12}, 1200, &changes);
+    Check(changes.mReleased == std::vector<uint32_t> {3, 30} && changes.mPressed.empty(), "button 4 and the detent let go");
+    Check(fired.size() == 1, "button 4 fires, the detent's button doesn't block it");
   });
 
   Scenario("A shift held a while, then B1: still shift+B1; a binding can include a switch", [] {

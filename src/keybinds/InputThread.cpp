@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-Proprietary
 // Copyright (c) 2026 Robert McGough. All rights reserved.
 
+#include <OpenDesktopVR/ControllerState.hpp>
 #include <OpenDesktopVR/InputThread.hpp>
 #include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/StringUtil.hpp>
@@ -113,11 +114,10 @@ struct InputThread::Impl {
     uint32_t mButtons {0};
     uint32_t mHats {0};
     bool mAcquired {false};
-    bool mResync {true};
     bool mLoggedLoss {false};
     Backoff mBackoff;
     TimeUtil::TimePoint mNextAttempt {};
-    std::vector<uint32_t> mHeld;// sorted
+    ControllerState mState;
     std::vector<uint32_t> mLoggedOn;// last logged "on from the start"
 
     ~Controller() {
@@ -273,6 +273,8 @@ void InputThread::Impl::Loop() {
     for (const auto& controller: mControllers) {
       if (!controller->mAcquired) {
         due = std::min(due, controller->mNextAttempt);
+      } else if (const auto settled = controller->mState.SettleDue()) {
+        due = std::min(due, *settled);
       }
     }
     if (anyPolled) {
@@ -305,6 +307,8 @@ void InputThread::Impl::TimedWork() {
       TryAcquire(*controller);
     } else if (controller->mAcquired && !controller->mEvent) {
       Read(*controller);
+    } else if (const auto settled = controller->mState.SettleDue(); controller->mAcquired && settled && now >= *settled) {
+      Read(*controller);// settling is over: what's held now is the baseline
     }
   }
   if (now >= mNextCheck) {
@@ -417,12 +421,16 @@ void InputThread::Impl::Enumerate() {
   if (!changed) {
     return;
   }
-  // Held buttons are forgotten when devices change (KY-1)
+  // Held buttons are forgotten when devices change (KY-1); the devices
+  // still here are read again at once, as a baseline
   mTracker.Clear();
-  for (auto& controller: mControllers) {
-    controller->mResync = true;
-  }
   Resolve();
+  for (auto& controller: mControllers) {
+    controller->mState.Resync();
+    if (controller->mAcquired) {
+      Read(*controller);
+    }
+  }
   std::vector<ControllerInfo> info;
   std::string names;
   for (const auto& controller: mControllers) {
@@ -440,8 +448,10 @@ void InputThread::Impl::Enumerate() {
 void InputThread::Impl::TryAcquire(Controller& controller) {
   if (SUCCEEDED(controller.mDevice->Acquire())) {
     controller.mAcquired = true;
-    controller.mResync = true;
-    Read(controller);// at once: what was let go meanwhile reads as up (KY-2)
+    // At once: what was let go meanwhile reads as up (KY-2). Its reports
+    // are a baseline until it settles (test round 8).
+    controller.mState.Restart(TimeUtil::Now());
+    Read(controller);
     return;
   }
   controller.mNextAttempt = TimeUtil::Now() + controller.mBackoff.Next();
@@ -449,7 +459,6 @@ void InputThread::Impl::TryAcquire(Controller& controller) {
 
 void InputThread::Impl::Lost(Controller& controller) {
   controller.mAcquired = false;
-  controller.mResync = true;
   controller.mNextAttempt = TimeUtil::Now() + controller.mBackoff.Next();
   if (!controller.mLoggedLoss) {
     controller.mLoggedLoss = true;
@@ -481,36 +490,33 @@ void InputThread::Impl::Read(Controller& controller) {
     HatCodes(hat, state.rgdwPOV[hat], held);
   }
   std::ranges::sort(held);
-  if (controller.mResync) {
-    // Back after a loss, or new: what's held now, silently
-    controller.mResync = false;
-    controller.mHeld = held;
-    mTracker.Resync(DeviceKind::Controller, controller.mInfo.mDevice, held);
+  held.erase(std::ranges::unique(held).begin(), held.end());
+  const auto changes = controller.mState.Update(std::move(held), TimeUtil::Now());
+  if (changes.mBaseline) {
+    // New, back after a loss, or the device list changed: what's held now,
+    // silently
+    const auto& on = controller.mState.Held();
+    mTracker.Resync(DeviceKind::Controller, controller.mInfo.mDevice, on);
     // Switches and detents: on from the start, so they don't block keybinds.
     // Said once per change (test round 7: a HOTAS whose bindings never fired).
-    if (!held.empty() && held != controller.mLoggedOn) {
-      Log::Info("Keybinds: '{}' has {} on from the start (switches or detents; they don't block keybinds): {}",
-        controller.mInfo.mName, held.size() == 1 ? "1 button" : std::format("{} buttons", held.size()),
-        CodeNames(held));
+    if (changes.mSettled) {
+      if (!on.empty() && on != controller.mLoggedOn) {
+        Log::Info("Keybinds: '{}' has {} on from the start (switches or detents; they don't block keybinds): {}",
+          controller.mInfo.mName, on.size() == 1 ? "1 button" : std::format("{} buttons", on.size()), CodeNames(on));
+      }
+      controller.mLoggedOn = on;
     }
-    controller.mLoggedOn = held;
     return;
   }
   const auto button = [&](uint32_t code) {
     return Button {DeviceKind::Controller, controller.mInfo.mDevice, code, controller.mInfo.mProduct, controller.mInfo.mName};
   };
-  // Releases first, so a quick change of buttons isn't read as a combination
-  for (const auto code: controller.mHeld) {
-    if (!std::ranges::binary_search(held, code)) {
-      Feed(button(code), false);
-    }
+  for (const auto code: changes.mReleased) {
+    Feed(button(code), false);
   }
-  for (const auto code: held) {
-    if (!std::ranges::binary_search(controller.mHeld, code)) {
-      Feed(button(code), true);
-    }
+  for (const auto code: changes.mPressed) {
+    Feed(button(code), true);
   }
-  controller.mHeld = std::move(held);
 }
 
 void InputThread::Impl::Feed(const Button& button, bool pressed) {

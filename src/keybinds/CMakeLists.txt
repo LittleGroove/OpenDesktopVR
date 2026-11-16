@@ -10,6 +10,7 @@ odvr_module(
   SOURCES
   Keybinds.cpp
   ChordTracker.cpp
+  ControllerState.cpp
   BindCapture.cpp
   InputThread.cpp
   DEPS
