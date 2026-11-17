@@ -52,6 +52,12 @@ std::unique_ptr<PanelRing> PanelRing::Create(GpuDevice& gpu, uint32_t width, uin
         Log::Error("Panel ring: Direct2D can't draw into format {}", static_cast<int>(format));
         return nullptr;
       }
+      // Readable too, for a panel that shows part of this one; optional
+      auto readable = properties;
+      readable.bitmapOptions = D2D1_BITMAP_OPTIONS_NONE;
+      if (FAILED(gpu.D2D()->CreateBitmapFromDxgiSurface(surface.get(), &readable, ring->mSources[slot].put()))) {
+        ring->mSources[slot] = nullptr;
+      }
     }
     if (FAILED(gpu.Device()->CreateFence(0, D3D11_FENCE_FLAG_SHARED, __uuidof(ID3D11Fence), ring->mFence.put_void()))
         || FAILED(ring->mFence->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &ring->mFenceHandle))) {

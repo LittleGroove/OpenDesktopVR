@@ -190,18 +190,18 @@ Json ToJson(const PanelDefinition& panel) {
   return json;
 }
 
-Keybinds::Slots ReadToggleAllKeybinds(const Json& settings) {
+Keybinds::Slots ReadGlobalKeybinds(const Json& settings, Keybinds::ActionKind kind) {
   const auto keybinds = JsonUtil::GetOr<Json>(settings, "keybinds", Json {});
-  return Keybinds::SlotsFromJson(JsonUtil::GetOr<Json>(keybinds, Keybinds::ActionKey(Keybinds::ActionKind::ToggleAllPanels), Json {}));
+  return Keybinds::SlotsFromJson(JsonUtil::GetOr<Json>(keybinds, Keybinds::ActionKey(kind), Json {}));
 }
 
-void WriteToggleAllKeybinds(Json& settings, const Keybinds::Slots& slots) {
+void WriteGlobalKeybinds(Json& settings, Keybinds::ActionKind kind, const Keybinds::Slots& slots) {
   // Other entries in "keybinds" (a newer version's) are kept (ST-5)
   Json keybinds = JsonUtil::GetOr<Json>(settings, "keybinds", Json::object());
   if (!keybinds.is_object()) {
     keybinds = Json::object();
   }
-  keybinds[Keybinds::ActionKey(Keybinds::ActionKind::ToggleAllPanels)] = Keybinds::ToJson(slots);
+  keybinds[Keybinds::ActionKey(kind)] = Keybinds::ToJson(slots);
   settings["keybinds"] = std::move(keybinds);
 }
 

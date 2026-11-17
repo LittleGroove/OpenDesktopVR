@@ -14,6 +14,7 @@ odvr_executable(
   KeybindService.cpp
   DEPS
   odvr::hostcore
+  odvr::vkeyboardui
   odvr::keybinds
   odvr::capture
   odvr::apphelperhost

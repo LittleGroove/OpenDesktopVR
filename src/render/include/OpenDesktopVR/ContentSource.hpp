@@ -131,6 +131,28 @@ class ContentSource {
     return std::nullopt;
   }
 
+  // Content that shows and hides by itself (the keyboard, ADR-036): while
+  // true, the panel is left out of what the layer shows, and is idle.
+  // Render thread.
+  virtual bool IsHiddenNow() const {
+    return false;
+  }
+  // A change the user must see at once (a key press, doc 07): drawn past
+  // the panel's cap, never past the ring's safety floor. Render thread.
+  virtual bool TakeUrgent() {
+    return false;
+  }
+  // Content that shows part of another panel (the keyboard's preview
+  // strip, K13): that panel's ID, 0 if none. It's redrawn when that panel
+  // is, within its own cap. Render thread.
+  virtual uint64_t PartOfPanel() const {
+    return 0;
+  }
+  // Just before Render, that panel's newest frame and its size (null if it
+  // has none); null again just after
+  virtual void SetPart(ID2D1Bitmap1* /*frame*/, PixelSize /*size*/) {
+  }
+
   // The content's size before trimming (a window's client area), for the
   // settings window's trim ranges; 0 x 0 while unknown. Any thread.
   virtual PixelSize UntrimmedSize() const {

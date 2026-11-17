@@ -453,10 +453,14 @@ class Worker {
         break;
       }
       case Kind::Down: {
-        // Not activated: measured, making the window active on its own thread
-        // takes the real foreground whenever Windows allows it (the app was
-        // started by the foreground process, or nobody touched the keyboard
-        // or mouse for a while). Keys need it (doc 06, M5); clicks don't.
+        // Made active on its own thread first, if it isn't (doc 07 "Target
+        // selection"; ADR-036): Chromium apps and Firefox only focus a text
+        // field, and show its caret, in an active window, and the keyboard
+        // shows from that caret (VK-1). Where Windows lets the app take the
+        // real foreground when it activates, the helper gives it straight
+        // back (ADR-035).
+        Send(mWindow, mShared.mCommandMessage, static_cast<WPARAM>(InjectionHookProtocol::Command::ActivateWindow),
+          reinterpret_cast<LPARAM>(mWindow));
         const bool doubleTap = IsDoubleTap(event, child);
         if (doubleTap) {
           // At the first tap's point: the app checks the two are close

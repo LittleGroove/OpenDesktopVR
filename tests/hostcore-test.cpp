@@ -12,12 +12,18 @@
 // - showing and hiding (PN-6): the global toggle's three cases, one panel
 //   while all are hidden, hides of removed panels;
 // - a panel's look (PN-4, PN-5): stored, odd values brought into range, the
-//   colour multipliers; its keybinds and the global ones, stored.
+//   colour multipliers; its keybinds and the global ones, stored;
+// - the keyboard (M5b): its settings, where its panel goes, the renderer
+//   getting it first in a full list (VK-5), and the caret mapped into the
+//   target panel's pixels for the preview strip (K13).
 
 #include "check.hpp"
 
 #include <OpenDesktopVR/HostPanel.hpp>
+#include <OpenDesktopVR/KeyboardConfig.hpp>
+#include <OpenDesktopVR/KeyboardService.hpp>
 #include <OpenDesktopVR/PanelConfig.hpp>
+#include <OpenDesktopVR/SharedAbi.hpp>
 #include <OpenDesktopVR/PanelRing.hpp>
 #include <OpenDesktopVR/Visibility.hpp>
 
@@ -302,9 +308,76 @@ int main() {
     Check(back && back->KeybindsFor(Keybinds::ActionKind::ToggleTint)[1] == f13, "a panel's tint keybind round-trips");
     Check(back && back->KeybindsFor(Keybinds::ActionKind::TogglePanel)[0].IsEmpty(), "the others stay empty");
     JsonUtil::Json settings {{"keybinds", {{"futureAction", 1}}}};
-    PanelConfig::WriteToggleAllKeybinds(settings, {f13, {}});
-    Check(PanelConfig::ReadToggleAllKeybinds(settings)[0] == f13, "the global keybind round-trips");
+    PanelConfig::WriteGlobalKeybinds(settings, Keybinds::ActionKind::ToggleAllPanels, {f13, {}});
+    PanelConfig::WriteGlobalKeybinds(settings, Keybinds::ActionKind::ToggleKeyboard, Keybinds::Slots {Keybinds::Binding {}, f13});
+    Check(PanelConfig::ReadGlobalKeybinds(settings, Keybinds::ActionKind::ToggleAllPanels)[0] == f13,
+      "the global keybind round-trips");
+    Check(PanelConfig::ReadGlobalKeybinds(settings, Keybinds::ActionKind::ToggleKeyboard)[1] == f13
+        && PanelConfig::ReadGlobalKeybinds(settings, Keybinds::ActionKind::ToggleAllPanels)[1].IsEmpty(),
+      "the keyboard's keybind round-trips beside it (K5)");
     Check(settings["keybinds"].contains("futureAction"), "a newer version's keybinds are kept (ST-5)");
+  });
+
+  Scenario("The keyboard's settings: defaults, round trip, odd values (ST-4, ST-5)", [] {
+    JsonUtil::Json settings = JsonUtil::Json::object();
+    const auto defaults = KeyboardConfig::Read(settings);
+    Check(defaults.mEnabled && defaults.mPrimaryLayout.empty() && defaults.mFunctionRow && !defaults.mHideAfterEnter,
+      "on, \"My Windows layouts\", function row, Enter doesn't hide (K6, K8, K10)");
+    Check(defaults.mDistanceCentimeters == 50 && defaults.mKeyMillimeters == 24, "50 cm away, 24 mm keys (doc 07)");
+    KeyboardSettings changed;
+    changed.mPrimaryLayout = "00000407";
+    changed.mSecondaryLayout = "00000409";
+    changed.mClickVolume = 0;
+    changed.mHideAfterEnter = true;
+    changed.mTiltDegrees = 30;
+    KeyboardConfig::Write(settings, changed);
+    Check(KeyboardConfig::Read(settings) == changed, "a changed keyboard round-trips");
+    settings["keyboard"]["distanceCentimeters"] = 500;
+    settings["keyboard"]["keyMillimeters"] = "big";
+    settings["keyboard"]["primaryLayout"] = "../../evil";
+    const auto odd = KeyboardConfig::Read(settings);
+    Check(odd.mDistanceCentimeters == KeyboardSettings::MaxDistance && odd.mKeyMillimeters == 24 && odd.mPrimaryLayout.empty(),
+      "too far is the farthest; not a number is the default; not a layout ID is none");
+  });
+
+  Scenario("The keyboard's panel: below the eyes, at its distance, tilted up, sized by its keys (doc 07, Q7)", [] {
+    KeyboardSettings keyboard;
+    const auto panel = KeyboardPanel(keyboard);
+    const float distance = std::sqrt((panel.mPosition[0] * panel.mPosition[0]) + (panel.mPosition[1] * panel.mPosition[1])
+      + (panel.mPosition[2] * panel.mPosition[2]));
+    Check(panel.mID == KeyboardPanelID && panel.mKind == PanelKind::Keyboard, "the keyboard's own ID and kind");
+    Check(std::abs(distance - 0.5f) < 0.001f && std::abs(panel.mPosition[1] + 0.30f) < 0.001f && panel.mPosition[2] < 0,
+      std::format("50 cm from the eyes, 30 cm below them, in front ({:.3f} m)", distance));
+    const auto normal = Normal(panel);
+    Check(normal[1] > 0.6f && normal[2] > 0.6f, "tilted 45 degrees to face up and back toward you");
+    Check(std::abs(panel.mWidthMeters - 0.552f) < 0.001f, std::format("23 keys of 24 mm wide ({:.3f} m)", panel.mWidthMeters));
+    Check(!panel.mTouch && !panel.mScroll, "typed on, never pointed at");
+    Check(panel.mMaxUpdatesPerSecond == 30, "drawn at most 30 times a second (doc 08)");
+  });
+
+  Scenario("The keyboard goes to the renderer first, so a full list never leaves it out (VK-5)", [] {
+    std::vector<PanelDefinition> full;
+    for (std::size_t i = 0; i < SharedAbi::MaxPanels; ++i) {
+      PanelDefinition panel;
+      panel.mID = 100 + i;
+      full.push_back(panel);
+    }
+    KeyboardSettings keyboard;
+    const auto panels = PanelsForRenderer(full, &keyboard);
+    Check(!panels.empty() && panels.front().mID == KeyboardPanelID, "the keyboard is first");
+    Check(panels.size() == full.size() + 1, "then every enabled panel");
+    Check(PanelsForRenderer(full, nullptr).size() == full.size(), "turned off: not there at all");
+  });
+
+  Scenario("The caret in the target panel's pixels, for the preview strip (K13)", [] {
+    // A window whose client area is 1000 x 800 of its own units, captured
+    // at 2000 x 1600 (200% scaling), the panel showing from (100, 50)
+    const Pointer::Target target {nullptr, {100, 50, 1900, 1550}, {2000, 1600}};
+    const auto caret = CaretInContent(target, {500, 400, 502, 420}, 1000, 800);
+    Check(caret.left == 900 && caret.top == 750 && caret.right == 904 && caret.bottom == 790,
+      std::format("mapped like a tap the other way ({}, {}, {}, {})", caret.left, caret.top, caret.right, caret.bottom));
+    const auto point = Pointer::ClientPoint(target, 900.0f / 1800.0f, 750.0f / 1500.0f, 1000, 800);
+    Check(point.x == 500 && point.y == 400, "and a tap there lands back on it");
   });
 
   return Testing::Finish();

@@ -4,7 +4,8 @@
 // Keybinds in the host (doc 09, UI-2, UI-3): the bindings from settings go
 // to the input thread (Keybinds::InputThread), and what fires comes back to
 // the UI thread as a posted message (never SendMessage), where it shows or
-// hides panels (PN-6) or changes a panel's brightness or tint (PN-5).
+// hides panels (PN-6), changes a panel's brightness or tint (PN-5), or
+// shows or hides the keyboard (K5).
 // Bindings are rebuilt whenever the panels or keybinds change.
 #pragma once
 
@@ -16,6 +17,7 @@
 #include <Windows.h>
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -49,6 +51,11 @@ class KeybindService {
   // Runs an action now, as if its keybind fired (UI thread)
   void Run(const Keybinds::Action& action);
 
+  // "Show or hide the keyboard": returns whether it now shows
+  void SetKeyboardToggle(std::function<bool()> toggle) {
+    mToggleKeyboard = std::move(toggle);
+  }
+
  private:
   static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
   void Rebuild();
@@ -60,6 +67,7 @@ class KeybindService {
   std::atomic<HWND> mWindow {nullptr};
   Keybinds::InputThread mInput;
   Events::Subscription mChanged;
+  std::function<bool()> mToggleKeyboard;
 };
 
 }// namespace OpenDesktopVR::Host

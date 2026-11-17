@@ -14,12 +14,17 @@
 // - no sample for 250 ms, or samples 250 ms apart, releases any touch and
 //   starts fresh (XR-19); shorter gaps don't end a drag;
 // - logs every touch (where, how it came in, hold and drag, how long) and a
-//   stats line a minute (doc 05 "Tuning workflow", LG-2).
+//   stats line a minute (doc 05 "Tuning workflow", LG-2);
+// - while the keyboard panel shows (M5b, ADR-036): runs the imported
+//   `TypingTracker` on it and hands each result to a TypingSink; the
+//   keyboard isn't a pointing target, a hand near it doesn't point, and
+//   both hands are drawn (K2).
 // Every callback is caught (TH-8).
 #pragma once
 
 #include <OpenDesktopVR/ContentSource.hpp>
 #include <OpenDesktopVR/HandInteraction.hpp>
+#include <OpenDesktopVR/HandTyping.hpp>
 #include <OpenDesktopVR/SharedAbi.hpp>
 
 #include <chrono>
@@ -54,6 +59,8 @@ struct TouchPanel {
   HandInteraction::Panel mGeometry {};
   bool mTouch {true}; // tap, hold and drag
   bool mScroll {true};// two-finger scroll
+  // The virtual keyboard: typed on, never pointed at (ADR-036)
+  bool mKeyboard {false};
   // Where input goes (window panels); nullopt for content that takes none
   std::optional<Render::InputTarget> mTarget;
   bool operator==(const TouchPanel& other) const noexcept;
@@ -82,6 +89,21 @@ class PointerSink {
   virtual void Pointer(const TouchPanel* panel, const HandInteraction::CursorUpdate& update) = 0;
 };
 
+// Where typing goes (the keyboard service). Called on the hand thread, in
+// order; must not block.
+class TypingSink {
+ public:
+  virtual ~TypingSink() = default;
+  // Each sample while the keyboard shows. `appeared`: the first since it
+  // showed, or since tracking stopped: press counts start afresh (VK-4)
+  virtual void Typing(const TouchPanel& keyboard, const HandInteraction::TypingResult& result, bool appeared) = 0;
+  // The keyboard went, or tracking stopped: let go of every key
+  virtual void TypingStopped() = 0;
+  // Every time the hand thread runs while the keyboard shows (samples or
+  // not): key repeat
+  virtual void Tick() = 0;
+};
+
 struct HandServiceStats {
   uint64_t mSamples {0};
   uint64_t mSkipped {0};// fell out of the ring before being read
@@ -108,7 +130,8 @@ class HandService {
     TrackingChannel& channel,
     std::function<std::shared_ptr<const TouchPanels>()> panels,
     PointerSink* sink,
-    HandServiceOptions options = {});
+    HandServiceOptions options = {},
+    TypingSink* typing = nullptr);
   ~HandService();
   HandService(const HandService&) = delete;
   HandService& operator=(const HandService&) = delete;

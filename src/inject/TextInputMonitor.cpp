@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: LicenseRef-Proprietary
 // Copyright (c) 2026 Robert McGough. All rights reserved.
 // Provenance: the author's own prototype code, imported at handover v2 (2026-11-15).
+// Changed in M5b (ADR-036): checks asked for with Poke() are kept, several
+// at once (up to 8), each with its own "report" flag; it kept only the
+// earliest, so a tap's 400 ms check was lost behind its 80 ms one.
 #include <OpenDesktopVR/TextInputMonitor.hpp>
 
 #include <Windows.h>
@@ -14,6 +17,7 @@
 #include <mutex>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace OpenDesktopVR {
 
@@ -170,6 +174,13 @@ class TextInputMonitor::Impl final {
   HWINEVENTHOOK mHook {};
   UINT_PTR mTimer {};
   std::optional<Clock::time_point> mDue;
+  // Checks asked for with Poke(), soonest first (at most MaxPokes)
+  struct Pending {
+    Clock::time_point mDue;
+    bool mReport {false};
+  };
+  static constexpr std::size_t MaxPokes = 8;
+  std::vector<Pending> mPokes;
   std::optional<Clock::time_point> mNotTypingSince;
   // The next evaluation calls back even if nothing changed
   bool mReportNext {false};
@@ -200,17 +211,16 @@ class TextInputMonitor::Impl final {
           this->OnSetWindow(reinterpret_cast<HWND>(msg.wParam));
           break;
         case PokeMessage:
-          if (msg.lParam) {
-            mReportNext = true;
-          }
-          this->Schedule(std::chrono::milliseconds(msg.wParam));
+          this->AddPoke(std::chrono::milliseconds(msg.wParam), msg.lParam != 0);
           break;
         case WM_TIMER:
           if (msg.wParam == mTimer) {
             KillTimer(nullptr, mTimer);
             mTimer = 0;
             mDue.reset();
+            this->TakeDuePokes();
             this->Evaluate();
+            this->ArmNextPoke();
           }
           break;
       }
@@ -279,6 +289,45 @@ class TextInputMonitor::Impl final {
     }
     // Several events usually come together; look once they've settled
     tCurrent->Schedule(std::chrono::milliseconds(30));
+  }
+
+  // A check asked for: kept with any others (one within 10 ms of it is the
+  // same check), so each happens
+  void AddPoke(std::chrono::milliseconds delay, bool report) {
+    const auto due = Clock::now() + delay;
+    for (auto& poke: mPokes) {
+      if (poke.mDue - due < std::chrono::milliseconds(10) && due - poke.mDue < std::chrono::milliseconds(10)) {
+        poke.mDue = std::min(poke.mDue, due);
+        poke.mReport = poke.mReport || report;
+        this->Schedule(std::chrono::duration_cast<std::chrono::milliseconds>(poke.mDue - Clock::now()));
+        return;
+      }
+    }
+    if (mPokes.size() >= MaxPokes) {
+      // Full: the latest one also reports, so nothing is missed
+      mPokes.back().mReport = mPokes.back().mReport || report;
+      return;
+    }
+    mPokes.push_back({due, report});
+    std::ranges::sort(mPokes, {}, &Pending::mDue);
+    this->ArmNextPoke();
+  }
+
+  // The checks due now: a report from any of them goes with this evaluation
+  void TakeDuePokes() {
+    const auto now = Clock::now() + std::chrono::milliseconds(1);
+    while (!mPokes.empty() && mPokes.front().mDue <= now) {
+      mReportNext = mReportNext || mPokes.front().mReport;
+      mPokes.erase(mPokes.begin());
+    }
+  }
+
+  void ArmNextPoke() {
+    if (mPokes.empty()) {
+      return;
+    }
+    const auto wait = std::chrono::duration_cast<std::chrono::milliseconds>(mPokes.front().mDue - Clock::now());
+    this->Schedule(std::max(wait, std::chrono::milliseconds(0)));
   }
 
   void Schedule(std::chrono::milliseconds delay) {

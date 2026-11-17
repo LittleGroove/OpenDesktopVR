@@ -60,7 +60,9 @@ void KeybindService::Rebuild() {
       }
     }
   };
-  add(mPanels.ToggleAllKeybinds(), {Keybinds::ActionKind::ToggleAllPanels});
+  for (const auto kind: Keybinds::GlobalActions) {
+    add(mPanels.GlobalKeybinds(kind), {kind});
+  }
   for (const auto& panel: mPanels.Panels()) {
     for (std::size_t i = 0; i < Keybinds::PanelActions.size(); ++i) {
       add(panel.mKeybinds[i], {Keybinds::PanelActions[i], panel.mID});
@@ -73,8 +75,10 @@ std::optional<Keybinds::Action> KeybindService::UsedBy(const Keybinds::Binding& 
   const auto check = [&](const Keybinds::Slots& slots, const Keybinds::Action& action) {
     return !(action == except) && std::ranges::find(slots, binding) != slots.end();
   };
-  if (const Keybinds::Action all {Keybinds::ActionKind::ToggleAllPanels}; check(mPanels.ToggleAllKeybinds(), all)) {
-    return all;
+  for (const auto kind: Keybinds::GlobalActions) {
+    if (const Keybinds::Action global {kind}; check(mPanels.GlobalKeybinds(kind), global)) {
+      return global;
+    }
   }
   for (const auto& panel: mPanels.Panels()) {
     for (std::size_t i = 0; i < Keybinds::PanelActions.size(); ++i) {
@@ -87,7 +91,7 @@ std::optional<Keybinds::Action> KeybindService::UsedBy(const Keybinds::Binding& 
 }
 
 std::string KeybindService::Describe(const Keybinds::Action& action) const {
-  if (action.mKind == Keybinds::ActionKind::ToggleAllPanels) {
+  if (Keybinds::IsGlobal(action.mKind)) {
     return Keybinds::ActionName(action.mKind);
   }
   return std::format("{}: {}", PanelName(mPanels, action.mPanelID), Keybinds::ActionName(action.mKind));
@@ -119,6 +123,11 @@ void KeybindService::Run(const Keybinds::Action& action) {
         Log::Info("Keybind: '{}' tint {}", PanelName(mPanels, action.mPanelID), *tinted ? "on" : "off");
       }
       return;
+    case ActionKind::ToggleKeyboard:
+      if (mToggleKeyboard) {
+        Log::Info("Keybind: the keyboard {}", mToggleKeyboard() ? "shown" : "hidden");
+      }
+      return;
   }
 }
 
@@ -127,7 +136,7 @@ LRESULT CALLBACK KeybindService::WindowProc(HWND window, UINT message, WPARAM wP
     SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(reinterpret_cast<CREATESTRUCTW*>(lParam)->lpCreateParams));
   }
   auto* self = reinterpret_cast<KeybindService*>(GetWindowLongPtrW(window, GWLP_USERDATA));
-  if (self && message == FiredMessage && wParam <= static_cast<WPARAM>(Keybinds::ActionKind::ToggleTint)) {
+  if (self && message == FiredMessage && wParam <= static_cast<WPARAM>(Keybinds::LastActionKind)) {
     const Keybinds::Action action {static_cast<Keybinds::ActionKind>(wParam), static_cast<uint64_t>(lParam)};
     ThreadUtil::CatchAll("keybind action", [&] { self->Run(action); });
     return 0;

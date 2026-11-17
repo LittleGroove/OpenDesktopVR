@@ -1187,7 +1187,106 @@ void SettingsWindow::HandsPage() {
   if (hands != mPanels.Hands()) {
     mPanels.SetHands(hands);
   }
+  KeyboardSettingsUi(hands.mEnabled);
   ImGui::EndChild();
+}
+
+bool SettingsWindow::LayoutCombo(const char* label, std::string* klid, const char* none) {
+  std::string preview = none;
+  if (!klid->empty()) {
+    preview = *klid;
+    if (mLayouts) {
+      for (const auto& layout: *mLayouts) {
+        if (layout.mKLID == *klid) {
+          preview = Utf8(layout.mDisplayName);
+        }
+      }
+    }
+  }
+  bool changed = false;
+  if (ImGui::BeginCombo(label, preview.c_str(), ImGuiComboFlags_HeightLarge)) {
+    if (ImGui::Selectable(none, klid->empty())) {
+      klid->clear();
+      changed = true;
+    }
+    if (!mLayouts) {
+      ImGui::TextDisabled("Reading your layouts...");
+      KeepPainting(2);
+    } else {
+      for (const auto& layout: *mLayouts) {
+        ImGui::PushID(layout.mKLID.c_str());
+        if (ImGui::Selectable(Utf8(layout.mDisplayName).c_str(), layout.mKLID == *klid)) {
+          *klid = layout.mKLID;
+          changed = true;
+        }
+        ImGui::PopID();
+      }
+    }
+    ImGui::EndCombo();
+  }
+  return changed;
+}
+
+// The virtual keyboard (doc 07): stored in "keyboard"
+void SettingsWindow::KeyboardSettingsUi(bool handsEnabled) {
+  if (!mLayoutsTask.Started() && !mLayouts) {
+    mLayoutsTask = ThreadUtil::BackgroundTask<std::vector<KeyboardLayout::LayoutInfo>>::Start(
+      L"Keyboard layouts", [] { return KeyboardLayout::GetAvailableLayouts(); });
+  }
+  if (mLayoutsTask.Started() && !mLayoutsTask.Running()) {
+    mLayouts = mLayoutsTask.Take().value_or(std::vector<KeyboardLayout::LayoutInfo> {});
+  }
+  if (mLayoutsTask.Running()) {
+    KeepPainting(2);// the list appears when it's read
+  }
+
+  ImGui::Spacing();
+  ImGui::SeparatorText("Virtual keyboard");
+  auto keyboard = mPanels.Keyboard();
+  ImGui::PushItemWidth(ImGui::GetFontSize() * 14);
+  ImGui::BeginDisabled(!handsEnabled);
+  ImGui::Checkbox("Virtual keyboard", &keyboard.mEnabled);
+  Help(
+    "A keyboard you type on with your fingertips. It appears when you tap into a text field on a panel and hides "
+    "when you tap somewhere else. A keybind can show or hide it too (Keybinds tab).");
+  ImGui::BeginDisabled(!keyboard.mEnabled);
+  LayoutCombo("Layout", &keyboard.mPrimaryLayout, "My Windows layouts");
+  Help("\"My Windows layouts\" follows the layouts you have in Windows. The keyboard's Layout key switches between them.");
+  if (!keyboard.mPrimaryLayout.empty()) {
+    LayoutCombo("Second layout", &keyboard.mSecondaryLayout, "None");
+    Help("The keyboard's Layout key switches between the two.");
+  }
+  ImGui::Checkbox("Function keys (F1 to F12)", &keyboard.mFunctionRow);
+  float volume = keyboard.mClickVolume * 100.0f;
+  if (ImGui::SliderFloat("Key click", &volume, 0.0f, 100.0f, volume <= 0 ? "Off" : "%.0f%%", Clamp)) {
+    keyboard.mClickVolume = std::round(volume) / 100.0f;
+  }
+  ImGui::Checkbox("Hide after Enter", &keyboard.mHideAfterEnter);
+  Help("Off by default: in chat apps Enter sends a message, and you usually carry on typing.");
+  ImGui::SliderFloat("Distance from your eyes", &keyboard.mDistanceCentimeters, KeyboardSettings::MinDistance,
+    KeyboardSettings::MaxDistance, "%.0f cm", Clamp);
+  Help("Too close is hard to focus on. Far enough to rest your eyes, near enough to reach: about 45 to 55 cm.");
+  ImGui::SliderFloat("Below your eyes", &keyboard.mHeightCentimeters, KeyboardSettings::MinHeight,
+    KeyboardSettings::MaxHeight, "%.0f cm", Clamp);
+  ImGui::SliderFloat("Tilt", &keyboard.mTiltDegrees, KeyboardSettings::MinTilt, KeyboardSettings::MaxTilt,
+    "%.0f\xC2\xB0", Clamp);
+  Help("0 stands it upright; more tilts it back like a laptop's keyboard.");
+  ImGui::SliderFloat("Key size", &keyboard.mKeyMillimeters, KeyboardSettings::MinKey, KeyboardSettings::MaxKey,
+    "%.0f mm", Clamp);
+  Help("From one key to the next. Bigger keys are easier to hit; the keyboard gets wider.");
+  DragPercent("Opacity while typing", &keyboard.mTypingOpacity);
+  DragPercent("Opacity otherwise", &keyboard.mIdleOpacity);
+  ImGui::EndDisabled();
+  ImGui::EndDisabled();
+  ImGui::PopItemWidth();
+  // Whole steps, as the sliders show them
+  keyboard.mDistanceCentimeters = std::round(keyboard.mDistanceCentimeters);
+  keyboard.mHeightCentimeters = std::round(keyboard.mHeightCentimeters);
+  keyboard.mTiltDegrees = std::round(keyboard.mTiltDegrees);
+  keyboard.mKeyMillimeters = std::round(keyboard.mKeyMillimeters);
+  if (!(keyboard == mPanels.Keyboard())) {
+    mPanels.SetKeyboard(keyboard);
+  }
 }
 
 void SettingsWindow::KeybindsPage(const std::vector<PanelDefinition>& panels) {
@@ -1231,8 +1330,10 @@ void SettingsWindow::KeybindsPage(const std::vector<PanelDefinition>& panels) {
       }
       ImGui::PopID();
     };
-    ImGui::PushID("all");
-    row("Show or hide all panels", {Keybinds::ActionKind::ToggleAllPanels}, mPanels.ToggleAllKeybinds(), false);
+    ImGui::PushID("global");
+    for (const auto kind: Keybinds::GlobalActions) {
+      row(Keybinds::ActionName(kind).c_str(), {kind}, mPanels.GlobalKeybinds(kind), false);
+    }
     ImGui::PopID();
     for (const auto& panel: panels) {
       ImGui::PushID(reinterpret_cast<const void*>(static_cast<uintptr_t>(panel.mID)));
@@ -1376,8 +1477,8 @@ void SettingsWindow::CapturePopup() {
 }
 
 std::optional<Keybinds::Slots> SettingsWindow::SlotsFor(const Keybinds::Action& action) const {
-  if (action.mKind == Keybinds::ActionKind::ToggleAllPanels) {
-    return mPanels.ToggleAllKeybinds();
+  if (Keybinds::IsGlobal(action.mKind)) {
+    return mPanels.GlobalKeybinds(action.mKind);
   }
   if (const auto panel = mPanels.Find(action.mPanelID)) {
     return panel->KeybindsFor(action.mKind);
@@ -1389,10 +1490,10 @@ void SettingsWindow::Assign(const Keybinds::Action& action, std::size_t slot, co
   if (slot >= 2) {
     return;
   }
-  if (action.mKind == Keybinds::ActionKind::ToggleAllPanels) {
-    auto slots = mPanels.ToggleAllKeybinds();
+  if (Keybinds::IsGlobal(action.mKind)) {
+    auto slots = mPanels.GlobalKeybinds(action.mKind);
     slots[slot] = binding;
-    mPanels.SetToggleAllKeybinds(slots);
+    mPanels.SetGlobalKeybinds(action.mKind, slots);
   } else if (auto panel = mPanels.Find(action.mPanelID)) {// DU-2: it may be gone
     panel->KeybindsFor(action.mKind)[slot] = binding;
     mPanels.Update(*panel);

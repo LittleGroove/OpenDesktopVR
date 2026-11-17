@@ -88,6 +88,18 @@ add_test(
       ${ODVR_SIM_OUT}/gestures/click-target.log
 )
 set_tests_properties(sim-gestures PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL" PASS_REGULAR_EXPRESSION "PASSED" TIMEOUT 200)
+# M5b: doc 11's typing scenario. The keyboard shows from the start (on a PC
+# that lets apps take the foreground, the caret goes with it: ADR-035), the
+# hand taps the edit-target-app panel, then pokes "h" and "i"; the EDIT gets
+# "hi"
+add_dependencies(with-host edit-target-app)
+add_test(
+  NAME sim-keyboard
+  COMMAND with-host --also $<TARGET_FILE:edit-target-app> ${ODVR_SIM_OUT}/keyboard/typed.txt
+    $<TARGET_FILE:OpenDesktopVR> --window "edit-target" --show-keyboard
+    -- $<TARGET_FILE:openxr-simulator> ${ODVR_SIM_ARGS} ${ODVR_SIM_OUT}/keyboard --type hi ${ODVR_SIM_OUT}/keyboard/typed.txt
+)
+set_tests_properties(sim-keyboard PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL" PASS_REGULAR_EXPRESSION "PASSED" TIMEOUT 200)
 # M4c: two panels overlapping in depth, given nearest first: back to front in
 # every frame
 add_test(
@@ -113,6 +125,10 @@ odvr_test(hostcore-test SOURCES hostcore-test.cpp DEPS odvr::hostcore)
 odvr_test(hand-service-test SOURCES hand-service-test.cpp DEPS odvr::hostcore)
 # Keybinds (M3c): when bindings fire, capture, back-off, the input thread
 odvr_test(keybinds-test SOURCES keybinds-test.cpp DEPS odvr::keybinds)
+# The virtual keyboard's logic (M5b): geometry, keys, repeat, when it shows
+odvr_test(vkeyboard-test SOURCES vkeyboard-test.cpp DEPS odvr::vkeyboard)
+# Draws the keyboard to PNGs for looking at (needs a GPU or WARP)
+odvr_test(keyboard-render-test NO_CTEST SOURCES keyboard-render-test.cpp DEPS odvr::vkeyboardui windowscodecs)
 
 # M2 end to end: the real host (child processes) and the real layer DLL
 odvr_executable(host-layer-test SOURCES host-layer-test.cpp DEPS odvr::xrshared odvr::core odvr::openxr_headers odvr::cppwinrt d3d11 winmm)
@@ -152,7 +168,7 @@ set_tests_properties(browser-input-test PROPERTIES TIMEOUT 240)
 # covered (M5a)
 odvr_executable(edit-target-app WIN32 SOURCES edit-target-app.cpp DEPS user32)
 set_target_properties(edit-target-app PROPERTIES FOLDER "tests")
-odvr_test(key-inject-test NO_CTEST SOURCES key-inject-test.cpp DEPS odvr::apphelperhost odvr::pointer odvr::keyboard odvr::core)
+odvr_test(key-inject-test NO_CTEST SOURCES key-inject-test.cpp DEPS odvr::apphelperhost odvr::pointer odvr::keyboard odvr::vkeyboard odvr::core)
 add_dependencies(key-inject-test edit-target-app)
 add_test(NAME key-inject-test COMMAND key-inject-test $<TARGET_FILE:edit-target-app>)
 set_tests_properties(key-inject-test PROPERTIES TIMEOUT 300)

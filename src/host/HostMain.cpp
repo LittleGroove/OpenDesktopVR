@@ -31,6 +31,8 @@
 // --settings-hands      tests: open the settings window on its Hands tab
 // --settings-delay <ms>  tests: open the settings window this long after
 //                    start, as a user would (its device is made by then)
+// --show-keyboard    test instances: the keyboard shows from the start, as
+//                    its keybind would show it (sim-keyboard)
 
 #include "KeybindService.hpp"
 #include "PanelManager.hpp"
@@ -38,7 +40,10 @@
 #include "TrayIcon.hpp"
 
 #include <OpenDesktopVR/AppHelperService.hpp>
+#include <OpenDesktopVR/ClickSound.hpp>
 #include <OpenDesktopVR/InjectingSink.hpp>
+#include <OpenDesktopVR/KeyboardService.hpp>
+#include <OpenDesktopVR/KeyboardSource.hpp>
 #include <OpenDesktopVR/LayerRegistration.hpp>
 #include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/ProcessUtil.hpp>
@@ -80,6 +85,7 @@ struct Options {
   int mSettingsDelayMs {0};
   bool mSettingsKeybinds {false};
   bool mSettingsHands {false};
+  bool mShowKeyboard {false};
   std::wstring mScreenshot;
   bool mScreenshotPicker {false};
 };
@@ -116,6 +122,8 @@ Options ParseOptions() {
       options.mSettingsKeybinds = true;
     } else if (arg == L"--settings-hands") {
       options.mSettingsHands = true;
+    } else if (arg == L"--show-keyboard") {
+      options.mShowKeyboard = true;
     } else if (arg == L"--settings-delay" && i + 1 < argc) {
       options.mSettingsDelayMs = std::clamp(_wtoi(argv[++i]), 0, 10'000);
     } else if ((arg == L"--settings-screenshot" || arg == L"--picker-screenshot") && i + 1 < argc) {
@@ -192,12 +200,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     // Keeps captured browsers updating while the game covers them (CT-3).
     // Made before the renderer, whose capture sources hold its leases.
     AppHelper::AppHelperService appHelper;
+    // What the keyboard panel draws: changed by the keyboard service, drawn
+    // by the renderer (ADR-036)
+    const auto keyboardModel = std::make_shared<VirtualKeyboard::KeyboardModel>();
     // What each kind of panel shows
     const bool staticPanels = options.mStaticPanels;
     const bool resizingPanels = options.mResizingPanels;
     Host::RenderLoop renderer {loopOptions,
-      [staticPanels, resizingPanels, &appHelper](const Host::PanelDefinition& definition, Render::GpuDevice& gpu,
-        Render::MarkDirty markDirty) -> std::unique_ptr<Render::ContentSource> {
+      [staticPanels, resizingPanels, &appHelper, keyboardModel](const Host::PanelDefinition& definition,
+        Render::GpuDevice& gpu, Render::MarkDirty markDirty) -> std::unique_ptr<Render::ContentSource> {
+        if (definition.mKind == Host::PanelKind::Keyboard) {
+          return std::make_unique<VirtualKeyboard::KeyboardSource>(gpu, keyboardModel, std::move(markDirty));
+        }
         if (definition.mKind == Host::PanelKind::Window) {
           Capture::WindowCaptureOptions capture {definition.mWindow, definition.mName};
           capture.mKeepUpdating = [&appHelper, id = definition.mID](HWND window) { return appHelper.KeepPainting(id, window); };
@@ -248,26 +262,39 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     renderer.Start();
 
     // Hands (doc 05): samples from the layer, touches into the captured
-    // windows (doc 06). Made after the renderer, whose shared block they
-    // read, so they stop first; the hand thread stops before the injector,
-    // which then posts any release still held (INJ-4).
+    // windows (doc 06), typing on the keyboard (doc 07). Made after the
+    // renderer, whose shared block they read, so they stop first; the hand
+    // thread stops before the keyboard and the injector, which then posts
+    // any release still held (INJ-4).
     Pointer::Injector injector;
-    Host::InjectingSink injectingSink {injector};
-    Host::HandService hands {renderer.Tracking(), [&renderer] { return renderer.TouchablePanels(); }, &injectingSink};
+    VirtualKeyboard::ClickSound click;
+    Host::KeyboardService keyboard {injector, keyboardModel, [&click](float volume) { click.Play(volume); }};
+    Host::InjectingSink injectingSink {injector, &keyboard};
+    Host::HandService hands {
+      renderer.Tracking(), [&renderer] { return renderer.TouchablePanels(); }, &injectingSink, {}, &keyboard};
     const auto applyHands = [&] {
       hands.SetSettings(panels.Hands());
       renderer.SetHandsEnabled(panels.Hands().mEnabled);
+      auto keyboardSettings = panels.Keyboard();
+      keyboardSettings.mEnabled = keyboardSettings.mEnabled && panels.Hands().mEnabled;
+      keyboard.SetSettings(keyboardSettings);
     };
     applyHands();
     const auto handSettings = panels.Changed().Subscribe(applyHands);
+    // Hiding all panels dismisses the keyboard (doc 09)
+    const auto allHidden = panels.AllHidden().Subscribe([&keyboard] { keyboard.Dismiss("all panels were hidden"); });
+    if (options.mShowKeyboard && options.mTestInstance) {
+      keyboard.Toggle();
+    }
     hands.Start();
 
     // Keybinds: the keyboard and game controllers, on their own thread
     Host::KeybindService keybinds {instance, panels};
+    keybinds.SetKeyboardToggle([&keyboard] { return keyboard.Toggle(); });
     if (options.mTestKeybind != 0 && options.mTestInstance) {
       Keybinds::Slots slots;
       slots[0] = Keybinds::Binding::From({Keybinds::Button {Keybinds::DeviceKind::Keyboard, {}, options.mTestKeybind}});
-      panels.SetToggleAllKeybinds(slots);// in memory: a test instance saves nothing
+      panels.SetGlobalKeybinds(Keybinds::ActionKind::ToggleAllPanels, slots);// in memory: a test instance saves nothing
     }
     Host::SettingsWindow settings {instance, renderer, panels, keybinds, appHelper};
     Host::TrayIcon tray {instance, renderer, panels, settings};
@@ -290,6 +317,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     }
     exitCode = tray.Run();
     hands.Stop();
+    keyboard.LogLastStats();
     injectingSink.LogLastStats();
     renderer.Stop();
   });

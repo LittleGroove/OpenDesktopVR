@@ -458,7 +458,7 @@ SharedAbi::PanelEntry RenderLoop::Impl::EntryFor(const HostPanel& panel) const {
   const auto& definition = panel.mDefinition;
   entry.mPanelID = definition.mID;
   const bool ready = panel.mRing && panel.mSource && panel.mContentVersion > 0;
-  entry.mFlags = (!panel.mHidden && ready) ? SharedAbi::PanelFlags::Visible : 0;
+  entry.mFlags = (!panel.mHidden && !panel.mSourceHidden && ready) ? SharedAbi::PanelFlags::Visible : 0;
   if (definition.mID == mFocusedPanel) {
     entry.mFlags |= SharedAbi::PanelFlags::Focused;
   }
@@ -524,7 +524,8 @@ void RenderLoop::Impl::Publish() {
       continue;
     }
     const auto& definition = mPanels[i]->mDefinition;
-    TouchPanel panel {.mID = definition.mID, .mName = definition.mName, .mTouch = definition.mTouch, .mScroll = definition.mScroll};
+    TouchPanel panel {.mID = definition.mID, .mName = definition.mName, .mTouch = definition.mTouch, .mScroll = definition.mScroll,
+      .mKeyboard = definition.mKind == PanelKind::Keyboard};
     if (mPanels[i]->mSource) {
       panel.mTarget = mPanels[i]->mSource->Input();
     }
@@ -598,6 +599,23 @@ bool RenderLoop::Impl::RenderPanel(HostPanel& panel, TimeUtil::TimePoint now) {
   const auto size = panel.mSource->Size();
   if (size.mWidth == 0 || size.mHeight == 0 || size.mWidth > 16384 || size.mHeight > 16384) {
     return false;
+  }
+  // Content showing part of another panel (the keyboard's preview strip)
+  // draws from that panel's newest frame, on this same device
+  struct PartGuard {
+    Render::ContentSource& mSource;
+    ~PartGuard() {
+      mSource.SetPart(nullptr, {});
+    }
+  } partGuard {*panel.mSource};
+  if (const auto partOf = panel.mSource->PartOfPanel()) {
+    for (const auto& other: mPanels) {
+      if (other->mDefinition.mID == partOf && other->mRing && other->mContentVersion > 0 && other.get() != &panel) {
+        const auto newest = other->mRing->NewestSlot();
+        panel.mSource->SetPart(other->mRing->Source(newest), other->mRing->ContentSize(newest));
+        break;
+      }
+    }
   }
   // RN-7: the textures only grow. A smaller frame (a window made smaller, a
   // new trim) uses their top-left part, so nothing is re-created here or in
@@ -787,7 +805,13 @@ void RenderLoop::Impl::Main() {
     }
     bool publish = false;
     for (auto& panel: mPanels) {
-      const bool active = !panel->mHidden && viewers && panel->mSource;
+      // Content that hides by itself (the keyboard): left out of what the
+      // layer shows, and idle
+      if (const bool sourceHidden = panel->mSource && panel->mSource->IsHiddenNow(); sourceHidden != panel->mSourceHidden) {
+        panel->mSourceHidden = sourceHidden;
+        publish = true;
+      }
+      const bool active = !panel->mHidden && !panel->mSourceHidden && viewers && panel->mSource;
       if (active != panel->mActive) {
         panel->mActive = active;
         if (panel->mSource) {
@@ -814,7 +838,9 @@ void RenderLoop::Impl::Main() {
         continue;// hidden means idle; the request waits until shown
       }
       const auto kind = panel.mDirty->Take();
-      const bool structural = kind & Panels::Dirty::Structural;
+      // A key press is drawn at once, past the cap (doc 07)
+      const bool urgent = panel.mSource->TakeUrgent();
+      const bool structural = (kind & Panels::Dirty::Structural) || urgent;
       // Is there really something new? (Identical captured frames are
       // dropped here; the GPU check answers a frame later.)
       if (kind & Panels::Dirty::Content) {
@@ -831,7 +857,7 @@ void RenderLoop::Impl::Main() {
       }
       const auto floor = panel.mLastPublish + mOptions.mRingSafetyFloor;
       if (!panel.mLimiter.MayRender(now, structural) || (panel.mContentVersion > 0 && now < floor)) {
-        panel.mDirty->Restore(kind);// postponed, never dropped
+        panel.mDirty->Restore(urgent ? (kind | Panels::Dirty::Structural) : kind);// postponed, never dropped
         FrameWakeup::ScheduleNextFrame(std::max(panel.mLimiter.NextAllowed(), floor));
         continue;
       }
@@ -839,6 +865,14 @@ void RenderLoop::Impl::Main() {
       ThreadUtil::CatchAll("panel render", [&] { rendered = RenderPanel(panel, now); });
       if (rendered) {
         publish = true;
+        // Panels showing part of this one (the keyboard's preview) redraw,
+        // within their own cap
+        for (auto& other: mPanels) {
+          if (other.get() != &panel && other->mSource && other->mSource->PartOfPanel() == panel.mDefinition.mID) {
+            other->mDirty->Mark(Panels::Dirty::Content);
+            FrameWakeup::RequestFrameSoon();
+          }
+        }
         ++mRendersSinceStats;
         std::scoped_lock lock(mStatsMutex);
         ++mStats.mRenders;
@@ -848,6 +882,13 @@ void RenderLoop::Impl::Main() {
       if (panel.mSource && panel.mSource->IsAnimated()) {
         panel.mDirty->Mark(Panels::Dirty::Content);
         FrameWakeup::ScheduleNextFrame(panel.mLimiter.NextAllowed());
+      }
+    }
+    // A panel that just finished hiding itself (the keyboard's fade) goes now
+    for (auto& panel: mPanels) {
+      if (const bool sourceHidden = panel->mSource && panel->mSource->IsHiddenNow(); sourceHidden != panel->mSourceHidden) {
+        panel->mSourceHidden = sourceHidden;
+        publish = true;
       }
     }
     if (publish) {

@@ -33,7 +33,8 @@ using HandInteraction::Vector3;
 bool TouchPanel::operator==(const TouchPanel& other) const noexcept {
   const auto& a = mGeometry;
   const auto& b = other.mGeometry;
-  return mID == other.mID && mTouch == other.mTouch && mScroll == other.mScroll && a.mPosition == b.mPosition
+  return mID == other.mID && mTouch == other.mTouch && mScroll == other.mScroll && mKeyboard == other.mKeyboard
+    && a.mPosition == b.mPosition
     && a.mOrientation == b.mOrientation && a.mSize == b.mSize && mName == other.mName && mTarget == other.mTarget;
 }
 
@@ -65,6 +66,7 @@ struct HandService::Impl {
   std::function<std::shared_ptr<const TouchPanels>()> mPanelsSource;
   PointerSink* mSink;
   HandServiceOptions mOptions;
+  TypingSink* mTypingSink;
 
   std::thread mThread;
   HANDLE mStop {CreateEventW(nullptr, TRUE, FALSE, nullptr)};
@@ -85,6 +87,11 @@ struct HandService::Impl {
   std::shared_ptr<const TouchPanels> mPanels;
   std::vector<HandInteraction::Panel> mGeometry;
   std::vector<const TouchPanel*> mGeometryEntries;
+  // The keyboard panel, while it shows (ADR-036)
+  const TouchPanel* mKeyboard {nullptr};
+  HandInteraction::TypingTracker mTyping;
+  bool mTypingStarted {false};// the sink has had a result since it appeared
+  bool mTypingActive {false};// a finger is near or pressing
   // Reused each sample
   std::vector<std::size_t> mOrder;
   std::vector<float> mDistances;
@@ -130,8 +137,8 @@ struct HandService::Impl {
   TimeUtil::TimePoint mNextStats {};
 
   Impl(TrackingChannel& channel, std::function<std::shared_ptr<const TouchPanels>()> panels, PointerSink* sink,
-    HandServiceOptions options)
-    : mChannel(channel), mPanelsSource(std::move(panels)), mSink(sink), mOptions(options) {
+    HandServiceOptions options, TypingSink* typing)
+    : mChannel(channel), mPanelsSource(std::move(panels)), mSink(sink), mOptions(options), mTypingSink(typing) {
   }
   ~Impl() {
     CloseHandle(mStop);
@@ -144,6 +151,9 @@ struct HandService::Impl {
   void Process(const SharedAbi::TrackingSample& sample);
   void RefreshPanels();
   void Route(const FrameResult& result);
+  // Typing on the keyboard, if it shows; which hands are near it
+  std::array<bool, 2> Type(const std::array<HandJoints, 2>& hands);
+  void StopTyping();
   void LogTouches(const FrameResult& result);
   void EndTouch(std::size_t hand, const char* why);
   // `gap`: tracking stopped (counted when it lets go of a touch)
@@ -163,8 +173,9 @@ HandService::HandService(
   TrackingChannel& channel,
   std::function<std::shared_ptr<const TouchPanels>()> panels,
   PointerSink* sink,
-  HandServiceOptions options)
-  : mImpl(std::make_unique<Impl>(channel, std::move(panels), sink, options)) {
+  HandServiceOptions options,
+  TypingSink* typing)
+  : mImpl(std::make_unique<Impl>(channel, std::move(panels), sink, options, typing)) {
 }
 
 HandService::~HandService() {
@@ -226,6 +237,9 @@ void HandService::Impl::Main() {
     ThreadUtil::CatchAll("hand thread step", [&] {
       ApplySettings();
       ReadSamples();
+      if (mTypingSink && mTypingStarted) {
+        ThreadUtil::CatchAll("typing sink", [&] { mTypingSink->Tick(); });
+      }
       const auto now = TimeUtil::Now();
       // XR-19: no samples for a while lets go
       if (mActive && now - mLastSampleAt > mOptions.mGap) {
@@ -261,6 +275,7 @@ void HandService::Impl::ApplySettings() {
   const bool turnedOff = mSettings.mEnabled && !settings.mEnabled;
   mSettings = settings;
   mTracker.SetTouchOffsetUp(settings.mTapOffsetUpMillimeters / 1000.0f);
+  mTyping.SetTouchOffsetUp(settings.mTapOffsetUpMillimeters / 1000.0f);
   if (turnedOff) {
     Reset("hands were turned off", false);
   }
@@ -306,10 +321,15 @@ void HandService::Impl::RefreshPanels() {
   mPanels = std::move(panels);
   mGeometry.clear();
   mGeometryEntries.clear();
+  mKeyboard = nullptr;
   if (!mPanels) {
     return;
   }
   for (const auto& panel: *mPanels) {
+    if (panel.mKeyboard) {
+      mKeyboard = &panel;// typed on, never pointed at
+      continue;
+    }
     if (panel.mTouch || panel.mScroll) {
       mGeometry.push_back(panel.mGeometry);
       mGeometryEntries.push_back(&panel);
@@ -371,6 +391,11 @@ void HandService::Impl::Process(const SharedAbi::TrackingSample& sample) {
       out.mJoints[j] = {{p[0], p[1], p[2]}, {p[3], p[4], p[5], p[6]}, in.mJoints[j].mRadius};
     }
   }
+  // Typing on the keyboard, with the hands as tracked (its tracker bridges
+  // its own gaps); a hand near it doesn't point (doc 05)
+  RefreshPanels();
+  const auto nearKeyboard = Type(hands);
+
   const double gapSeconds = std::chrono::duration<double>(mOptions.mGap).count();
   for (std::size_t h = 0; h < 2; ++h) {
     auto& held = mHeld[h];
@@ -393,10 +418,14 @@ void HandService::Impl::Process(const SharedAbi::TrackingSample& sample) {
     // Not touching, or lost too long: let go; when it's back it starts fresh
     held = {};
   }
+  for (std::size_t h = 0; h < 2; ++h) {
+    if (nearKeyboard[h]) {
+      hands[h] = {};
+    }
+  }
 
   // Back to front from the head, as the layer draws them: where panels
   // overlap, the nearer (drawn later) wins
-  RefreshPanels();
   mOrder.resize(mGeometry.size());
   mDistances.resize(mGeometry.size());
   for (std::size_t i = 0; i < mGeometry.size(); ++i) {
@@ -413,9 +442,39 @@ void HandService::Impl::Process(const SharedAbi::TrackingSample& sample) {
   Route(result);
   LogTouches(result);
   mVisibility = mSettings.mShowWhilePointing ? result.mHandVisibility : std::array<float, 2> {};
-  mActive = mVisibility[0] > 0 || mVisibility[1] > 0
+  if (mKeyboard) {
+    mVisibility = {1.0f, 1.0f};// both hands while the keyboard shows (K2)
+  }
+  mActive = mVisibility[0] > 0 || mVisibility[1] > 0 || mTypingActive
     || std::any_of(result.mDiagnostics.begin(), result.mDiagnostics.end(), [](const auto& d) { return d.mPhase != Phase::Idle; });
   WriteState();
+}
+
+std::array<bool, 2> HandService::Impl::Type(const std::array<HandJoints, 2>& hands) {
+  if (!mKeyboard) {
+    StopTyping();
+    return {};
+  }
+  const auto result = mTyping.Update(mNow, hands, mKeyboard->mGeometry, mViewer);
+  mTypingActive = std::any_of(result.mFingers.begin(), result.mFingers.end(),
+    [](const auto& finger) { return finger.mState != HandInteraction::TypingFingerState::NotNear; });
+  const bool appeared = !std::exchange(mTypingStarted, true);
+  if (mTypingSink) {
+    ThreadUtil::CatchAll("typing sink", [&] { mTypingSink->Typing(*mKeyboard, result, appeared); });
+  }
+  return result.mHandNearKeyboard;
+}
+
+void HandService::Impl::StopTyping() {
+  if (!mTypingStarted) {
+    return;
+  }
+  mTypingStarted = false;
+  mTypingActive = false;
+  (void)mTyping.Reset();
+  if (mTypingSink) {
+    ThreadUtil::CatchAll("typing sink", [&] { mTypingSink->TypingStopped(); });
+  }
 }
 
 void HandService::Impl::Route(const FrameResult& result) {
@@ -517,6 +576,7 @@ void HandService::Impl::Reset(const char* why, bool gap) {
   for (std::size_t h = 0; h < 2; ++h) {
     EndTouch(h, why);
   }
+  StopTyping();// keys let go; the next sample starts a new baseline (VK-4)
   mHeld = {};
   mLostTooLong = {};
   mLastDisplayTime.reset();

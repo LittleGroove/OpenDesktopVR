@@ -139,6 +139,8 @@ std::string ActionName(ActionKind kind) {
       return "Dimmer";
     case ActionKind::ToggleTint:
       return "Tint on or off";
+    case ActionKind::ToggleKeyboard:
+      return "Show or hide the keyboard";
   }
   return "?";
 }
@@ -155,6 +157,8 @@ const char* ActionKey(ActionKind kind) noexcept {
       return "brightnessDown";
     case ActionKind::ToggleTint:
       return "toggleTint";
+    case ActionKind::ToggleKeyboard:
+      return "toggleKeyboard";
   }
   return "";
 }

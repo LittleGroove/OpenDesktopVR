@@ -4,6 +4,7 @@
 #include "PanelManager.hpp"
 
 #include <OpenDesktopVR/HandConfig.hpp>
+#include <OpenDesktopVR/KeyboardConfig.hpp>
 #include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/PanelConfig.hpp>
 #include <OpenDesktopVR/Product.hpp>
@@ -30,8 +31,7 @@ void PanelManager::Load() {
   }
   auto loaded = mStore.Load(Spec());
   mDocument = std::move(loaded.mDocument);
-  mToggleAllKeybinds = PanelConfig::ReadToggleAllKeybinds(mDocument);
-  mHands = HandConfig::Read(mDocument);
+  ReadGlobals();
   std::size_t skipped = 0;
   if (auto panels = PanelConfig::Read(mDocument, &skipped)) {
     mPanels = std::move(*panels);
@@ -60,11 +60,18 @@ void PanelManager::Refresh() {
 void PanelManager::Reread() {
   auto loaded = mStore.Load(Spec());
   mDocument = std::move(loaded.mDocument);
-  mToggleAllKeybinds = PanelConfig::ReadToggleAllKeybinds(mDocument);
-  mHands = HandConfig::Read(mDocument);
+  ReadGlobals();
   if (auto panels = PanelConfig::Read(mDocument)) {
     mPanels = std::move(*panels);
   }
+}
+
+void PanelManager::ReadGlobals() {
+  for (std::size_t i = 0; i < Keybinds::GlobalActions.size(); ++i) {
+    mGlobalKeybinds[i] = PanelConfig::ReadGlobalKeybinds(mDocument, Keybinds::GlobalActions[i]);
+  }
+  mHands = HandConfig::Read(mDocument);
+  mKeyboard = KeyboardConfig::Read(mDocument);
 }
 
 std::optional<PanelDefinition> PanelManager::Find(uint64_t panelID) const {
@@ -140,7 +147,11 @@ bool PanelManager::ToggleAll() {
   } else {
     Push();
   }
-  return AnyShowing();
+  const bool showing = AnyShowing();
+  if (!showing) {
+    mAllHidden.Emit();// hiding all dismisses the keyboard (doc 09)
+  }
+  return showing;
 }
 
 bool PanelManager::TogglePanel(uint64_t panelID) {
@@ -172,25 +183,59 @@ std::optional<bool> PanelManager::ToggleTint(uint64_t panelID) {
   return panel->mTintEnabled;
 }
 
-void PanelManager::SetToggleAllKeybinds(const Keybinds::Slots& slots) {
-  mToggleAllKeybinds = slots;
+const Keybinds::Slots& PanelManager::GlobalKeybinds(Keybinds::ActionKind kind) const noexcept {
+  for (std::size_t i = 0; i < Keybinds::GlobalActions.size(); ++i) {
+    if (Keybinds::GlobalActions[i] == kind) {
+      return mGlobalKeybinds[i];
+    }
+  }
+  static const Keybinds::Slots none {};
+  return none;
+}
+
+void PanelManager::SetGlobalKeybinds(Keybinds::ActionKind kind, const Keybinds::Slots& slots) {
+  for (std::size_t i = 0; i < Keybinds::GlobalActions.size(); ++i) {
+    if (Keybinds::GlobalActions[i] != kind) {
+      continue;
+    }
+    mGlobalKeybinds[i] = slots;
+    if (mPersistent) {
+      PanelConfig::WriteGlobalKeybinds(mDocument, kind, slots);
+      mStore.Save(Spec().mPath, mDocument);// debounced (ST-1)
+    }
+    mChanged.Emit();
+    return;
+  }
+}
+
+void PanelManager::SetKeyboard(const KeyboardSettings& keyboard) {
+  const auto clean = KeyboardConfig::Clean(keyboard);
+  if (clean == mKeyboard) {
+    return;
+  }
+  mKeyboard = clean;
   if (mPersistent) {
-    PanelConfig::WriteToggleAllKeybinds(mDocument, mToggleAllKeybinds);
+    KeyboardConfig::Write(mDocument, mKeyboard);
     mStore.Save(Spec().mPath, mDocument);// debounced (ST-1)
   }
-  mChanged.Emit();
+  Push();// its panel may have moved, come or gone (only what changed is redone: ST-6)
 }
 
 void PanelManager::SetHands(const HandSettings& hands) {
   if (hands == mHands) {
     return;
   }
+  const bool enabledChanged = hands.mEnabled != mHands.mEnabled;
   mHands = hands;
   if (mPersistent) {
     HandConfig::Write(mDocument, mHands);
     mStore.Save(Spec().mPath, mDocument);// debounced (ST-1)
   }
-  mChanged.Emit();
+  if (enabledChanged) {
+    Push();// the keyboard comes and goes with the hands
+  } else {
+    mChanged.Emit();
+  }
 }
 
 void PanelManager::Push() {
@@ -201,7 +246,9 @@ void PanelManager::Push() {
     }
   }
   mHidden = Visibility::Prune(mPanels, mHidden);
-  mRenderer.SetPanels(std::move(enabled), mHidden);
+  // The keyboard first (VK-5), while it and the hands are on (K10)
+  const bool keyboard = mKeyboard.mEnabled && mHands.mEnabled;
+  mRenderer.SetPanels(PanelsForRenderer(std::move(enabled), keyboard ? &mKeyboard : nullptr), mHidden);
   mChanged.Emit();
 }
 

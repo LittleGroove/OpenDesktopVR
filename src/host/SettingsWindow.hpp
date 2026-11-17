@@ -23,6 +23,7 @@
 #include "PanelManager.hpp"
 
 #include <OpenDesktopVR/AppHelperService.hpp>
+#include <OpenDesktopVR/KeyboardLayout.hpp>
 #include <OpenDesktopVR/RenderLoop.hpp>
 #include <OpenDesktopVR/ThreadUtil.hpp>
 #include <OpenDesktopVR/TimeUtil.hpp>
@@ -115,6 +116,9 @@ class SettingsWindow {
   // "press the keys you want" capture (KY-4)
   void KeybindsPage(const std::vector<PanelDefinition>& panels);
   void HandsPage();
+  // The virtual keyboard's settings, on the Hands tab (K10)
+  void KeyboardSettingsUi(bool handsEnabled);
+  bool LayoutCombo(const char* label, std::string* klid, const char* none);
   void SlotButton(const Keybinds::Action& action, std::size_t slot, const Keybinds::Binding& binding);
   void StartCapture(const Keybinds::Action& action, std::size_t slot);
   void CapturePopup();
@@ -187,6 +191,10 @@ class SettingsWindow {
   bool mOpenPicker {false};
   bool mPickerRetargets {false};// "Use a different window" for the selected panel
   ThreadUtil::BackgroundTask<std::vector<WindowUtil::WindowInfo>> mListing;
+  // The installed keyboard layouts, read in the background the first time
+  // the Hands tab shows (reading 200 of them takes a moment)
+  ThreadUtil::BackgroundTask<std::vector<KeyboardLayout::LayoutInfo>> mLayoutsTask;
+  std::optional<std::vector<KeyboardLayout::LayoutInfo>> mLayouts;
   std::vector<WindowUtil::WindowInfo> mWindows;
   std::array<char, 128> mFilter {};
   int mPickerSelection {-1};

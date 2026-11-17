@@ -28,10 +28,11 @@ namespace OpenDesktopVR::Host::PanelConfig {
 std::optional<std::vector<PanelDefinition>> Read(const JsonUtil::Json& settings, std::size_t* skipped = nullptr);
 
 // Replaces the "panels" list, leaving everything else in `settings` alone
-// The global keybinds ("keybinds" in settings; per-panel ones are in each
-// panel's entry). Untrusted: malformed slots read as empty.
-Keybinds::Slots ReadToggleAllKeybinds(const JsonUtil::Json& settings);
-void WriteToggleAllKeybinds(JsonUtil::Json& settings, const Keybinds::Slots& slots);
+// The global keybinds ("keybinds" in settings, by Keybinds::ActionKey;
+// per-panel ones are in each panel's entry). Untrusted: malformed slots
+// read as empty.
+Keybinds::Slots ReadGlobalKeybinds(const JsonUtil::Json& settings, Keybinds::ActionKind kind);
+void WriteGlobalKeybinds(JsonUtil::Json& settings, Keybinds::ActionKind kind, const Keybinds::Slots& slots);
 
 void Write(JsonUtil::Json& settings, std::span<const PanelDefinition> panels);
 

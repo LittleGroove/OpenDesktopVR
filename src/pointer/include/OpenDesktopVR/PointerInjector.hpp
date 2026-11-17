@@ -22,9 +22,12 @@
 //   from the panel through the part of the client area it shows, in the
 //   window's own DPI.
 // - **The app helper's input mode** (if loaded): each event is bracketed by
-//   BeginInjection and EndInjection. A press doesn't make the window active
-//   (ActivateWindow): measured, that takes the real foreground whenever
-//   Windows allows it (ADR-034).
+//   BeginInjection and EndInjection. A press makes the window active on its
+//   own thread first, if it isn't (ActivateWindow): Chromium apps and
+//   Firefox only focus a text field, and show its caret, in an active
+//   window (M5b, ADR-036; ADR-034 had left it out, as it takes the real
+//   foreground where Windows allows it, which the helper now gives back:
+//   ADR-035).
 // - **Leaving** a panel lets go of a held button and clears hover (INJ-5);
 //   destroying the injector posts any release still held (INJ-4).
 // - **Double taps** on a window that wants double-clicks (CS_DBLCLKS) send

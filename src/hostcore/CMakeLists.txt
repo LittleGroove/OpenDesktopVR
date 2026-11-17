@@ -15,7 +15,11 @@ odvr_module(
   HandService.cpp
   HandConfig.cpp
   InjectingSink.cpp
+  KeyboardConfig.cpp
+  KeyboardService.cpp
   DEPS
+  odvr::vkeyboard
+  odvr::inject
   odvr::interaction
   odvr::pointer
   odvr::keybinds

@@ -21,7 +21,7 @@
 
 namespace OpenDesktopVR::Host {
 
-enum class PanelKind { TestPattern, Window };
+enum class PanelKind { TestPattern, Window, Keyboard };
 
 struct PanelDefinition {
   uint64_t mID {0};
@@ -96,6 +96,8 @@ struct HostPanel {
   std::shared_ptr<Panels::DirtyFlag> mDirty {std::make_shared<Panels::DirtyFlag>()};
   bool mActive {false};
   bool mHidden {false};// runtime only (PN-6): kept, but not drawn or shown
+  // The content hides itself for now (the keyboard, ADR-036)
+  bool mSourceHidden {false};
   // The content drawn before its look is applied (when it isn't plain)
   winrt::com_ptr<ID2D1Bitmap1> mLookTarget;
   uint64_t mContentVersion {0};

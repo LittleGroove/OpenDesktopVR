@@ -14,7 +14,8 @@
 //   openxr-simulator [--negotiate-export <name>] [--layer-name <name>]
 //     [--early-lookups-fail] [--no-hand-tracking]
 //     <layer DLL> <output folder>
-//     [click log | --watch <s> | --type-keys ... | --bench <s> [hover]]
+//     [click log | --watch <s> | --type-keys ... | --type <text> <log> |
+//      --bench <s> [hover]]
 //
 // --negotiate-export: the layer DLL's loader negotiation export (default
 //   xrNegotiateLoaderApiLayerInterface).
@@ -37,12 +38,21 @@
 //   M4c.
 // --depth-order: the host shows overlapping panels at different depths;
 //   every frame's panel layers must be back to front (doc 11). Added in M4c.
+// --type <text> <log>: doc 11's typing scenario (M5b). With the keyboard
+//   showing (the host's --show-keyboard) and a window panel of
+//   edit-target-app writing its text to <log>: tap the panel (where keys
+//   go), then poke each letter of <text> (US letters) on the keyboard, at
+//   the keys' places from the keyboard's own geometry; the log must end up
+//   holding <text>.
 //
 // The click log is from click-target-test, shown in a panel with input
 // enabled; if given, the clicks are checked too.
 
 #include "save-png.hpp"
 #include "synthetic-hands.hpp"
+
+#include <OpenDesktopVR/KeyboardGeometry.hpp>
+#include <OpenDesktopVR/KeyboardLayout.hpp>
 
 #include <winrt/base.h>
 
@@ -166,6 +176,8 @@ struct Runtime {
   // The virtual keyboard's layer, if
   // shown: much wider than tall
   std::optional<XrCompositionLayerQuad> mKeyboardQuad;
+  // The last panel layer seen that isn't the keyboard (M5b)
+  std::optional<XrCompositionLayerQuad> mPanelQuad;
   // Panel layers must be drawn back
   // to front (a nearer one after a further one); frames where they weren't
   int mFramesWithMultipleQuads {0};
@@ -802,6 +814,56 @@ std::optional<float> PanelBrightness(const XrCompositionLayerQuad& quad) {
   return total / (boxSize * boxSize);
 }
 
+// Saves a panel layer's image as a PNG, over dark grey (M5b: the keyboard,
+// for looking at)
+void SaveQuad(const XrCompositionLayerQuad& quad, const std::filesystem::path& path) {
+  const auto it = gRuntime.mSwapchains.find(FromHandle(quad.subImage.swapchain));
+  if (it == gRuntime.mSwapchains.end()) {
+    return;
+  }
+  const auto& fake = it->second;
+  const auto& rect = quad.subImage.imageRect;
+  const auto width = static_cast<uint32_t>(rect.extent.width);
+  const auto height = static_cast<uint32_t>(rect.extent.height);
+  const D3D11_TEXTURE2D_DESC desc {
+    .Width = width,
+    .Height = height,
+    .MipLevels = 1,
+    .ArraySize = 1,
+    .Format = fake.mTextureFormat,
+    .SampleDesc = {1, 0},
+    .Usage = D3D11_USAGE_STAGING,
+    .CPUAccessFlags = D3D11_CPU_ACCESS_READ,
+  };
+  winrt::com_ptr<ID3D11Texture2D> staging;
+  if (FAILED(gRuntime.mDevice->CreateTexture2D(&desc, nullptr, staging.put()))) {
+    return;
+  }
+  const D3D11_BOX box {static_cast<UINT>(rect.offset.x), static_cast<UINT>(rect.offset.y), 0,
+    static_cast<UINT>(rect.offset.x) + width, static_cast<UINT>(rect.offset.y) + height, 1};
+  gRuntime.mContext->CopySubresourceRegion(staging.get(), 0, 0, 0, 0, fake.mImages.at(fake.mReleased).get(), 0, &box);
+  D3D11_MAPPED_SUBRESOURCE mapped {};
+  if (FAILED(gRuntime.mContext->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped))) {
+    return;
+  }
+  const bool isBGRA = (fake.mTextureFormat == DXGI_FORMAT_B8G8R8A8_TYPELESS);
+  std::vector<uint8_t> bgra(static_cast<std::size_t>(width) * height * 4);
+  for (uint32_t y = 0; y < height; ++y) {
+    const auto row = static_cast<const uint8_t*>(mapped.pData) + (static_cast<std::size_t>(y) * mapped.RowPitch);
+    for (uint32_t x = 0; x < width; ++x) {
+      const uint8_t* src = row + (x * 4);
+      uint8_t* out = bgra.data() + ((static_cast<std::size_t>(y) * width + x) * 4);
+      const int under = (255 - src[3]) * 40 / 255;// premultiplied, over grey 40
+      out[0] = static_cast<uint8_t>(std::min(255, (isBGRA ? src[0] : src[2]) + under));
+      out[1] = static_cast<uint8_t>(std::min(255, src[1] + under));
+      out[2] = static_cast<uint8_t>(std::min(255, (isBGRA ? src[2] : src[0]) + under));
+      out[3] = 255;
+    }
+  }
+  gRuntime.mContext->Unmap(staging.get(), 0);
+  TestUtilities::SavePNG(path, width, height, bgra);
+}
+
 // Has the click target's orange click marker appeared on the panel?
 bool PanelShowsClickMarker(const XrCompositionLayerQuad& quad) {
   const auto it
@@ -960,6 +1022,8 @@ Fake_xrEndFrame(XrSession, const XrFrameEndInfo* info) {
       gRuntime.mQuad = *reinterpret_cast<const XrCompositionLayerQuad*>(layer);
       if (gRuntime.mQuad->size.width > 2.2f * gRuntime.mQuad->size.height) {
         gRuntime.mKeyboardQuad = gRuntime.mQuad;
+      } else {
+        gRuntime.mPanelQuad = gRuntime.mQuad;
       }
       continue;
     }
@@ -1482,7 +1546,34 @@ int main(int rawArgc, char** rawArgv) {
   // index fingertip presses these points on the virtual keyboard, which must
   // already be showing (tap a text field first)
   std::vector<std::pair<float, float>> typeKeys;
-  if (argc > 4 && std::string_view {argv[3]} == "--type-keys") {
+  // '--type <text> <log>': tap the window panel, then type <text>'s letters
+  std::string typeText;
+  std::optional<std::filesystem::path> typeLog;
+  if (argc > 5 && std::string_view {argv[3]} == "--type") {
+    typeText = argv[4];
+    typeLog = std::filesystem::path {argv[5]};
+    // Where each letter is: its scan code on the US layout (H and I are
+    // in the same place on QWERTY, QWERTZ and AZERTY), then that key's
+    // middle in the keyboard's geometry (H and I are where they are on ISO
+    // and ANSI alike; the function row is on by default)
+    const auto us = KeyboardLayout::Layout::Load("00000409");
+    const auto geometry = VirtualKeyboard::BuildGeometry({});
+    for (const char c: typeText) {
+      std::optional<std::pair<float, float>> place;
+      for (KeyboardLayout::ScanCode scan = 0x02; us && scan <= 0x39 && !place; ++scan) {
+        if (us->GetOutput(scan, {}).mText == std::wstring(1, static_cast<wchar_t>(c))) {
+          if (const int key = VirtualKeyboard::FindKey(geometry, scan); key >= 0) {
+            place = VirtualKeyboard::KeyCentre(geometry, key);
+          }
+        }
+      }
+      if (!place) {
+        std::printf("FAIL: no key types '%c'\n", c);
+        return 1;
+      }
+      typeKeys.push_back(*place);
+    }
+  } else if (argc > 4 && std::string_view {argv[3]} == "--type-keys") {
     std::stringstream list {argv[4]};
     std::string item;
     while (std::getline(list, item, ';')) {
@@ -1681,6 +1772,11 @@ int main(int rawArgc, char** rawArgv) {
     std::optional<Clock::time_point> typingStart;
     // Per key: hover 5cm in front, poke 8mm through, hold, pull back
     constexpr double perKey = 0.75;
+    // '--type': first, a tap on the window panel near its top (where keys
+    // go: doc 07 "Target selection"), over this long
+    const double tapSeconds = typeLog ? 2.0 : 0.0;
+    bool tapped = false;
+    bool savedPressed = false;
     int keyboardFrames = 0;
     int handLayerFrames = 0;
     std::optional<XrCompositionLayerQuad> keyboard;
@@ -1691,7 +1787,8 @@ int main(int rawArgc, char** rawArgv) {
       if (gRuntime.mKeyboardQuad) {
         keyboard = gRuntime.mKeyboardQuad;
         ++keyboardFrames;
-        if (!typingStart) {
+        // '--type' taps the window panel first: it must be showing too
+        if (!typingStart && (!typeLog || gRuntime.mPanelQuad)) {
           typingStart = now;
           std::printf(
             "Keyboard layer: %.2fm x %.2fm; pressing %zu keys\n",
@@ -1707,9 +1804,31 @@ int main(int rawArgc, char** rawArgv) {
         return 1;
       }
       gRuntime.mHands = {};
-      if (typingStart && keyboard) {
-        const double t
-          = std::chrono::duration<double>(now - *typingStart).count();
+      const double sinceKeyboard
+        = typingStart ? std::chrono::duration<double>(now - *typingStart).count() : 0.0;
+      if (typingStart && sinceKeyboard < tapSeconds) {
+        if (gRuntime.mPanelQuad) {
+          // Hover 8 cm out, poke 1.5 cm through, hold, pull back
+          const double phase = sinceKeyboard / tapSeconds;
+          const auto at = [](double from, double to, double a, double b, double p) {
+            return static_cast<float>(from + ((to - from) * std::clamp((p - a) / (b - a), 0.0, 1.0)));
+          };
+          float distance = 0.08f;
+          if (phase >= 0.4 && phase < 0.55) {
+            distance = at(0.08, -0.015, 0.4, 0.55, phase);
+          } else if (phase >= 0.55 && phase < 0.65) {
+            distance = -0.015f;
+          } else if (phase >= 0.65 && phase < 0.85) {
+            distance = at(-0.015, 0.08, 0.65, 0.85, phase);
+          }
+          if (!tapped && phase >= 0.55) {
+            tapped = true;
+            std::printf("Tapped the window panel: keys go to its window\n");
+          }
+          gRuntime.mHands[1] = HandAt(Pose::Point, *gRuntime.mPanelQuad, 0.5f, 0.08f, distance);
+        }
+      } else if (typingStart && keyboard) {
+        const double t = sinceKeyboard - tapSeconds;
         const auto index = static_cast<size_t>(t / perKey);
         if (index >= typeKeys.size()) {
           if (t > (typeKeys.size() * perKey) + 0.5) {
@@ -1747,7 +1866,15 @@ int main(int rawArgc, char** rawArgv) {
       if (gRuntime.mHandLayerThisFrame) {
         ++handLayerFrames;
       }
+      // The keyboard while the first key is held, for looking at
+      if (typeLog && typingStart && keyboard && !savedPressed && sinceKeyboard > tapSeconds + (0.68 * perKey)) {
+        savedPressed = true;
+        SaveQuad(*keyboard, outputDir / "keyboard-pressed.png");
+      }
       std::this_thread::sleep_until(now + std::chrono::microseconds(11111));
+    }
+    if (typeLog && keyboard) {
+      SaveQuad(*keyboard, outputDir / "keyboard.png");
     }
     std::printf(
       "Typed; the keyboard was shown in %d frames, and hands were drawn in "
@@ -1761,6 +1888,25 @@ int main(int rawArgc, char** rawArgv) {
       gRuntime.mFramesWithMultipleQuads);
     layerDestroySession(session);
     layerDestroyInstance(instance);
+    if (!typeLog) {
+      return 0;
+    }
+    // What the app has, once the last key has had time to arrive
+    std::string typed;
+    for (int i = 0; i < 30 && typed != typeText; ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      std::ifstream file {*typeLog, std::ios::binary};
+      typed.assign(std::istreambuf_iterator<char> {file}, std::istreambuf_iterator<char> {});
+    }
+    if (typed != typeText) {
+      std::printf("FAIL: the app has \"%s\", not \"%s\"\n", typed.c_str(), typeText.c_str());
+      return 1;
+    }
+    if (handLayerFrames == 0) {
+      std::printf("FAIL: no hand drawn while typing\n");
+      return 1;
+    }
+    std::printf("PASSED: the app received \"%s\" (doc 11, \"Keyboard: poke h, i\")\n", typed.c_str());
     return 0;
   }
 

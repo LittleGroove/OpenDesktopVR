@@ -48,6 +48,11 @@ class PanelRing {
   ID2D1Bitmap1* Target(uint32_t slot) const noexcept {
     return mTargets[slot].get();
   }
+  // The same texture to draw from (another panel showing part of this one:
+  // the keyboard's preview strip, K13); null if Direct2D couldn't make it
+  ID2D1Bitmap1* Source(uint32_t slot) const noexcept {
+    return mSources[slot % Slots].get();
+  }
 
   // Signals the fence for a frame drawn into `slot` and flushes, so the
   // signal can't sit in the command buffer (SY-3). Returns the fence value
@@ -97,6 +102,7 @@ class PanelRing {
 
   std::array<winrt::com_ptr<ID3D11Texture2D>, Slots> mTextures;
   std::array<winrt::com_ptr<ID2D1Bitmap1>, Slots> mTargets;
+  std::array<winrt::com_ptr<ID2D1Bitmap1>, Slots> mSources;
   std::array<HANDLE, Slots> mTextureHandles {};
   winrt::com_ptr<ID3D11Fence> mFence;
   HANDLE mFenceHandle {nullptr};

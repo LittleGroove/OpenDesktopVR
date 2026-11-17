@@ -7,6 +7,10 @@
 // doesn't click again on return; 100 ms doesn't end the drag), both with no
 // samples and with one hand untracked while samples keep coming, hands turned
 // off mid-touch, the hand state the layer reads, the settings format.
+// M5b: typing on the keyboard panel (one press per poke, hover never types,
+// never a pointer touch, both hands drawn), a hand at the keyboard doesn't
+// point at the panel behind it, and the press-count baseline starts afresh
+// whenever the keyboard shows again (VK-4, VK-6, K2).
 
 #include "check.hpp"
 #include "synthetic-hands.hpp"
@@ -17,6 +21,7 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <format>
@@ -115,6 +120,52 @@ struct RecordingSink final : PointerSink {
   }
 };
 
+// What the keyboard service does with typing results, counted
+struct RecordingTyping final : TypingSink {
+  std::mutex mMutex;
+  int mResults {0};
+  int mAppeared {0};
+  int mStopped {0};
+  int mPresses {0};
+  std::array<uint8_t, 2> mBaseline {};
+  void Typing(const TouchPanel&, const HandInteraction::TypingResult& result, bool appeared) override {
+    std::scoped_lock lock(mMutex);
+    ++mResults;
+    if (appeared) {
+      ++mAppeared;
+      for (std::size_t h = 0; h < 2; ++h) {
+        mBaseline[h] = result.mFingers[h].mPressCount;
+      }
+    }
+    for (std::size_t h = 0; h < 2; ++h) {
+      const auto& finger = result.mFingers[h];
+      if (finger.mState == HandInteraction::TypingFingerState::Pressed && finger.mPressCount != mBaseline[h]) {
+        ++mPresses;
+      }
+      mBaseline[h] = finger.mPressCount;
+    }
+  }
+  void TypingStopped() override {
+    std::scoped_lock lock(mMutex);
+    ++mStopped;
+  }
+  void Tick() override {
+  }
+  int Presses() {
+    std::scoped_lock lock(mMutex);
+    return mPresses;
+  }
+};
+
+constexpr uint64_t KeyboardID = 99;
+
+TouchPanel KeyboardPanelAt(float x, float z) {
+  TouchPanel keyboard {.mID = KeyboardID, .mName = L"Keyboard", .mTouch = false, .mScroll = false, .mKeyboard = true};
+  keyboard.mGeometry
+    = {.mID = KeyboardID, .mPosition = {x, 0, z}, .mOrientation = Quaternion::Identity, .mSize = {0.3f, 0.1f}};
+  return keyboard;
+}
+
 std::shared_ptr<const TouchPanels> OnePanel() {
   TouchPanel panel {.mID = PanelID, .mName = L"Test"};
   panel.mGeometry = {.mID = PanelID, .mPosition = {0, 0, PanelZ}, .mOrientation = Quaternion::Identity, .mSize = {0.4f, 0.3f}};
@@ -180,6 +231,21 @@ struct Feeder {
 
 float Lerp(float a, float b, float t) {
   return a + ((b - a) * t);
+}
+
+// A right pointing hand with its index tip at (x, y, z)
+HandJoints RightHandAt(float x, float y, float z) {
+  auto hand = MakeHand(Pose::Point, PokeBasis, {x, y, z});
+  hand.mIsTracked = true;
+  return hand;
+}
+
+// Hover 3 cm in front of a plane at `z`, poke 8 mm through it, pull back
+void Poke(Feeder& feed, float x, float z) {
+  feed.Path(0.2, [&](float) { return RightHandAt(x, 0, z + 0.03f); });
+  feed.Path(0.12, [&](float t) { return RightHandAt(x, 0, z + Lerp(0.03f, -0.008f, t)); });
+  feed.Path(0.08, [&](float) { return RightHandAt(x, 0, z - 0.008f); });
+  feed.Path(0.15, [&](float t) { return RightHandAt(x, 0, z + Lerp(-0.008f, 0.03f, t)); });
 }
 
 }// namespace
@@ -417,6 +483,103 @@ int main() {
     service.Stop();
     const auto stats = service.Stats();
     Check(stats.mSamples == 8 && stats.mSkipped == 12, std::format("8 read, 12 skipped ({}, {})", stats.mSamples, stats.mSkipped));
+  });
+
+  Scenario("Typing on the keyboard: a press per poke, hover never types, no pointer touch, both hands drawn (VK-6, K2)", [] {
+    FakeChannel channel;
+    RecordingSink sink;
+    RecordingTyping typing;
+    // The keyboard beside the panel, in the same plane
+    const auto panels = [] {
+      auto list = *OnePanel();
+      list.push_back(KeyboardPanelAt(0.5f, PanelZ));
+      return std::make_shared<const TouchPanels>(std::move(list));
+    }();
+    HandService service {channel, [&] { return panels; }, &sink, {}, &typing};
+    service.SetSettings({});
+    service.Start();
+    Feeder feed {channel, service};
+    // Hovering over a key, 2 cm out, drifting: never a press
+    feed.Path(0.6, [](float t) { return RightHandAt(0.5f + Lerp(0, 0.02f, t), 0, PanelZ + 0.02f); });
+    Check(typing.Presses() == 0, std::format("hovering over the keys typed nothing ({} presses)", typing.Presses()));
+    Poke(feed, 0.48f, PanelZ);
+    Poke(feed, 0.52f, PanelZ);
+    feed.Path(0.3, [](float) { return RightHandAt(0.5f, 0, PanelZ + 0.05f); });
+    service.Stop();
+    Check(typing.Presses() == 2, std::format("two pokes, two presses ({})", typing.Presses()));
+    Check(typing.mAppeared == 1, std::format("the keyboard appeared once ({})", typing.mAppeared));
+    const auto [downs, ups] = sink.Presses();
+    Check(downs == 0, std::format("the keyboard is never a pointer target ({} pointer presses)", downs));
+    Check(channel.AnyState([](const auto& state) { return state.mVisibility[0] == 1.0f && state.mVisibility[1] == 1.0f; }),
+      "both hands are drawn while the keyboard shows, pointing or not (K2)");
+  });
+
+  Scenario("A hand at the keyboard doesn't point at the panel behind it (doc 05)", [] {
+    // The keyboard 3 cm in front of the panel; a poke 2.5 cm through the
+    // keyboard ends 5 mm in front of the panel, inside its touch distance
+    const auto poke = [](Feeder& feed) {
+      feed.Path(0.3, [](float) { return RightHandAt(0, 0, PanelZ + 0.07f); });
+      feed.Path(0.2, [](float t) { return RightHandAt(0, 0, PanelZ + Lerp(0.07f, 0.005f, t)); });
+      feed.Path(0.1, [](float) { return RightHandAt(0, 0, PanelZ + 0.005f); });
+      feed.Path(0.2, [](float t) { return RightHandAt(0, 0, PanelZ + Lerp(0.005f, 0.07f, t)); });
+    };
+    {
+      // Without the keyboard, that poke touches the panel
+      FakeChannel channel;
+      RecordingSink sink;
+      HandService service {channel, [] { return OnePanel(); }, &sink};
+      service.SetSettings({});
+      service.Start();
+      Feeder feed {channel, service};
+      poke(feed);
+      service.Stop();
+      Check(sink.Presses().first == 1, std::format("without the keyboard, the poke touches the panel ({})", sink.Presses().first));
+    }
+    FakeChannel channel;
+    RecordingSink sink;
+    RecordingTyping typing;
+    const auto panels = [] {
+      auto list = *OnePanel();
+      list.push_back(KeyboardPanelAt(0, PanelZ + 0.03f));
+      return std::make_shared<const TouchPanels>(std::move(list));
+    }();
+    HandService service {channel, [&] { return panels; }, &sink, {}, &typing};
+    service.SetSettings({});
+    service.Start();
+    Feeder feed {channel, service};
+    poke(feed);
+    service.Stop();
+    Check(typing.Presses() == 1, std::format("with it, the poke types one key ({})", typing.Presses()));
+    Check(sink.Presses().first == 0, std::format("and never touches the panel behind ({})", sink.Presses().first));
+  });
+
+  Scenario("The keyboard hidden and shown again: let go, and the press counts start afresh (VK-4)", [] {
+    FakeChannel channel;
+    RecordingSink sink;
+    RecordingTyping typing;
+    std::atomic<bool> showing {true};
+    const auto with = [] {
+      auto list = *OnePanel();
+      list.push_back(KeyboardPanelAt(0.5f, PanelZ));
+      return std::make_shared<const TouchPanels>(std::move(list));
+    }();
+    const auto without = OnePanel();
+    HandService service {channel, [&] { return showing ? with : without; }, &sink, {}, &typing};
+    service.SetSettings({});
+    service.Start();
+    Feeder feed {channel, service};
+    Poke(feed, 0.5f, PanelZ);
+    showing = false;
+    feed.Path(0.3, [](float) { return RightHandAt(0.5f, 0, PanelZ + 0.03f); });
+    showing = true;
+    // Back, with the fingertip already resting in the touch zone: no press
+    feed.Path(0.4, [](float) { return RightHandAt(0.5f, 0, PanelZ - 0.004f); });
+    feed.Path(0.3, [](float t) { return RightHandAt(0.5f, 0, PanelZ + Lerp(-0.004f, 0.05f, t)); });
+    Poke(feed, 0.5f, PanelZ);
+    service.Stop();
+    Check(typing.mStopped >= 1, std::format("hiding it let go of the keys ({})", typing.mStopped));
+    Check(typing.mAppeared == 2, std::format("shown again, it started afresh ({} times)", typing.mAppeared));
+    Check(typing.Presses() == 2, std::format("one press before and one after; nothing from coming back ({})", typing.Presses()));
   });
 
   Scenario("Hand settings in settings.json: defaults, round trip, odd values (ST-4, ST-5)", [] {

@@ -13,14 +13,18 @@
 //   Opening the settings window re-reads the file once.
 //
 // It also holds what isn't stored: which panels are hidden for now (PN-6,
-// Visibility.hpp); and some global settings: the keybinds' slots (stored in
-// "keybinds") and the hand settings ("hands").
-// Changed() fires after every change, on the UI thread.
+// Visibility.hpp); and some global settings: the global keybinds' slots
+// (stored in "keybinds"), the hand settings ("hands") and the keyboard's
+// ("keyboard"; ADR-036). The keyboard's panel goes to the renderer first
+// (VK-5) but isn't in Panels(): the settings window never lists it (K10).
+// Changed() fires after every change, on the UI thread; AllHidden() when
+// panels are all hidden (which dismisses the keyboard, doc 09).
 #pragma once
 
 #include <OpenDesktopVR/Events.hpp>
 #include <OpenDesktopVR/HandService.hpp>
 #include <OpenDesktopVR/HostPanel.hpp>
+#include <OpenDesktopVR/KeyboardConfig.hpp>
 #include <OpenDesktopVR/RenderLoop.hpp>
 #include <OpenDesktopVR/SettingsStore.hpp>
 #include <OpenDesktopVR/Visibility.hpp>
@@ -70,11 +74,9 @@ class PanelManager {
   std::optional<float> ChangeBrightness(uint64_t panelID, float step);
   std::optional<bool> ToggleTint(uint64_t panelID);
 
-  // The global "show or hide all" keybinds
-  const Keybinds::Slots& ToggleAllKeybinds() const noexcept {
-    return mToggleAllKeybinds;
-  }
-  void SetToggleAllKeybinds(const Keybinds::Slots& slots);
+  // The global keybinds (Keybinds::GlobalActions)
+  const Keybinds::Slots& GlobalKeybinds(Keybinds::ActionKind kind) const noexcept;
+  void SetGlobalKeybinds(Keybinds::ActionKind kind, const Keybinds::Slots& slots);
 
   // Tapping and scrolling with the hands (doc 05)
   const HandSettings& Hands() const noexcept {
@@ -82,13 +84,23 @@ class PanelManager {
   }
   void SetHands(const HandSettings& hands);
 
+  // The virtual keyboard (doc 07)
+  const KeyboardSettings& Keyboard() const noexcept {
+    return mKeyboard;
+  }
+  void SetKeyboard(const KeyboardSettings& keyboard);
+
   Events::Event<>& Changed() noexcept {
     return mChanged;
+  }
+  Events::Event<>& AllHidden() noexcept {
+    return mAllHidden;
   }
 
  private:
   void Edit(const std::function<void(std::vector<PanelDefinition>&)>& edit, bool reread);
   void Reread();
+  void ReadGlobals();
   void Push();
   Settings::DocumentSpec Spec() const;
 
@@ -99,9 +111,11 @@ class PanelManager {
   std::vector<PanelDefinition> mPanels;
   std::vector<PanelDefinition> mTestPanels;
   Visibility::Hidden mHidden;
-  Keybinds::Slots mToggleAllKeybinds;
+  std::array<Keybinds::Slots, Keybinds::GlobalActions.size()> mGlobalKeybinds {};
   HandSettings mHands;
+  KeyboardSettings mKeyboard;
   Events::Event<> mChanged;
+  Events::Event<> mAllHidden;
 };
 
 }// namespace OpenDesktopVR::Host

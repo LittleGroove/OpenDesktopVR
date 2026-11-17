@@ -5,7 +5,11 @@
 // textarea, throwaway profiles) and a Win32 EDIT (edit-target-app), each
 // fully covered by this test's window with the foreground (the game), with
 // the app helper loaded as the host loads it:
-// - a tap into the text field gives it the caret;
+// - the keyboard's auto-show (M5b, doc 11): in the browsers, a tap on a
+//   button whose page then focuses the text field far from the tap doesn't
+//   show it (K3); then a tap into the text field gives it the caret, and the
+//   keyboard shows within 1.5 s (VK-1, VK-2), by the keyboard service's own
+//   rules on the real caret monitor;
 // - "Hello", the H with Shift;
 // - Enter: exactly one newline (Firefox once typed Enter twice: INJ-9);
 // - German: dead key ´ then e is é, and ü: the characters from the layout's
@@ -28,9 +32,11 @@
 #include "foreground.hpp"
 
 #include <OpenDesktopVR/AppHelperService.hpp>
+#include <OpenDesktopVR/KeyboardAutoShow.hpp>
 #include <OpenDesktopVR/KeyboardLayout.hpp>
 #include <OpenDesktopVR/PointerInjector.hpp>
 #include <OpenDesktopVR/StringUtil.hpp>
+#include <OpenDesktopVR/TextInputMonitor.hpp>
 
 #include <Windows.h>
 
@@ -40,6 +46,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -61,7 +68,9 @@ constexpr char Page[] = R"(<!doctype html>
 <title>odvr init</title>
 <body style="margin:0;background:#202830;overflow:hidden">
 <textarea id="t" style="position:absolute;left:5vw;top:5vh;width:90vw;height:40vh;font-size:24px;margin:0"></textarea>
+<button id="b" style="position:absolute;left:40vw;top:80vh;width:20vw;height:10vh;font-size:24px">Focus</button>
 <script>
+b.addEventListener('click', () => t.focus());
 let downs = 0, enters = 0;
 t.addEventListener('keydown', e => { downs++; if (e.key === 'Enter') enters++; });
 setInterval(() => {
@@ -282,11 +291,72 @@ struct TextTarget {
   HWND mWindow {nullptr};
   Pointer::Target mTarget {};
   std::pair<float, float> mField {0.5f, 0.5f};
+  // A button whose page then focuses the field by itself (browsers)
+  std::optional<std::pair<float, float>> mButton;
   std::function<std::wstring()> mText;
   std::function<long()> mSelected;// selection length
   std::function<bool()> mFocused;
   std::wstring mNewline;
   bool mSelectAll {true};// Ctrl+A selects all (not the Win32 EDIT)
+};
+
+// The keyboard service's auto-show rules (VK-1, VK-2, K3) on the real caret
+// monitor, as the host runs them
+class AutoShowWatch {
+ public:
+  void Tapped(const Pointer::Target& target, std::pair<float, float> uv) {
+    RECT client {};
+    GetClientRect(target.mWindow, &client);
+    POINT screen = Pointer::ClientPoint(target, uv.first, uv.second, client.right, client.bottom);
+    ClientToScreen(target.mWindow, &screen);
+    {
+      std::scoped_lock lock(mMutex);
+      mAutoShow.Tapped(Seconds(), target.mWindow, screen);
+      mTap = screen;
+    }
+    mMonitor.SetWindow(target.mWindow);
+    for (const auto delay: VirtualKeyboard::AutoShow::TapChecks) {
+      mMonitor.Poke(delay, true);
+    }
+  }
+  bool Shown() {
+    std::scoped_lock lock(mMutex);
+    return mAutoShow.IsShown();
+  }
+  std::string Why() {
+    std::scoped_lock lock(mMutex);
+    return mWhy;
+  }
+  // What the monitor last said, and where the tap was
+  std::string Last() {
+    std::scoped_lock lock(mMutex);
+    std::string caret = "none";
+    if (mLast.mCaret) {
+      caret = std::format("({}, {}, {}, {})", mLast.mCaret->left, mLast.mCaret->top, mLast.mCaret->right, mLast.mCaret->bottom);
+    }
+    return std::format("{} reports; typing {}, caret {}; the tap at ({}, {})", mReports, mLast.mTyping ? "yes" : "no", caret,
+      mTap.x, mTap.y);
+  }
+
+ private:
+  static double Seconds() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+  std::mutex mMutex;
+  VirtualKeyboard::AutoShow mAutoShow;
+  std::string mWhy;
+  TextInputMonitor::State mLast;
+  int mReports {0};
+  POINT mTap {};
+  // Last: its thread calls back into the members above
+  TextInputMonitor mMonitor {[this](HWND window, const TextInputMonitor::State& state) {
+    std::scoped_lock lock(mMutex);
+    mLast = state;
+    ++mReports;
+    if (const auto change = mAutoShow.Caret(Seconds(), window, state.mTyping, state.mCaret)) {
+      mWhy = change->mWhy;
+    }
+  }};
 };
 
 void TypeAll(const char* name, const TextTarget& field, AppHelperService& service) {
@@ -312,9 +382,39 @@ void TypeAll(const char* name, const TextTarget& field, AppHelperService& servic
     Check(back && Above(cover, field.mWindow), std::format("after {} the game has the foreground, over the app", step));
   };
 
+  AutoShowWatch autoShow;
+  if (field.mButton) {
+    // K3: the page focusing its field by itself, after a tap far from it
+    // (Discord on a channel switch), doesn't show the keyboard
+    ForegroundWatch::Step("the button");
+    Tap(injector, field.mTarget, *field.mButton);
+    autoShow.Tapped(field.mTarget, *field.mButton);
+    const bool focusedByPage = Testing::WaitUntil(field.mFocused, 3s);
+    Testing::PumpFor(1600ms);// past the 1.5 s a tap can show it
+    if (focusedByPage) {
+      Check(!autoShow.Shown(), std::format("{}: the page focusing its field by itself didn't show the keyboard (K3)", name));
+    } else {
+      std::printf("  (%s: the page's field didn't take the focus after the button)\n", name);
+    }
+    gameKept("the button");
+  }
+
   ForegroundWatch::Step("the tap");
   Tap(injector, field.mTarget, field.mField);
+  autoShow.Tapped(field.mTarget, field.mField);
   const bool focused = Testing::WaitUntil(field.mFocused, 3s);
+  // VK-1, VK-2: the caret near the tap within 1.5 s shows the keyboard.
+  // Where the tap's activation made the app take the foreground, giving it
+  // back took the app's focus, and its caret, with it (ADR-035): only VR
+  // (where it isn't taken) can show this
+  const bool shown = Testing::WaitUntil([&] { return autoShow.Shown(); }, 1500ms);
+  if (shown || ForegroundWatch::Lost().empty()) {
+    Check(shown, std::format("{}: a tap into the text field shows the keyboard within 1.5 s ({})", name,
+      shown ? autoShow.Why() : autoShow.Last()));
+  } else {
+    std::printf("  (%s: no keyboard: the tap made the app take the foreground, and giving it back took its caret; %s)\n",
+      name, autoShow.Last().c_str());
+  }
   if (focused || ForegroundWatch::Lost().empty()) {
     Check(focused, std::format("{}: a tap into the text field gives it the focus", name));
   } else {
@@ -430,14 +530,17 @@ void RunBrowser(const Testing::BrowserKind& kind) {
   const double height = Field(window, "h") * scale;
   const double left = (client.right - width) / 2;
   const double top = client.bottom - height;
-  // The textarea's middle: 50vw, 25vh
+  // The textarea's first line: 50vw, 8vh (its caret goes there when it's
+  // empty: near the tap, as in a chat app's one-line box, VK-1)
   const auto u = static_cast<float>((left + width * 0.5) / client.right);
-  const auto v = static_cast<float>((top + height * 0.25) / client.bottom);
+  const auto v = static_cast<float>((top + height * 0.08) / client.bottom);
 
   TextTarget field;
   field.mWindow = window;
   field.mTarget = {window, {0, 0, client.right, client.bottom}, {client.right, client.bottom}};
   field.mField = {u, v};
+  // The button's middle: 50vw, 85vh
+  field.mButton = std::pair {u, static_cast<float>((top + height * 0.85) / client.bottom)};
   field.mText = [window] {
     const auto state = ReadPage(window);
     return state ? state->mText : std::wstring {L"?"};
@@ -474,6 +577,8 @@ void RunEdit(const std::filesystem::path& exe) {
     TextTarget field;
     field.mWindow = window;
     field.mTarget = {window, {0, 0, client.right, client.bottom}, {client.right, client.bottom}};
+    // Its first line: where an empty EDIT's caret goes (near the tap, VK-1)
+    field.mField = {0.5f, 0.02f};
     field.mText = [edit] {
       wchar_t text[256] {};
       DWORD_PTR copied = 0;
