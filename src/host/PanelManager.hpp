@@ -19,16 +19,26 @@
 // (VK-5) but isn't in Panels(): the settings window never lists it (K10).
 // Changed() fires after every change, on the UI thread; AllHidden() when
 // panels are all hidden (which dismisses the keyboard, doc 09).
+//
+// Profiles (ADR-038): the panel list is the active profile's, kept in
+// profiles\<id>.json; settings.json holds which one is active. Switching
+// flushes pending writes first (ST-3) and shows every panel again. A game
+// whose executable a profile claims switches to it when its layer attaches,
+// and back when it ends, unless the user switched by hand meanwhile.
 #pragma once
 
 #include <OpenDesktopVR/Events.hpp>
 #include <OpenDesktopVR/HandService.hpp>
 #include <OpenDesktopVR/HostPanel.hpp>
 #include <OpenDesktopVR/KeyboardConfig.hpp>
+#include <OpenDesktopVR/ProfileLibrary.hpp>
 #include <OpenDesktopVR/RenderLoop.hpp>
 #include <OpenDesktopVR/SettingsStore.hpp>
 #include <OpenDesktopVR/Visibility.hpp>
 
+#include <Windows.h>
+
+#include <filesystem>
 #include <functional>
 #include <optional>
 #include <vector>
@@ -40,6 +50,9 @@ class PanelManager {
   // `persistent` false: a test instance; `testPanels` (or the built-in
   // test panels), never saved
   PanelManager(RenderLoop& renderer, bool persistent, std::vector<PanelDefinition> testPanels = {});
+  ~PanelManager();
+  PanelManager(const PanelManager&) = delete;
+  PanelManager& operator=(const PanelManager&) = delete;
 
   void Load();
   // Re-reads the file (other writers), keeping panels in memory if it fails
@@ -90,6 +103,38 @@ class PanelManager {
   }
   void SetKeyboard(const KeyboardSettings& keyboard);
 
+  // Profiles (ADR-038)
+  struct ProfileSummary {
+    std::string mID;
+    std::wstring mName;
+    std::vector<std::wstring> mGames;
+    std::size_t mPanelCount {0};
+  };
+  std::vector<ProfileSummary> Profiles() const;
+  const std::string& ActiveProfile() const noexcept {
+    return mActiveProfile;
+  }
+  std::wstring ProfileName(std::string_view id) const;
+  // By hand: false if it's already active or unknown
+  bool SwitchProfile(std::string_view id, const char* why = "chosen");
+  // The next (+1) or previous (-1) profile, wrapping round
+  bool StepProfile(int direction);
+  // A new profile with a copy of the active one's panels; its ID
+  std::string NewProfile(std::wstring name);
+  bool RenameProfile(std::string_view id, std::wstring name);
+  bool SetProfileGames(std::string_view id, std::vector<std::wstring> games);
+  // Never the last one; the active one hands over to another first
+  bool DeleteProfile(std::string_view id);
+  bool ExportProfile(std::string_view id, const std::filesystem::path& to);
+  std::optional<std::string> ImportProfile(const std::filesystem::path& from);
+  // The game whose layer is attached (process ID 0: none), about once a
+  // second from the UI thread: per-game switching
+  void FollowGame(uint32_t processID, const std::wstring& executable);
+  // What FollowGame last saw ("" while none)
+  const std::wstring& AttachedGame() const noexcept {
+    return mGameExecutable;
+  }
+
   Events::Event<>& Changed() noexcept {
     return mChanged;
   }
@@ -102,12 +147,21 @@ class PanelManager {
   void Reread();
   void ReadGlobals();
   void Push();
+  void SaveSettings();
+  bool Switch(std::string_view id, const char* why, bool byHand);
   Settings::DocumentSpec Spec() const;
 
   RenderLoop& mRenderer;
   const bool mPersistent;
   Settings::Store mStore;
   JsonUtil::Json mDocument;// the whole settings file, as last read
+  ProfileLibrary mProfiles;
+  std::string mActiveProfile;
+  // Per-game switching: the game followed, and the profile to go back to
+  uint32_t mGameProcessID {0};
+  HANDLE mGameProcess {nullptr};
+  std::wstring mGameExecutable;
+  std::optional<std::string> mProfileBeforeGame;
   std::vector<PanelDefinition> mPanels;
   std::vector<PanelDefinition> mTestPanels;
   Visibility::Hidden mHidden;

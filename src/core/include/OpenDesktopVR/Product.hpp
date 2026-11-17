@@ -41,6 +41,7 @@ std::wstring KernelObjectName(std::wstring_view object, unsigned abiVersion);
 
 // Per-user data folders (ADR-009). Empty if the system can't say where
 // LocalAppData is. Never throws; never creates anything.
+// %LOCALAPPDATA%\<product>; or, for tests, OPENDESKTOPVR_DATA_FOLDER
 std::filesystem::path DataFolder();
 std::filesystem::path LogsFolder();
 std::filesystem::path SettingsFile();

@@ -29,6 +29,7 @@
 //                    painting when idle, then quit (SettingsWindow.hpp)
 // --settings-keybinds   tests: open the settings window on its Keybinds tab
 // --settings-hands      tests: open the settings window on its Hands tab
+// --settings-profiles   tests: open the settings window on its Profiles tab
 // --settings-delay <ms>  tests: open the settings window this long after
 //                    start, as a user would (its device is made by then)
 // --show-keyboard    test instances: the keyboard shows from the start, as
@@ -90,6 +91,7 @@ struct Options {
   int mSettingsDelayMs {0};
   bool mSettingsKeybinds {false};
   bool mSettingsHands {false};
+  bool mSettingsProfiles {false};
   bool mShowKeyboard {false};
   double mTestRecenterAfterSeconds {0};
   std::wstring mScreenshot;
@@ -128,6 +130,8 @@ Options ParseOptions() {
       options.mSettingsKeybinds = true;
     } else if (arg == L"--settings-hands") {
       options.mSettingsHands = true;
+    } else if (arg == L"--settings-profiles") {
+      options.mSettingsProfiles = true;
     } else if (arg == L"--show-keyboard") {
       options.mShowKeyboard = true;
     } else if (arg == L"--test-recenter-after" && i + 1 < argc) {
@@ -265,7 +269,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       still.mTintEnabled = true;
       still.mTintColor = 0xFF0000;
     }
-    Host::PanelManager panels {renderer, !options.mTestInstance, std::move(testPanels)};
+    // A test instance keeps its panels in memory, unless it has a data
+    // folder of its own (OPENDESKTOPVR_DATA_FOLDER: settings-migration-test)
+    const bool privateFolder = ProcessUtil::GetEnvironment("OPENDESKTOPVR_DATA_FOLDER").has_value();
+    Host::PanelManager panels {renderer, !options.mTestInstance || privateFolder, std::move(testPanels)};
     panels.Load();
     renderer.Start();
 
@@ -332,6 +339,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       Sleep(static_cast<DWORD>(options.mSettingsDelayMs));
       if (options.mSettingsKeybinds) {
         settings.ShowKeybindsTab();
+      }
+      if (options.mSettingsProfiles) {
+        settings.ShowProfilesTab();
       }
       if (options.mSettingsHands) {
         settings.ShowHandsTab();

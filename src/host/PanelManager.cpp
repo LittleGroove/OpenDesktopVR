@@ -3,6 +3,7 @@
 
 #include "PanelManager.hpp"
 
+#include <OpenDesktopVR/GlobalSettings.hpp>
 #include <OpenDesktopVR/HandConfig.hpp>
 #include <OpenDesktopVR/KeyboardConfig.hpp>
 #include <OpenDesktopVR/Log.hpp>
@@ -12,40 +13,73 @@
 
 #include <algorithm>
 #include <cmath>
+#include <format>
 
 namespace OpenDesktopVR::Host {
 
 PanelManager::PanelManager(RenderLoop& renderer, bool persistent, std::vector<PanelDefinition> testPanels)
-  : mRenderer(renderer), mPersistent(persistent && !Product::SettingsFile().empty()), mTestPanels(std::move(testPanels)) {
+  : mRenderer(renderer),
+    mPersistent(persistent && !Product::SettingsFile().empty()),
+    mProfiles(mStore, Product::ProfilesFolder()),
+    mTestPanels(std::move(testPanels)) {
+}
+
+PanelManager::~PanelManager() {
+  if (mGameProcess) {
+    CloseHandle(mGameProcess);
+  }
 }
 
 Settings::DocumentSpec PanelManager::Spec() const {
-  return {.mPath = Product::SettingsFile(), .mCurrentVersion = 1};
+  return Settings::GlobalSettingsSpec();
+}
+
+void PanelManager::SaveSettings() {
+  if (mPersistent) {
+    mStore.Save(Spec().mPath, mDocument);// debounced (ST-1)
+  }
 }
 
 void PanelManager::Load() {
   if (!mPersistent) {
+    // A test instance: one profile, in memory only
     mPanels = mTestPanels.empty() ? DefaultTestPanels() : mTestPanels;
+    mActiveProfile = "test";
     Push();
     return;
   }
   auto loaded = mStore.Load(Spec());
   mDocument = std::move(loaded.mDocument);
   ReadGlobals();
+  const auto unreadable = mProfiles.Load();
+  // Version 1's panel list becomes the profile "Default" (ADR-038; the
+  // store backed the old file up when it migrated it)
   std::size_t skipped = 0;
-  if (auto panels = PanelConfig::Read(mDocument, &skipped)) {
-    mPanels = std::move(*panels);
-    if (skipped > 0) {
-      Log::Warning("Settings: {} panel entr{} couldn't be read and {} skipped (kept in the file)", skipped,
-        skipped == 1 ? "y" : "ies", skipped == 1 ? "was" : "were");
+  if (auto old = PanelConfig::Read(mDocument, &skipped)) {
+    if (mProfiles.All().empty()) {
+      const auto id = mProfiles.Create(L"Default", std::move(*old));
+      mDocument["activeProfile"] = id;
+      mDocument.erase("panels");
+      SaveSettings();
+      Log::Info("Profiles: the panel list moved to the profile 'Default'{}",
+        skipped > 0 ? std::format(" ({} unreadable entries left behind in the backup)", skipped) : std::string {});
+    } else {
+      Log::Warning("Settings: a panel list in settings.json is ignored: panels are in profiles now (ADR-038)");
     }
-  } else {
-    // A fresh install: the test panels, saved so the user can see the format
-    mPanels = DefaultTestPanels();
-    PanelConfig::Write(mDocument, mPanels);
-    mStore.Save(Spec().mPath, mDocument);
   }
-  Log::Info("Panels: {} loaded", mPanels.size());
+  if (mProfiles.All().empty()) {
+    // A fresh install (or every profile unreadable): the test panels
+    mProfiles.Create(L"Default", DefaultTestPanels());
+  }
+  mActiveProfile = JsonUtil::GetOr<std::string>(mDocument, "activeProfile", "");
+  if (!mProfiles.Find(mActiveProfile)) {
+    mActiveProfile = mProfiles.All().front().mID;
+    mDocument["activeProfile"] = mActiveProfile;
+    SaveSettings();
+  }
+  mPanels = mProfiles.Find(mActiveProfile)->mPanels;
+  Log::Info("Profiles: {} ({} unreadable, set aside); active '{}' with {} panels", mProfiles.All().size(), unreadable,
+    StringUtil::Narrow(ProfileName(mActiveProfile)), mPanels.size());
   Push();
 }
 
@@ -58,12 +92,12 @@ void PanelManager::Refresh() {
 }
 
 void PanelManager::Reread() {
+  // settings.json only: other programs (odvr-layer) edit it; the panels are
+  // the active profile's, kept here
   auto loaded = mStore.Load(Spec());
   mDocument = std::move(loaded.mDocument);
+  mDocument["activeProfile"] = mActiveProfile;
   ReadGlobals();
-  if (auto panels = PanelConfig::Read(mDocument)) {
-    mPanels = std::move(*panels);
-  }
 }
 
 void PanelManager::ReadGlobals() {
@@ -93,9 +127,180 @@ void PanelManager::Edit(const std::function<void(std::vector<PanelDefinition>&)>
     Reread();// another program may have changed other sections
   }
   edit(mPanels);
-  PanelConfig::Write(mDocument, mPanels);
-  mStore.Save(Spec().mPath, mDocument);// debounced (ST-1)
+  if (const auto* active = mProfiles.Find(mActiveProfile)) {
+    auto profile = *active;
+    profile.mPanels = mPanels;
+    mProfiles.Update(profile);// debounced (ST-1)
+  }
   Push();
+}
+
+std::vector<PanelManager::ProfileSummary> PanelManager::Profiles() const {
+  std::vector<ProfileSummary> list;
+  if (!mPersistent) {
+    list.push_back({mActiveProfile, L"Test panels", {}, mPanels.size()});
+    return list;
+  }
+  for (const auto& profile: mProfiles.All()) {
+    list.push_back({profile.mID, profile.mName, profile.mGames, profile.mPanels.size()});
+  }
+  return list;
+}
+
+std::wstring PanelManager::ProfileName(std::string_view id) const {
+  const auto* profile = mProfiles.Find(id);
+  return profile ? profile->mName : std::wstring {L"?"};
+}
+
+bool PanelManager::Switch(std::string_view id, const char* why, bool byHand) {
+  const auto* profile = mProfiles.Find(id);
+  if (!mPersistent || !profile || id == mActiveProfile) {
+    return false;
+  }
+  mStore.Flush();// ST-3
+  if (byHand) {
+    mProfileBeforeGame.reset();// the user chose: the game ending doesn't switch back
+  }
+  mActiveProfile = std::string {id};
+  mPanels = profile->mPanels;
+  mHidden.clear();
+  mDocument["activeProfile"] = mActiveProfile;
+  SaveSettings();
+  Log::Info("Profile: '{}' ({}), {} panels", StringUtil::Narrow(profile->mName), why, mPanels.size());
+  Push();
+  return true;
+}
+
+bool PanelManager::SwitchProfile(std::string_view id, const char* why) {
+  return Switch(id, why, true);
+}
+
+bool PanelManager::StepProfile(int direction) {
+  const auto& all = mProfiles.All();
+  if (!mPersistent || all.size() < 2) {
+    return false;
+  }
+  const auto current = std::ranges::find(all, mActiveProfile, &Profile::mID);
+  const auto index = current == all.end() ? 0 : static_cast<std::ptrdiff_t>(current - all.begin());
+  const auto count = static_cast<std::ptrdiff_t>(all.size());
+  const auto next = ((index + (direction < 0 ? -1 : 1)) % count + count) % count;
+  return Switch(all[static_cast<std::size_t>(next)].mID, direction < 0 ? "previous profile" : "next profile", true);
+}
+
+std::string PanelManager::NewProfile(std::wstring name) {
+  if (!mPersistent) {
+    return {};
+  }
+  const auto id = mProfiles.Create(std::move(name), mPanels);
+  Log::Info("Profiles: '{}' made, a copy of '{}'", StringUtil::Narrow(ProfileName(id)),
+    StringUtil::Narrow(ProfileName(mActiveProfile)));
+  mChanged.Emit();
+  return id;
+}
+
+bool PanelManager::RenameProfile(std::string_view id, std::wstring name) {
+  const auto* found = mProfiles.Find(id);
+  if (!found || name.empty()) {
+    return false;
+  }
+  auto profile = *found;
+  profile.mName = std::move(name);
+  mProfiles.Update(profile);
+  mChanged.Emit();
+  return true;
+}
+
+bool PanelManager::SetProfileGames(std::string_view id, std::vector<std::wstring> games) {
+  const auto* found = mProfiles.Find(id);
+  if (!found) {
+    return false;
+  }
+  auto profile = *found;
+  profile.mGames = std::move(games);
+  mProfiles.Update(profile);
+  mChanged.Emit();
+  return true;
+}
+
+bool PanelManager::DeleteProfile(std::string_view id) {
+  if (!mPersistent || mProfiles.All().size() < 2 || !mProfiles.Find(id)) {
+    return false;
+  }
+  if (id == mActiveProfile) {
+    for (const auto& other: mProfiles.All()) {
+      if (other.mID != id) {
+        Switch(other.mID, "the active profile was deleted", true);
+        break;
+      }
+    }
+  }
+  const auto name = ProfileName(id);
+  if (!mProfiles.Remove(id)) {
+    return false;
+  }
+  if (mProfileBeforeGame == id) {
+    mProfileBeforeGame.reset();
+  }
+  Log::Info("Profiles: '{}' deleted", StringUtil::Narrow(name));
+  mChanged.Emit();
+  return true;
+}
+
+bool PanelManager::ExportProfile(std::string_view id, const std::filesystem::path& to) {
+  const bool ok = mPersistent && mProfiles.Export(id, to);
+  Log::Info("Profiles: '{}' {}", StringUtil::Narrow(ProfileName(id)), ok ? "exported" : "couldn't be exported");
+  return ok;
+}
+
+std::optional<std::string> PanelManager::ImportProfile(const std::filesystem::path& from) {
+  if (!mPersistent) {
+    return std::nullopt;
+  }
+  auto id = mProfiles.Import(from);
+  if (id) {
+    Log::Info("Profiles: '{}' imported", StringUtil::Narrow(ProfileName(*id)));
+    mChanged.Emit();
+  } else {
+    Log::Warning("Profiles: that file isn't a profile; nothing imported");
+  }
+  return id;
+}
+
+void PanelManager::FollowGame(uint32_t processID, const std::wstring& executable) {
+  // The game ended: back to the profile it replaced, if it switched one in
+  // and the user hasn't chosen another since
+  if (mGameProcess && WaitForSingleObject(mGameProcess, 0) != WAIT_TIMEOUT) {
+    CloseHandle(mGameProcess);
+    mGameProcess = nullptr;
+    mGameProcessID = 0;
+    Log::Info("Profiles: {} ended", StringUtil::Narrow(mGameExecutable));
+    mGameExecutable.clear();
+    if (const auto back = std::exchange(mProfileBeforeGame, std::nullopt)) {
+      Switch(*back, "the game ended", false);
+    }
+    mChanged.Emit();
+  }
+  if (processID == 0 || processID == mGameProcessID) {
+    return;
+  }
+  // A new game's layer attached: its profile, if one claims it
+  if (mGameProcess) {
+    CloseHandle(mGameProcess);
+  }
+  mGameProcess = OpenProcess(SYNCHRONIZE, FALSE, processID);
+  mGameProcessID = processID;
+  mGameExecutable = executable;
+  if (!mGameProcess) {
+    mGameProcessID = 0;// it has already gone
+    return;
+  }
+  mChanged.Emit();
+  if (const auto id = mProfiles.ForGame(executable); id && *id != mActiveProfile) {
+    const auto before = mActiveProfile;
+    if (Switch(*id, "the game claims it", false)) {
+      mProfileBeforeGame = before;
+    }
+  }
 }
 
 uint64_t PanelManager::AddWindow(const WindowUtil::WindowInfo& window, bool reread) {

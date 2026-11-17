@@ -17,6 +17,7 @@ odvr_module(
   InjectingSink.cpp
   KeyboardConfig.cpp
   KeyboardService.cpp
+  ProfileLibrary.cpp
   DEPS
   odvr::vkeyboard
   odvr::inject

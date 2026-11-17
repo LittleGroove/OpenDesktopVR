@@ -75,6 +75,8 @@ struct RenderStats {
   bool mBlockCreated {false};
   bool mHasViewers {false};
   uint32_t mLayerProcessID {0};
+  // The game it's in, as the layer reports it (per-game profiles, ADR-038)
+  std::wstring mLayerExecutable;
 };
 
 class RenderLoop {

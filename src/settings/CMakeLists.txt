@@ -9,6 +9,7 @@ odvr_module(
   SOURCES
   JsonUtil.cpp
   SettingsStore.cpp
+  GlobalSettings.cpp
   DEPS
   odvr::core
   odvr::json

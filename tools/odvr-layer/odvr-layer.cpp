@@ -12,6 +12,7 @@
 //   odvr-layer disable-game <exe>    turn the layer off for one game
 //   odvr-layer enable-game <exe>     turn it back on for that game
 
+#include <OpenDesktopVR/GlobalSettings.hpp>
 #include <OpenDesktopVR/LayerRegistration.hpp>
 #include <OpenDesktopVR/ProcessUtil.hpp>
 #include <OpenDesktopVR/Product.hpp>
@@ -43,7 +44,7 @@ int Usage() {
 }
 
 Settings::DocumentSpec SettingsSpec() {
-  return {.mPath = Product::SettingsFile(), .mCurrentVersion = 1};
+  return Settings::GlobalSettingsSpec();// shared with the host (ADR-038)
 }
 
 // Edits the "layer" object of settings.json, keeping everything else

@@ -18,6 +18,13 @@ std::wstring KernelObjectName(std::wstring_view object, unsigned abiVersion) {
 }
 
 std::filesystem::path DataFolder() {
+  // Tests: a private folder (OPENDESKTOPVR_DATA_FOLDER), so a test never
+  // touches the user's settings
+  wchar_t overridden[MAX_PATH] {};
+  if (const DWORD length = GetEnvironmentVariableW(L"OPENDESKTOPVR_DATA_FOLDER", overridden, MAX_PATH);
+      length > 0 && length < MAX_PATH) {
+    return std::filesystem::path {overridden};
+  }
   PWSTR raw = nullptr;
   std::filesystem::path result;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &raw)) && raw) {

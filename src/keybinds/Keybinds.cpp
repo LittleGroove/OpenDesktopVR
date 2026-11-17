@@ -143,6 +143,10 @@ std::string ActionName(ActionKind kind) {
       return "Show or hide the keyboard";
     case ActionKind::Recenter:
       return "Recenter";
+    case ActionKind::NextProfile:
+      return "Next profile";
+    case ActionKind::PreviousProfile:
+      return "Previous profile";
   }
   return "?";
 }
@@ -163,6 +167,10 @@ const char* ActionKey(ActionKind kind) noexcept {
       return "toggleKeyboard";
     case ActionKind::Recenter:
       return "recenter";
+    case ActionKind::NextProfile:
+      return "nextProfile";
+    case ActionKind::PreviousProfile:
+      return "previousProfile";
   }
   return "";
 }

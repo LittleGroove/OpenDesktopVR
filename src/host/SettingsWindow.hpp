@@ -71,6 +71,9 @@ class SettingsWindow {
   // "<png>.idle.txt" (no paints is a pass: RN-12), and quit the host
   void RequestScreenshot(std::filesystem::path path, bool withPicker);
   // Opens on the Keybinds tab (tests, and later a tray item)
+  void ShowProfilesTab() noexcept {
+    mSelectProfiles = true;
+  }
   void ShowHandsTab() noexcept {
     mSelectHands = true;
   }
@@ -116,6 +119,10 @@ class SettingsWindow {
   // "press the keys you want" capture (KY-4)
   void KeybindsPage(const std::vector<PanelDefinition>& panels);
   void HandsPage();
+  // Profiles (ADR-038): switch, make, rename, delete, games, export, import
+  void ProfilesPage();
+  // A native file dialog for a profile file; nullopt if cancelled
+  std::optional<std::filesystem::path> AskProfileFile(bool save, const std::wstring& name);
   // The virtual keyboard's settings, on the Hands tab (K10)
   void KeyboardSettingsUi(bool handsEnabled);
   bool LayoutCombo(const char* label, std::string* klid, const char* none);
@@ -180,6 +187,13 @@ class SettingsWindow {
 
   // What's selected, and the text fields being edited for it
   uint64_t mSelected {0};
+  // The Profiles tab: the profile selected, its name being edited, and a
+  // game being typed
+  std::string mSelectedProfile;
+  std::string mProfileNameFor;
+  std::array<char, 128> mProfileName {};
+  std::array<char, 128> mNewGame {};
+  bool mSelectProfiles {false};
   uint64_t mFieldsFor {0};
   std::array<char, 256> mName {};
   std::array<char, 1024> mExecutable {};

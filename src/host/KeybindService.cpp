@@ -134,6 +134,12 @@ void KeybindService::Run(const Keybinds::Action& action) {
         mRecenter();
       }
       return;
+    case ActionKind::NextProfile:
+    case ActionKind::PreviousProfile:
+      if (!mPanels.StepProfile(action.mKind == ActionKind::NextProfile ? 1 : -1)) {
+        Log::Info("Keybind: {}: there's no other profile", Keybinds::ActionName(action.mKind));
+      }
+      return;
   }
 }
 

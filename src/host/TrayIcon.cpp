@@ -18,6 +18,7 @@ namespace {
 constexpr UINT TrayMessage = WM_APP + 1;
 constexpr UINT_PTR QuitTimer = 1;
 constexpr UINT_PTR ListingTimer = 2;// polls the worker listing windows for the menu
+constexpr UINT_PTR GameTimer = 3;// the attached game, for per-game profiles (ADR-038)
 constexpr UINT ListingPollMs = 15;
 constexpr UINT TrayID = 1;
 
@@ -28,6 +29,7 @@ enum MenuCommand : UINT {
   Exit,
   AddWindowFirst = 1000,// + index into the listed windows
   RemovePanelFirst = 2000,// + index into the listed panels
+  ProfileFirst = 3000,// + index into the listed profiles
 };
 constexpr UINT MaxListed = 40;
 
@@ -58,6 +60,7 @@ TrayIcon::TrayIcon(HINSTANCE instance, RenderLoop& renderer, PanelManager& panel
   // Explorer restarted: put the icon back
   mTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
   AddIcon();
+  SetTimer(mWindow, GameTimer, 1000, nullptr);
 }
 
 TrayIcon::~TrayIcon() {
@@ -149,6 +152,19 @@ void TrayIcon::ShowMenu(std::vector<WindowUtil::WindowInfo> listed) {
     AppendMenuW(remove, MF_STRING | MF_GRAYED, 0, L"No panels");
   }
   AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(remove), L"Remove a panel");
+
+  // Profiles (ADR-038): the active one ticked
+  HMENU profiles = CreatePopupMenu();
+  mMenuProfiles.clear();
+  for (const auto& profile: mPanels.Profiles()) {
+    if (mMenuProfiles.size() >= MaxListed) {
+      break;
+    }
+    const UINT flags = MF_STRING | (profile.mID == mPanels.ActiveProfile() ? MF_CHECKED : 0);
+    AppendMenuW(profiles, flags, ProfileFirst + static_cast<UINT>(mMenuProfiles.size()), MenuText(profile.mName).c_str());
+    mMenuProfiles.push_back(profile.mID);
+  }
+  AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(profiles), L"Profile");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, ToggleVisible, mPanels.AnyShowing() ? L"Hide panels" : L"Show panels");
   AppendMenuW(menu, MF_STRING, OpenLogs, L"Open logs folder");
@@ -203,6 +219,11 @@ LRESULT TrayIcon::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         mSettings.Invalidate();
         return 0;
       }
+      if (command >= ProfileFirst && command < ProfileFirst + mMenuProfiles.size()) {
+        mPanels.SwitchProfile(mMenuProfiles[command - ProfileFirst], "tray menu");
+        mSettings.Invalidate();
+        return 0;
+      }
       switch (command) {
         case OpenSettings:
           mSettings.Show();
@@ -225,6 +246,11 @@ LRESULT TrayIcon::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_TIMER:
       if (wParam == QuitTimer) {
         PostQuitMessage(0);
+        return 0;
+      }
+      if (wParam == GameTimer) {
+        const auto stats = mRenderer.Stats();
+        mPanels.FollowGame(stats.mLayerProcessID, stats.mLayerExecutable);
         return 0;
       }
       if (wParam == ListingTimer) {

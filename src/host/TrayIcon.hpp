@@ -46,6 +46,7 @@ class TrayIcon {
   // What the open menu listed, so a command maps back to it
   std::vector<WindowUtil::WindowInfo> mMenuWindows;
   std::vector<uint64_t> mMenuPanels;
+  std::vector<std::string> mMenuProfiles;
   HWND mWindow {nullptr};
   UINT mTaskbarCreated {0};
   bool mIconAdded {false};

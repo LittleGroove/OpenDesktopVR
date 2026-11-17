@@ -13,6 +13,7 @@
 
 #include <dwmapi.h>
 #include <imgui.h>
+#include <shobjidl.h>
 #include <imgui_impl_dx11.h>
 #include <imgui_impl_win32.h>
 
@@ -727,6 +728,11 @@ void SettingsWindow::BuildUi() {
         HandsPage();
         ImGui::EndTabItem();
       }
+      const auto profilesFlags = std::exchange(mSelectProfiles, false) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+      if (ImGui::BeginTabItem("Profiles", nullptr, profilesFlags)) {
+        ProfilesPage();
+        ImGui::EndTabItem();
+      }
       ImGui::EndTabBar();
     }
     WindowPicker();
@@ -1188,6 +1194,181 @@ void SettingsWindow::HandsPage() {
     mPanels.SetHands(hands);
   }
   KeyboardSettingsUi(hands.mEnabled);
+  ImGui::EndChild();
+}
+
+// ---- Profiles (ADR-038) ------------------------------------------------------
+
+std::optional<std::filesystem::path> SettingsWindow::AskProfileFile(bool save, const std::wstring& name) {
+  // The file dialogs need COM on this (the UI) thread
+  const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+  struct Uninit {
+    bool mOwned;
+    ~Uninit() {
+      if (mOwned) {
+        CoUninitialize();
+      }
+    }
+  } uninit {SUCCEEDED(com)};
+  winrt::com_ptr<IFileDialog> dialog;
+  if (FAILED(CoCreateInstance(save ? CLSID_FileSaveDialog : CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(dialog.put())))) {
+    return std::nullopt;
+  }
+  const COMDLG_FILTERSPEC types[] {{L"Open Desktop VR profile", L"*.json"}, {L"All files", L"*.*"}};
+  dialog->SetFileTypes(static_cast<UINT>(std::size(types)), types);
+  dialog->SetDefaultExtension(L"json");
+  if (save) {
+    dialog->SetFileName(name.c_str());
+  }
+  // Modal on this window: nothing else here runs a dialog meanwhile (DU-1)
+  if (FAILED(dialog->Show(mWindow))) {
+    return std::nullopt;// cancelled, or failed: the same (DU-1)
+  }
+  winrt::com_ptr<IShellItem> item;
+  PWSTR path = nullptr;
+  if (FAILED(dialog->GetResult(item.put())) || FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) || !path) {
+    return std::nullopt;
+  }
+  std::filesystem::path result {path};
+  CoTaskMemFree(path);
+  return result;
+}
+
+void SettingsWindow::ProfilesPage() {
+  if (!ImGui::BeginChild("profiles", {0, 0}, ImGuiChildFlags_Borders)) {
+    ImGui::EndChild();
+    return;
+  }
+  const auto profiles = mPanels.Profiles();
+  const auto& active = mPanels.ActiveProfile();
+  if (std::ranges::find(profiles, mSelectedProfile, &PanelManager::ProfileSummary::mID) == profiles.end()) {
+    mSelectedProfile = active;// gone (DU-2), or nothing chosen yet
+  }
+  ImGui::TextDisabled("Each profile is its own set of panels. A profile can switch itself on when its game starts.");
+  ImGui::Spacing();
+
+  // The list, the one in use ticked
+  const float width = ListWidth * mScale;
+  ImGui::BeginGroup();
+  if (ImGui::BeginListBox("##profiles", {width, ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing()})) {
+    for (const auto& profile: profiles) {
+      ImGui::PushID(profile.mID.c_str());
+      const auto label = std::format("{}{}", Utf8(profile.mName), profile.mID == active ? "   (in use)" : "");
+      if (ImGui::Selectable(label.c_str(), profile.mID == mSelectedProfile)) {
+        mSelectedProfile = profile.mID;
+      }
+      ImGui::SetItemTooltip("%s", std::format("{} panel{}{}", profile.mPanelCount, profile.mPanelCount == 1 ? "" : "s",
+        profile.mID == active ? ", in use" : "").c_str());
+      ImGui::PopID();
+    }
+    ImGui::EndListBox();
+  }
+  if (ImGui::Button("Import...")) {
+    if (const auto file = AskProfileFile(false, {})) {
+      if (const auto id = mPanels.ImportProfile(*file)) {
+        mSelectedProfile = *id;
+      }
+    }
+  }
+  ImGui::SetItemTooltip("Adds a profile from a file someone exported");
+  ImGui::EndGroup();
+  ImGui::SameLine();
+
+  // The selected profile
+  ImGui::BeginChild("profile", {0, 0});
+  const auto selected = std::ranges::find(profiles, mSelectedProfile, &PanelManager::ProfileSummary::mID);
+  if (selected != profiles.end()) {
+    const auto& profile = *selected;
+    if (mProfileNameFor != profile.mID) {
+      mProfileNameFor = profile.mID;
+      StringUtil::CopyTruncated(Utf8(profile.mName), mProfileName);
+    }
+    ImGui::PushItemWidth(ImGui::GetFontSize() * 16);
+    ImGui::InputText("Name", mProfileName.data(), mProfileName.size());
+    if (ImGui::IsItemDeactivatedAfterEdit() && mProfileName[0] != '\0') {
+      mPanels.RenameProfile(profile.mID, StringUtil::Widen(mProfileName.data()));
+    }
+    ImGui::PopItemWidth();
+    ImGui::Text("%zu panel%s", profile.mPanelCount, profile.mPanelCount == 1 ? "" : "s");
+    if (profile.mID == active) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("(in use)");
+    } else {
+      ImGui::SameLine();
+      if (ImGui::Button("Use this profile")) {
+        mPanels.SwitchProfile(profile.mID, "settings window");
+      }
+    }
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Games");
+    ImGui::TextDisabled("When one of these games starts, this profile is used; when it ends, the one before comes back.");
+    auto games = profile.mGames;
+    bool gamesChanged = false;
+    for (std::size_t i = 0; i < games.size(); ++i) {
+      ImGui::PushID(static_cast<int>(i));
+      if (ImGui::SmallButton("x")) {
+        games.erase(games.begin() + static_cast<std::ptrdiff_t>(i));
+        gamesChanged = true;
+        ImGui::PopID();
+        break;
+      }
+      ImGui::SetItemTooltip("Stop using this profile for this game");
+      ImGui::SameLine();
+      ImGui::TextUnformatted(Utf8(games[i]).c_str());
+      ImGui::PopID();
+    }
+    if (games.empty()) {
+      ImGui::TextDisabled("None: you switch to it yourself.");
+    }
+    const auto& running = mPanels.AttachedGame();
+    const bool listed = std::ranges::any_of(games, [&](const auto& game) { return StringUtil::EqualsIgnoreCase(game, running); });
+    if (!running.empty() && !listed) {
+      if (ImGui::Button(std::format("Add {} (running now)", Utf8(running)).c_str())) {
+        games.push_back(running);
+        gamesChanged = true;
+      }
+    }
+    ImGui::PushItemWidth(ImGui::GetFontSize() * 16);
+    const bool entered = ImGui::InputTextWithHint("##game", "A game's .exe name", mNewGame.data(), mNewGame.size(),
+      ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::PopItemWidth();
+    ImGui::SameLine();
+    if ((ImGui::Button("Add") || entered) && mNewGame[0] != '\0') {
+      const auto file = std::filesystem::path {StringUtil::Widen(mNewGame.data())}.filename().wstring();
+      if (!file.empty()) {
+        games.push_back(file);
+        gamesChanged = true;
+      }
+      mNewGame[0] = '\0';
+    }
+    if (gamesChanged) {
+      mPanels.SetProfileGames(profile.mID, std::move(games));
+    }
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Profile");
+    if (ImGui::Button("New profile")) {
+      mSelectedProfile = mPanels.NewProfile(L"New profile");
+    }
+    ImGui::SetItemTooltip("A new profile with a copy of the panels in use; switch to it to change them");
+    ImGui::SameLine();
+    if (ImGui::Button("Export...")) {
+      if (const auto file = AskProfileFile(true, profile.mName + L".json")) {
+        mPanels.ExportProfile(profile.mID, *file);// by ID: it may be gone by now (DU-2)
+      }
+    }
+    ImGui::SetItemTooltip("Saves this profile as one file, to share or keep");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(profiles.size() < 2);
+    if (ImGui::Button("Delete")) {
+      mPanels.DeleteProfile(profile.mID);
+    }
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("%s", profiles.size() < 2 ? "The last profile can't be deleted" : "Deletes this profile and its panels");
+  }
+  ImGui::EndChild();
   ImGui::EndChild();
 }
 
