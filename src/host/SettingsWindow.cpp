@@ -1765,8 +1765,17 @@ void SettingsWindow::SupportSection() {
   ImGui::SetItemTooltip("One file with what helps find a problem, to send with a report");
   ImGui::SameLine();
   if (ImGui::Button("Open the mirror")) {
-    const auto mirror = ProcessUtil::ExecutablePath().parent_path() / L"odvr-mirror.exe";
-    ShellExecuteW(mWindow, L"open", mirror.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    // Installed in "tools" (the package); beside this program in a build
+    const auto folder = ProcessUtil::ExecutablePath().parent_path();
+    auto mirror = folder / L"tools" / L"odvr-mirror.exe";
+    if (!std::filesystem::exists(mirror)) {
+      mirror = folder / L"odvr-mirror.exe";
+    }
+    if (std::filesystem::exists(mirror)) {
+      ShellExecuteW(mWindow, L"open", mirror.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    } else {
+      Log::Warning("The mirror isn't installed beside this program");
+    }
   }
   ImGui::SetItemTooltip("Shows panels on the desktop, as the game gets them");
   if (mBundleTask.Started()) {
