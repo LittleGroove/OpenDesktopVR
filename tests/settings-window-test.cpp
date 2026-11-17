@@ -38,7 +38,9 @@ struct HostRun {
 };
 
 HostRun RunHost(const std::wstring& arguments) {
-  auto command = std::format(L"\"{}\" --no-register --warp --exit-after 40 {}", gHostExe, arguments);
+  // --static-panels: test panels that never change, so the live preview
+  // has nothing new to draw while idle (RN-12)
+  auto command = std::format(L"\"{}\" --no-register --warp --exit-after 40 --static-panels {}", gHostExe, arguments);
   STARTUPINFOW startup {sizeof(startup)};
   PROCESS_INFORMATION info {};
   if (!CreateProcessW(gHostExe.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &info)) {
@@ -138,6 +140,17 @@ int wmain(int argc, wchar_t** argv) {
     Check(accent > 50, std::format("accent-coloured check marks: the test panels are listed as shown ({} pixels)", accent));
     const auto text = CountNear(*image, Theme::Text, 10);
     Check(text > 300, std::format("text is drawn ({} pixels)", text));
+  });
+
+  Scenario("Page switches take at most 50 ms (DU-3): every tab shown once, one a frame", [&] {
+    const auto png = folder.Path() + L"\\tabs.png";
+    const auto image = Screenshot(L"--settings-screenshot", png, 1500, L"--settings-cycle-tabs");
+    const auto report = ReadText(png + L".idle.txt");
+    double longest = -1;
+    if (const auto at = report.find("longest page switch: "); at != std::string::npos) {
+      sscanf_s(report.c_str() + at, "longest page switch: %lf ms", &longest);
+    }
+    Check(longest > 0 && longest <= 50, std::format("the slowest page switch took {:.1f} ms (at most 50)", longest));
   });
 
   Scenario("The window picker opens with its list (ADR-020: listed on a worker thread)", [&] {

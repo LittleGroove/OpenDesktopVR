@@ -100,6 +100,62 @@ void PanelManager::ReadGlobals() {
   }
   mHands = HandConfig::Read(mDocument);
   mKeyboard = KeyboardConfig::Read(mDocument);
+  const auto performance = JsonUtil::GetOr<JsonUtil::Json>(mDocument, "performance", JsonUtil::Json {});
+  const double rate = JsonUtil::GetOr<double>(performance, "maxUpdatesPerSecond", Panels::DefaultMaxUpdatesPerSecond);
+  mMaxUpdatesPerSecond = std::isfinite(rate) ? std::clamp(rate, 1.0, 120.0) : Panels::DefaultMaxUpdatesPerSecond;
+  mRenderer.SetGlobalMaxUpdatesPerSecond(mMaxUpdatesPerSecond);
+}
+
+void PanelManager::SetMaxUpdatesPerSecond(double perSecond) {
+  if (!std::isfinite(perSecond) || perSecond == mMaxUpdatesPerSecond) {
+    return;
+  }
+  mMaxUpdatesPerSecond = std::clamp(perSecond, 1.0, 120.0);
+  JsonUtil::Json performance = JsonUtil::GetOr<JsonUtil::Json>(mDocument, "performance", JsonUtil::Json::object());
+  if (!performance.is_object()) {
+    performance = JsonUtil::Json::object();
+  }
+  performance["maxUpdatesPerSecond"] = mMaxUpdatesPerSecond;
+  mDocument["performance"] = std::move(performance);
+  SaveSettings();
+  mRenderer.SetGlobalMaxUpdatesPerSecond(mMaxUpdatesPerSecond);
+  mChanged.Emit();
+}
+
+PanelManager::GameSettings PanelManager::Games() const {
+  GameSettings games;
+  const auto layer = JsonUtil::GetOr<JsonUtil::Json>(mDocument, "layer", JsonUtil::Json {});
+  games.mLayerEnabled = JsonUtil::GetOr<bool>(layer, "enabled", true);
+  if (const auto list = JsonUtil::Get<JsonUtil::Json>(layer, "disabledGames"); list && list->is_array()) {
+    for (const auto& game: *list) {
+      if (game.is_string()) {
+        games.mDisabledGames.push_back(StringUtil::Widen(game.get<std::string>()));
+      }
+    }
+  }
+  return games;
+}
+
+void PanelManager::SetGames(const GameSettings& games) {
+  if (games == Games()) {
+    return;
+  }
+  // Other fields of the layer's section (the test panel) are kept
+  JsonUtil::Json layer = JsonUtil::GetOr<JsonUtil::Json>(mDocument, "layer", JsonUtil::Json::object());
+  if (!layer.is_object()) {
+    layer = JsonUtil::Json::object();
+  }
+  layer["enabled"] = games.mLayerEnabled;
+  JsonUtil::Json list = JsonUtil::Json::array();
+  for (const auto& game: games.mDisabledGames) {
+    list.push_back(StringUtil::Narrow(game));
+  }
+  layer["disabledGames"] = std::move(list);
+  mDocument["layer"] = std::move(layer);
+  SaveSettings();
+  Log::Info("Games: the layer {}; off in {} game{}", games.mLayerEnabled ? "on" : "off", games.mDisabledGames.size(),
+    games.mDisabledGames.size() == 1 ? "" : "s");
+  mChanged.Emit();
 }
 
 std::optional<PanelDefinition> PanelManager::Find(uint64_t panelID) const {

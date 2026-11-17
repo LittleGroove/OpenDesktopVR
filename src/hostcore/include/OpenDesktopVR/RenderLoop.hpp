@@ -109,6 +109,8 @@ class RenderLoop {
   void SetHandsEnabled(bool enabled);
   // The "Recenter" keybind (any thread): panels go where the head is now
   void Recenter();
+  // PN-12 (any thread): every panel's cap is clamped to this
+  void SetGlobalMaxUpdatesPerSecond(double perSecond);
 
  private:
   struct Impl;

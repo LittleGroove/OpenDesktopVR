@@ -30,6 +30,9 @@
 // --settings-keybinds   tests: open the settings window on its Keybinds tab
 // --settings-hands      tests: open the settings window on its Hands tab
 // --settings-profiles   tests: open the settings window on its Profiles tab
+// --settings-general    tests: open the settings window on its General tab
+// --settings-cycle-tabs tests: show each tab once, one a frame, and report
+//                    the longest page switch (DU-3)
 // --settings-delay <ms>  tests: open the settings window this long after
 //                    start, as a user would (its device is made by then)
 // --show-keyboard    test instances: the keyboard shows from the start, as
@@ -92,6 +95,8 @@ struct Options {
   bool mSettingsKeybinds {false};
   bool mSettingsHands {false};
   bool mSettingsProfiles {false};
+  bool mSettingsCycleTabs {false};
+  bool mSettingsGeneral {false};
   bool mShowKeyboard {false};
   double mTestRecenterAfterSeconds {0};
   std::wstring mScreenshot;
@@ -132,6 +137,10 @@ Options ParseOptions() {
       options.mSettingsHands = true;
     } else if (arg == L"--settings-profiles") {
       options.mSettingsProfiles = true;
+    } else if (arg == L"--settings-general") {
+      options.mSettingsGeneral = true;
+    } else if (arg == L"--settings-cycle-tabs") {
+      options.mSettingsCycleTabs = true;
     } else if (arg == L"--show-keyboard") {
       options.mShowKeyboard = true;
     } else if (arg == L"--test-recenter-after" && i + 1 < argc) {
@@ -342,6 +351,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       }
       if (options.mSettingsProfiles) {
         settings.ShowProfilesTab();
+      }
+      if (options.mSettingsGeneral) {
+        settings.ShowGeneralTab();
+      }
+      if (options.mSettingsCycleTabs) {
+        settings.CycleTabs();
       }
       if (options.mSettingsHands) {
         settings.ShowHandsTab();

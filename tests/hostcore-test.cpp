@@ -380,5 +380,26 @@ int main() {
     Check(point.x == 500 && point.y == 400, "and a tap there lands back on it");
   });
 
+  Scenario("Size as a box (PN-14): the width, unless the height would pass its limit", [] {
+    PanelDefinition panel;
+    panel.mID = 0xE1;// a real panel's: one without an ID isn't a panel
+    panel.mName = L"Tall";
+    panel.mWidthMeters = 0.4f;
+    auto size = PanelSizeFor(panel, 1000, 2000);
+    Check(std::abs(size.mWidth - 0.4f) < 1e-5f && std::abs(size.mHeight - 0.8f) < 1e-5f, "no limit: the width, the height from the shape");
+    panel.mMaxHeightMeters = 0.5f;
+    size = PanelSizeFor(panel, 1000, 2000);
+    Check(std::abs(size.mWidth - 0.25f) < 1e-5f && std::abs(size.mHeight - 0.5f) < 1e-5f,
+      std::format("a tall window fits the box, keeping its shape ({:.3f} x {:.3f})", size.mWidth, size.mHeight));
+    size = PanelSizeFor(panel, 2000, 1000);
+    Check(std::abs(size.mWidth - 0.4f) < 1e-5f && std::abs(size.mHeight - 0.2f) < 1e-5f, "a wide one is under the limit: unchanged");
+    Check(PanelSizeFor(panel, 0, 100).mWidth == 0, "no content yet: no size");
+    const auto back = PanelConfig::FromJson(PanelConfig::ToJson(panel));
+    Check(back && std::abs(back->mMaxHeightMeters - 0.5f) < 1e-5f, "the limit is saved and read back");
+    auto json = PanelConfig::ToJson(panel);
+    json["maxHeightMeters"] = -3;
+    Check(!PanelConfig::FromJson(json), "a negative limit is refused (TH-9)");
+  });
+
   return Testing::Finish();
 }

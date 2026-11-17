@@ -57,6 +57,20 @@ PanelDefinition NewWindowPanel(const WindowUtil::WindowInfo& window, std::size_t
   return panel;
 }
 
+PanelSize PanelSizeFor(const PanelDefinition& definition, uint32_t contentWidth, uint32_t contentHeight) noexcept {
+  if (contentWidth == 0 || contentHeight == 0) {
+    return {};
+  }
+  PanelSize size {definition.mWidthMeters,
+    definition.mWidthMeters * static_cast<float>(contentHeight) / static_cast<float>(contentWidth)};
+  if (definition.mMaxHeightMeters > 0 && size.mHeight > definition.mMaxHeightMeters) {
+    const float scale = definition.mMaxHeightMeters / size.mHeight;
+    size.mWidth *= scale;
+    size.mHeight = definition.mMaxHeightMeters;
+  }
+  return size;
+}
+
 uint64_t NewPanelID() noexcept {
   static std::random_device device;
   std::mt19937_64 generator {(static_cast<uint64_t>(device()) << 32) ^ device()};

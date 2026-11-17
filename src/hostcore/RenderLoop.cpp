@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <format>
 #include <mutex>
 #include <optional>
@@ -103,6 +104,9 @@ struct RenderLoop::Impl {
   } mChannel {*this};
   std::atomic<bool> mHandsEnabled {true};
   bool mHandsApplied {true};
+  // PN-12: the global cap, set from any thread, applied on the render thread
+  std::atomic<double> mGlobalRate {Panels::DefaultMaxUpdatesPerSecond};
+  double mGlobalRateApplied {Panels::DefaultMaxUpdatesPerSecond};
   // "Recenter": asked for (any thread), and as last written to the block
   std::atomic<uint64_t> mRecenterCount {0};
   std::optional<uint64_t> mRecenterWritten;
@@ -166,11 +170,20 @@ struct RenderLoop::Impl {
 
 RenderLoop::RenderLoop(RenderLoopOptions options, SourceFactory factory) : mImpl(std::make_unique<Impl>()) {
   mImpl->mOptions = options;
+  mImpl->mGlobalRate = options.mGlobalMaxUpdatesPerSecond;
+  mImpl->mGlobalRateApplied = options.mGlobalMaxUpdatesPerSecond;
   mImpl->mFactory = std::move(factory);
 }
 
 RenderLoop::~RenderLoop() {
   Stop();
+}
+
+void RenderLoop::SetGlobalMaxUpdatesPerSecond(double perSecond) {
+  if (std::isfinite(perSecond) && perSecond > 0) {
+    mImpl->mGlobalRate = perSecond;
+    FrameWakeup::RequestFrameSoon();
+  }
 }
 
 void RenderLoop::Recenter() {
@@ -326,7 +339,7 @@ void RenderLoop::Impl::ApplyPendingPanels() {
     if (newInput && !newContent && panel->mSource) {
       panel->mSource->SetInputWanted(WantsInput(panel->mDefinition));
     }
-    panel->mLimiter.SetRate(panel->mDefinition.mMaxUpdatesPerSecond, mOptions.mGlobalMaxUpdatesPerSecond);
+    panel->mLimiter.SetRate(panel->mDefinition.mMaxUpdatesPerSecond, mGlobalRateApplied);
     if (newContent) {
       MakeSource(*panel);
     } else if (newCrop && panel->mSource) {
@@ -492,8 +505,9 @@ SharedAbi::PanelEntry RenderLoop::Impl::EntryFor(const HostPanel& panel) const {
     entry.mFlags = 0;// nothing drawn yet
     return entry;
   }
-  entry.mSizeMeters[0] = definition.mWidthMeters;
-  entry.mSizeMeters[1] = definition.mWidthMeters * static_cast<float>(content.mHeight) / static_cast<float>(content.mWidth);
+  const auto size = PanelSizeFor(definition, content.mWidth, content.mHeight);// PN-14
+  entry.mSizeMeters[0] = size.mWidth;
+  entry.mSizeMeters[1] = size.mHeight;
   entry.mTextureWidth = ring.Width();
   entry.mTextureHeight = ring.Height();
   entry.mContentWidth = content.mWidth;
@@ -785,6 +799,13 @@ void RenderLoop::Impl::Main() {
     }
 
     EnsurePublisher(now);
+    if (const double rate = mGlobalRate.load(); rate != mGlobalRateApplied) {
+      mGlobalRateApplied = rate;
+      for (auto& panel: mPanels) {
+        panel->mLimiter.SetRate(panel->mDefinition.mMaxUpdatesPerSecond, rate);
+      }
+      Log::Info("Panels update at most {:.0f} times a second (PN-12)", rate);
+    }
     if (const auto recenter = mRecenterCount.load(); mPublisher && mRecenterWritten != recenter) {
       mPublisher->WriteRecenterCount(recenter);
       mRecenterWritten = recenter;

@@ -23,6 +23,7 @@
 #include "PanelManager.hpp"
 
 #include <OpenDesktopVR/AppHelperService.hpp>
+#include <OpenDesktopVR/HostLink.hpp>
 #include <OpenDesktopVR/KeyboardLayout.hpp>
 #include <OpenDesktopVR/RenderLoop.hpp>
 #include <OpenDesktopVR/ThreadUtil.hpp>
@@ -39,6 +40,7 @@
 
 #include <array>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -71,8 +73,15 @@ class SettingsWindow {
   // "<png>.idle.txt" (no paints is a pass: RN-12), and quit the host
   void RequestScreenshot(std::filesystem::path path, bool withPicker);
   // Opens on the Keybinds tab (tests, and later a tray item)
+  void ShowGeneralTab() noexcept {
+    mSelectGeneral = true;
+  }
   void ShowProfilesTab() noexcept {
     mSelectProfiles = true;
+  }
+  // Tests: show every tab once, one a frame, and report the longest switch
+  void CycleTabs() noexcept {
+    mCycleTab = 0;
   }
   void ShowHandsTab() noexcept {
     mSelectHands = true;
@@ -119,6 +128,8 @@ class SettingsWindow {
   // "press the keys you want" capture (KY-4)
   void KeybindsPage(const std::vector<PanelDefinition>& panels);
   void HandsPage();
+  // Performance, games, startup and about
+  void GeneralPage();
   // Profiles (ADR-038): switch, make, rename, delete, games, export, import
   void ProfilesPage();
   // A native file dialog for a profile file; nullopt if cancelled. Only
@@ -197,6 +208,13 @@ class SettingsWindow {
   std::array<char, 128> mProfileName {};
   std::array<char, 128> mNewGame {};
   bool mSelectProfiles {false};
+  bool mSelectGeneral {false};
+  std::array<char, 128> mNewDisabledGame {};
+  std::optional<bool> mStartWithWindows;// read once the General tab shows
+  // DU-3 (tests: --settings-cycle-tabs): every tab shown once, one a
+  // frame, timing each switch
+  int mCycleTab {-1};
+  double mLongestSwitchMs {0};
   struct PendingDialog {
     bool mSave {false};// export; otherwise import
     std::string mProfileID;
@@ -217,6 +235,24 @@ class SettingsWindow {
   bool mOpenPicker {false};
   bool mPickerRetargets {false};// "Use a different window" for the selected panel
   ThreadUtil::BackgroundTask<std::vector<WindowUtil::WindowInfo>> mListing;
+  // The listed windows' pictures (doc 09): taken on a worker after the list
+  // arrives, then textures on this window's device
+  using Thumbnails = std::vector<std::pair<HWND, WindowUtil::Thumbnail>>;
+  ThreadUtil::BackgroundTask<Thumbnails> mThumbnailTask;
+  std::map<HWND, winrt::com_ptr<ID3D11ShaderResourceView>> mThumbnails;
+  void StartThumbnails();
+  void TakeThumbnails();
+  // The selected panel as the layer gets it (doc 09 "a big live preview"):
+  // the shared textures, opened on this window's device, like the mirror.
+  // Redrawn only when its content changes, at most 10 times a second.
+  void PanelPreview(const PanelDefinition& panel);
+  void CheckPreview();
+  std::unique_ptr<HostLink::Client> mLink;
+  std::map<ID3D11Texture2D*, winrt::com_ptr<ID3D11ShaderResourceView>> mPreviewViews;
+  uint64_t mPreviewPanel {0};
+  uint64_t mPreviewVersion {0};
+  bool mPreviewDrawn {false};// this frame
+  bool mPreviewShowing {false};// an image, not a placeholder
   // The installed keyboard layouts, read in the background the first time
   // the Hands tab shows (reading 200 of them takes a moment)
   ThreadUtil::BackgroundTask<std::vector<KeyboardLayout::LayoutInfo>> mLayoutsTask;

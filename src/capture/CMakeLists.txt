@@ -19,6 +19,7 @@ odvr_module(
   dwmapi
   d3d11
   dxgi
+  gdi32
 )
 odvr_shaders(
   odvr_capture

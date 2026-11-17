@@ -101,6 +101,7 @@ std::optional<PanelDefinition> FromJson(const Json& json) noexcept {
     panel.mYawDegrees = JsonUtil::GetOr<float>(json, "yawDegrees", 0.0f);
     panel.mPitchDegrees = JsonUtil::GetOr<float>(json, "pitchDegrees", 0.0f);
     panel.mWidthMeters = JsonUtil::GetOr<float>(json, "widthMeters", 0.4f);
+    panel.mMaxHeightMeters = JsonUtil::GetOr<float>(json, "maxHeightMeters", 0.0f);
     panel.mMaxUpdatesPerSecond = JsonUtil::GetOr<double>(json, "maxUpdatesPerSecond", 0.0);
     // How it looks: odd values are brought into range, not refused
     const auto level = [&](const char* key) {
@@ -142,6 +143,7 @@ std::optional<PanelDefinition> FromJson(const Json& json) noexcept {
         || std::abs(panel.mPosition[0]) > 20 || std::abs(panel.mPosition[1]) > 20 || std::abs(panel.mPosition[2]) > 20
         || !Finite(panel.mYawDegrees) || !Finite(panel.mPitchDegrees) || std::abs(panel.mPitchDegrees) > 90
         || !Finite(panel.mWidthMeters) || panel.mWidthMeters < 0.02f || panel.mWidthMeters > 10
+        || !Finite(panel.mMaxHeightMeters) || panel.mMaxHeightMeters < 0 || panel.mMaxHeightMeters > 10
         || !std::isfinite(panel.mMaxUpdatesPerSecond) || panel.mMaxUpdatesPerSecond < 0) {
       return std::nullopt;
     }
@@ -170,6 +172,11 @@ Json ToJson(const PanelDefinition& panel) {
   json["yawDegrees"] = panel.mYawDegrees;
   json["pitchDegrees"] = panel.mPitchDegrees;
   json["widthMeters"] = panel.mWidthMeters;
+  if (panel.mMaxHeightMeters > 0) {
+    json["maxHeightMeters"] = panel.mMaxHeightMeters;
+  } else {
+    json.erase("maxHeightMeters");
+  }
   json["maxUpdatesPerSecond"] = panel.mMaxUpdatesPerSecond;
   json["enabled"] = panel.mEnabled;
   const auto& crop = panel.mCrop;

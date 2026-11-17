@@ -3,7 +3,9 @@
 
 #include "SettingsWindow.hpp"
 
+#include <OpenDesktopVR/Autostart.hpp>
 #include <OpenDesktopVR/ImageFile.hpp>
+#include <OpenDesktopVR/ProcessUtil.hpp>
 #include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/Product.hpp>
 #include <OpenDesktopVR/StringUtil.hpp>
@@ -12,6 +14,7 @@
 #include <OpenDesktopVR/WindowMatch.hpp>
 
 #include <dwmapi.h>
+#include <shellapi.h>
 #include <imgui.h>
 #include <shobjidl.h>
 #include <imgui_impl_dx11.h>
@@ -39,6 +42,9 @@ constexpr UINT FileDialogMessage = WM_APP + 2;// a file dialog asked for during 
 constexpr UINT_PTR PaintTimer = 1;
 constexpr UINT_PTR ScreenshotIdleStart = 2;
 constexpr UINT_PTR ScreenshotIdleEnd = 3;
+constexpr UINT_PTR PreviewTimer = 4;// the live preview: has the panel changed?
+constexpr UINT PreviewCheckMs = 100;
+constexpr float PreviewMaxHeight = 220;
 constexpr UINT PaintIntervalMs = 33;// at most about 30 paints a second
 constexpr int TailFrames = 15;      // half a second after the last input
 constexpr uint64_t ScreenshotAfterPaints = 6;
@@ -50,6 +56,7 @@ constexpr int WindowHeight = 680;
 constexpr int MinWidth = 720;
 constexpr int MinHeight = 500;
 constexpr float ListWidth = 300;
+constexpr float PickerThumbnailHeight = 54;// the window picker's pictures
 constexpr float PickerProgramColumn = 200;
 
 constexpr auto Clamp = ImGuiSliderFlags_AlwaysClamp;
@@ -381,6 +388,11 @@ bool SettingsWindow::Create() {
 }
 
 void SettingsWindow::Destroy() {
+  // The preview's views are on this window's device; the link goes with it
+  mPreviewViews.clear();
+  mLink.reset();
+  mPreviewPanel = 0;
+  mThumbnails.clear();
   if (mImGui) {
     ImGui::SetCurrentContext(mImGui);
     if (mRendererReady) {
@@ -509,6 +521,10 @@ LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
       }
       return 0;
     case WM_TIMER:
+      if (wParam == PreviewTimer) {
+        CheckPreview();
+        return 0;
+      }
       if (wParam == PaintTimer) {
         Paint();
         if (mWindow && --mFramesLeft <= 0 && !mListing.Started()) {
@@ -563,6 +579,8 @@ void SettingsWindow::Paint() {
       mInFrame = false;
     }
   } frameDone {mInFrame};
+  const auto frameStart = TimeUtil::Now();
+  const bool switching = mCycleTab >= 0;
   if (mOccluded) {
     if (mSwapchain->Present(0, DXGI_PRESENT_TEST) == DXGI_STATUS_OCCLUDED) {
       return;// minimized or covered: nothing to paint
@@ -609,7 +627,10 @@ void SettingsWindow::Paint() {
   if (mScreenshot && !mScreenshotTaken) {
     // Half a second: popups' fade-ins are done
     const bool settled = TimeUtil::Now() - mOpenedAt >= std::chrono::milliseconds(500);
-    if (settled && mPaints >= ScreenshotAfterPaints && !mListing.Started()) {
+    // A preview on the page: its first image (the host starts drawing once
+    // this window watches), or 3 s
+    const bool previewReady = !mPreviewDrawn || mPreviewShowing || TimeUtil::Now() - mOpenedAt >= std::chrono::seconds(3);
+    if (settled && previewReady && mPaints >= ScreenshotAfterPaints && !mListing.Started() && !mThumbnailTask.Started()) {
       TakeScreenshot();// before Present: a flip-model buffer is undefined after it
     } else {
       KeepPainting(2);
@@ -618,6 +639,10 @@ void SettingsWindow::Paint() {
 
   MarkOpening("drawing");
   const HRESULT result = mSwapchain->Present(1, 0);
+  if (switching && mFirstPaintLogged) {
+    // DU-3: a page switch is one frame
+    mLongestSwitchMs = std::max(mLongestSwitchMs, TimeUtil::ToMilliseconds(TimeUtil::Now() - frameStart));
+  }
   if (!mFirstPaintLogged) {
     // Doc 08: opening the window takes at most 50 ms
     MarkOpening("present");
@@ -668,8 +693,9 @@ void SettingsWindow::OnScreenshotTimer(UINT_PTR timer) {
       "Settings window: {} paints and {} input messages (last {:#x}) in the idle second", idlePaints, inputs, mLastInput);
     auto report = *mScreenshot;
     report += L".idle.txt";
-    std::ofstream {report} << std::format("idle paints: {}\ninput messages: {} (last {:#x})\nopened in: {} ms\n",
-      idlePaints, inputs, mLastInput, mOpeningMs);
+    std::ofstream {report} << std::format(
+      "idle paints: {}\ninput messages: {} (last {:#x})\nopened in: {} ms\nlongest page switch: {:.1f} ms\n", idlePaints,
+      inputs, mLastInput, mOpeningMs, mLongestSwitchMs);
     PostQuitMessage(0);
   }
 }
@@ -677,13 +703,17 @@ void SettingsWindow::OnScreenshotTimer(UINT_PTR timer) {
 // ---- The interface ---------------------------------------------------------
 
 void SettingsWindow::BuildUi() {
-  // The picker's list, once the worker has it
+  // The picker's list, once the worker has it; then its pictures
   if (mListing.Started() && !mListing.Running()) {
     mWindows = mListing.Take().value_or(std::vector<WindowUtil::WindowInfo> {});
     mPickerSelection = -1;
     KeepPainting(TailFrames);
+    StartThumbnails();
   }
+  TakeThumbnails();
 
+  mPreviewDrawn = false;
+  mPreviewShowing = false;
   const auto panels = mPanels.Panels();// a copy: edits below replace the originals
   const auto selected = std::ranges::find(panels, mSelected, &PanelDefinition::mID);
   if (selected == panels.end()) {
@@ -717,7 +747,15 @@ void SettingsWindow::BuildUi() {
     ImGui::SetItemTooltip("Shows or hides all panels, like the keybind for it");
 
     if (ImGui::BeginTabBar("pages", ImGuiTabBarFlags_DrawSelectedOverline)) {
-      if (ImGui::BeginTabItem("Panels")) {
+      // Tests (DU-3): each tab in turn, one a frame
+      constexpr int TabCount = 5;
+      const auto cycle = [&](int index) {
+        return mCycleTab == index ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+      };
+      if (mCycleTab >= 0) {
+        KeepPainting(2);
+      }
+      if (ImGui::BeginTabItem("Panels", nullptr, cycle(0))) {
         PanelList(panels);
         ImGui::SameLine();
         const auto current = std::ranges::find(panels, mSelected, &PanelDefinition::mID);
@@ -730,20 +768,28 @@ void SettingsWindow::BuildUi() {
         }
         ImGui::EndTabItem();
       }
-      const auto keybindsFlags = std::exchange(mSelectKeybinds, false) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+      const auto keybindsFlags = (std::exchange(mSelectKeybinds, false) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None) | cycle(1);
       if (ImGui::BeginTabItem("Keybinds", nullptr, keybindsFlags)) {
         KeybindsPage(panels);
         ImGui::EndTabItem();
       }
-      const auto handsFlags = std::exchange(mSelectHands, false) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+      const auto handsFlags = (std::exchange(mSelectHands, false) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None) | cycle(2);
       if (ImGui::BeginTabItem("Hands", nullptr, handsFlags)) {
         HandsPage();
         ImGui::EndTabItem();
       }
-      const auto profilesFlags = std::exchange(mSelectProfiles, false) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+      const auto profilesFlags = (std::exchange(mSelectProfiles, false) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None) | cycle(3);
       if (ImGui::BeginTabItem("Profiles", nullptr, profilesFlags)) {
         ProfilesPage();
         ImGui::EndTabItem();
+      }
+      const auto generalFlags = (std::exchange(mSelectGeneral, false) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None) | cycle(4);
+      if (ImGui::BeginTabItem("General", nullptr, generalFlags)) {
+        GeneralPage();
+        ImGui::EndTabItem();
+      }
+      if (mCycleTab >= 0 && ++mCycleTab > TabCount) {
+        mCycleTab = -1;// done: back to the first
       }
       ImGui::EndTabBar();
     }
@@ -823,6 +869,8 @@ void SettingsWindow::PanelDetails(PanelDefinition panel) {
   ImGui::PopFont();
   ImGui::TextDisabled("%s", isWindow ? "Shows a window from your desktop" : "A test pattern");
   ImGui::Spacing();
+  PanelPreview(panel);
+  ImGui::Spacing();
   ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.62f);
 
   // Text fields apply when you leave them
@@ -879,6 +927,16 @@ void SettingsWindow::PanelDetails(PanelDefinition panel) {
   }
   changed |= DragCentimetres("Width", &panel.mWidthMeters, 5.0f, 500.0f);
   Help("Its height follows the window's shape.");
+  // PN-14: a box, the content keeping its shape inside it
+  bool limitHeight = panel.mMaxHeightMeters > 0;
+  if (ImGui::Checkbox("Limit its height", &limitHeight)) {
+    panel.mMaxHeightMeters = limitHeight ? std::max(0.05f, panel.mWidthMeters * 0.75f) : 0.0f;
+    changed = true;
+  }
+  Help("For a window that might get tall: the panel shrinks to fit this height, keeping its shape.");
+  if (limitHeight) {
+    changed |= DragCentimetres("Height at most", &panel.mMaxHeightMeters, 5.0f, 500.0f);
+  }
   bool faceMe = panel.mFaceOrigin;
   if (ImGui::Checkbox("Face me", &faceMe)) {
     if (!faceMe) {
@@ -968,13 +1026,18 @@ void SettingsWindow::PanelDetails(PanelDefinition panel) {
 
   ImGui::SeparatorText("Updates");
   int rate = static_cast<int>(std::lround(panel.mMaxUpdatesPerSecond));
-  const auto fastest = std::format("Fastest ({:.0f} a second)", Panels::DefaultMaxUpdatesPerSecond);
-  const int maxRate = static_cast<int>(Panels::DefaultMaxUpdatesPerSecond);
-  if (ImGui::SliderInt("Most updates a second", &rate, 0, maxRate, rate == 0 ? fastest.c_str() : "%d a second", Clamp)) {
+  const int maxRate = static_cast<int>(std::lround(mPanels.MaxUpdatesPerSecond()));
+  const auto fastest = std::format("Fastest ({} a second)", maxRate);
+  if (ImGui::SliderInt("Most updates a second", &rate, 0, std::max(maxRate, rate), rate == 0 ? fastest.c_str() : "%d a second",
+        Clamp)) {
     panel.mMaxUpdatesPerSecond = rate;
     changed = true;
   }
   Help("Lower is lighter on your PC. Panels only update when what they show changes.");
+  if (rate > maxRate) {
+    // PN-12: shown clamped, not silently changed
+    ImGui::TextDisabled("Capped at %d a second by the General tab's Performance setting.", maxRate);
+  }
   if (isWindow) {
     // CT-3, Q10 (ADR-031): on by default, with what the helper is doing
     changed |= ImGui::Checkbox("Keep updating when covered", &panel.mKeepUpdatingWhenCovered);
@@ -1073,6 +1136,152 @@ void SettingsWindow::OpenPicker(bool retarget) {
   KeepPainting(TailFrames);
 }
 
+void SettingsWindow::PanelPreview(const PanelDefinition& panel) {
+  if (!mLink && mDevice) {
+    // Reads only: it never claims the layer's status
+    mLink = std::make_unique<HostLink::Client>(mDevice.get(), HostLink::ClientOptions {.mWritesStatus = false});
+  }
+  const float width = ImGui::GetContentRegionAvail().x;
+  const float maxHeight = PreviewMaxHeight * mScale;
+  const auto placeholder = [&](const char* text) {
+    const ImVec2 size {width, maxHeight * 0.5f};
+    const auto min = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(size);
+    ImGui::GetWindowDrawList()->AddRect(min, {min.x + size.x, min.y + size.y}, ImGui::GetColorU32(ImGuiCol_Border));
+    const auto textSize = ImGui::CalcTextSize(text);
+    ImGui::GetWindowDrawList()->AddText({min.x + (size.x - textSize.x) / 2, min.y + (size.y - textSize.y) / 2},
+      ImGui::GetColorU32(ImGuiCol_TextDisabled), text);
+  };
+  if (!mLink || !mLink->IsUsable()) {
+    placeholder("No preview on this graphics card");
+    return;
+  }
+  mLink->Update(TimeUtil::Now());
+  const SharedAbi::PanelEntry* entry = nullptr;
+  for (const auto& candidate: mLink->Panels()) {
+    if (candidate.mPanelID == panel.mID) {
+      entry = &candidate;
+    }
+  }
+  mPreviewPanel = panel.mID;
+  mPreviewDrawn = true;
+  SetTimer(mWindow, PreviewTimer, PreviewCheckMs, nullptr);
+  if (!mLink->IsConnected()) {
+    placeholder("Starting...");
+    return;
+  }
+  if (!entry || !(entry->mFlags & SharedAbi::PanelFlags::Visible) || entry->mContentWidth == 0
+      || entry->mCurrentSlot >= SharedAbi::RingSlots) {
+    placeholder(panel.mEnabled ? (mPanels.IsHidden(panel.mID) ? "Hidden for now" : "Waiting for it to show...") : "Turned off");
+    return;
+  }
+  bool budget = true;// one open a frame at most, like the layer
+  const auto* resources = mLink->Resources(*entry, budget);
+  const auto& texture = resources ? resources->mTextures[entry->mCurrentSlot] : winrt::com_ptr<ID3D11Texture2D> {};
+  if (!texture) {
+    placeholder("No preview (the game may use another graphics card)");
+    return;
+  }
+  // Wait for that frame on the GPU, never here
+  if (const auto context = mContext.try_as<ID3D11DeviceContext4>(); context && resources->mFence) {
+    context->Wait(resources->mFence.get(), entry->mFenceValue);
+  }
+  if (mPreviewViews.size() > 24) {
+    mPreviewViews.clear();// old generations' textures
+  }
+  auto& view = mPreviewViews[texture.get()];
+  if (!view && FAILED(mDevice->CreateShaderResourceView(texture.get(), nullptr, view.put()))) {
+    placeholder("No preview");
+    return;
+  }
+  D3D11_TEXTURE2D_DESC desc {};
+  texture->GetDesc(&desc);
+  const float aspect = static_cast<float>(entry->mContentHeight) / static_cast<float>(entry->mContentWidth);
+  float drawWidth = width;
+  float drawHeight = width * aspect;
+  if (drawHeight > maxHeight) {
+    drawHeight = maxHeight;
+    drawWidth = drawHeight / aspect;
+  }
+  ImGui::Image(static_cast<ImTextureID>(reinterpret_cast<uintptr_t>(view.get())), {drawWidth, drawHeight}, {0, 0},
+    {static_cast<float>(entry->mContentWidth) / static_cast<float>(desc.Width),
+      static_cast<float>(entry->mContentHeight) / static_cast<float>(desc.Height)});
+  mPreviewVersion = entry->mContentVersion;
+  mPreviewShowing = true;
+}
+
+void SettingsWindow::CheckPreview() {
+  // Stops once a frame has gone by without a preview (another tab)
+  if (!mWindow || !mLink || !mPreviewDrawn) {
+    if (mWindow) {
+      KillTimer(mWindow, PreviewTimer);
+    }
+    return;
+  }
+  mLink->Update(TimeUtil::Now());
+  for (const auto& entry: mLink->Panels()) {
+    if (entry.mPanelID == mPreviewPanel && entry.mContentVersion != mPreviewVersion) {
+      KeepPainting(1);// a new frame to show
+      return;
+    }
+  }
+}
+
+void SettingsWindow::StartThumbnails() {
+  if (mThumbnailTask.Started()) {
+    return;// still taking the last ones: those will do
+  }
+  std::vector<HWND> windows;
+  for (const auto& window: mWindows) {
+    if (windows.size() >= 60) {
+      break;
+    }
+    windows.push_back(window.mWindow);
+  }
+  const float size = PickerThumbnailHeight * mScale;
+  const auto maxWidth = static_cast<uint32_t>(size * 16 / 9);
+  const auto maxHeight = static_cast<uint32_t>(size);
+  mThumbnailTask = ThreadUtil::BackgroundTask<Thumbnails>::Start(L"Window pictures", [windows, maxWidth, maxHeight] {
+    Thumbnails taken;
+    for (const auto window: windows) {
+      if (auto thumbnail = WindowUtil::GrabThumbnail(window, maxWidth, maxHeight)) {
+        taken.emplace_back(window, std::move(*thumbnail));
+      }
+    }
+    return taken;
+  });
+}
+
+void SettingsWindow::TakeThumbnails() {
+  if (!mThumbnailTask.Started()) {
+    return;
+  }
+  if (mThumbnailTask.Running()) {
+    KeepPainting(2);// they appear as soon as they're ready
+    return;
+  }
+  for (auto& [window, thumbnail]: mThumbnailTask.Take().value_or(Thumbnails {})) {
+    const D3D11_TEXTURE2D_DESC desc {
+      .Width = thumbnail.mWidth,
+      .Height = thumbnail.mHeight,
+      .MipLevels = 1,
+      .ArraySize = 1,
+      .Format = DXGI_FORMAT_B8G8R8A8_UNORM,
+      .SampleDesc = {1, 0},
+      .Usage = D3D11_USAGE_IMMUTABLE,
+      .BindFlags = D3D11_BIND_SHADER_RESOURCE,
+    };
+    const D3D11_SUBRESOURCE_DATA data {thumbnail.mBgra.data(), thumbnail.mWidth * 4, 0};
+    winrt::com_ptr<ID3D11Texture2D> texture;
+    winrt::com_ptr<ID3D11ShaderResourceView> view;
+    if (mDevice && SUCCEEDED(mDevice->CreateTexture2D(&desc, &data, texture.put()))
+        && SUCCEEDED(mDevice->CreateShaderResourceView(texture.get(), nullptr, view.put()))) {
+      mThumbnails[window] = std::move(view);
+    }
+  }
+  KeepPainting(TailFrames);
+}
+
 void SettingsWindow::WindowPicker() {
   constexpr const char* Title = "Pick a window";
   if (mOpenPicker) {
@@ -1080,6 +1289,7 @@ void SettingsWindow::WindowPicker() {
     ImGui::OpenPopup(Title);
     mFilter.fill(0);
     mWindows.clear();
+    mThumbnails.clear();
     mPickerSelection = -1;
     StartListing();
   }
@@ -1102,6 +1312,7 @@ void SettingsWindow::WindowPicker() {
   ImGui::BeginDisabled(mListing.Started());
   if (ImGui::Button("Refresh")) {
     mWindows.clear();
+    mThumbnails.clear();
     mPickerSelection = -1;
     StartListing();
   }
@@ -1122,18 +1333,42 @@ void SettingsWindow::WindowPicker() {
       if (!StringUtil::ContainsIgnoreCase(window.mTitle, filter) && !StringUtil::ContainsIgnoreCase(program, filter)) {
         continue;
       }
-      ImGui::TableNextRow();
+      const float thumbHeight = PickerThumbnailHeight * mScale;
+      const float thumbWidth = thumbHeight * 16 / 9;
+      ImGui::TableNextRow(ImGuiTableRowFlags_None, thumbHeight + ImGui::GetStyle().CellPadding.y * 2);
       ImGui::TableNextColumn();
       ImGui::PushID(i);
-      constexpr auto rowFlags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick;
-      if (ImGui::Selectable(Utf8(window.mTitle).c_str(), i == mPickerSelection, rowFlags)) {
+      constexpr auto rowFlags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick
+        | ImGuiSelectableFlags_AllowOverlap;
+      const auto rowTop = ImGui::GetCursorPos();
+      if (ImGui::Selectable("##window", i == mPickerSelection, rowFlags, {0, thumbHeight})) {
         mPickerSelection = i;
         if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
           chosen = i;
         }
       }
+      // Its picture (or an empty frame until it's taken), then its title
+      ImGui::SetCursorPos(rowTop);
+      if (const auto thumbnail = mThumbnails.find(window.mWindow); thumbnail != mThumbnails.end()) {
+        D3D11_TEXTURE2D_DESC desc {};
+        winrt::com_ptr<ID3D11Resource> resource;
+        thumbnail->second->GetResource(resource.put());
+        resource.as<ID3D11Texture2D>()->GetDesc(&desc);
+        const float scale = std::min(thumbWidth / desc.Width, thumbHeight / desc.Height);
+        ImGui::Image(static_cast<ImTextureID>(reinterpret_cast<uintptr_t>(thumbnail->second.get())),
+          {desc.Width * scale, desc.Height * scale});
+      } else {
+        ImGui::Dummy({thumbWidth, thumbHeight});
+        const auto min = ImGui::GetItemRectMin();
+        ImGui::GetWindowDrawList()->AddRect(min, {min.x + thumbWidth, min.y + thumbHeight},
+          ImGui::GetColorU32(ImGuiCol_Border));
+      }
+      ImGui::SetCursorPos({rowTop.x + thumbWidth + ImGui::GetStyle().ItemSpacing.x,
+        rowTop.y + (thumbHeight - ImGui::GetTextLineHeight()) / 2});
+      ImGui::TextUnformatted(Utf8(window.mTitle).c_str());
       ImGui::PopID();
       ImGui::TableNextColumn();
+      ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (thumbHeight - ImGui::GetTextLineHeight()) / 2);
       ImGui::TextDisabled("%s", Utf8(program).c_str());
     }
     ImGui::EndTable();
@@ -1206,6 +1441,109 @@ void SettingsWindow::HandsPage() {
     mPanels.SetHands(hands);
   }
   KeyboardSettingsUi(hands.mEnabled);
+  ImGui::EndChild();
+}
+
+// ---- General: performance, games, startup, about --------------------------------
+
+void SettingsWindow::GeneralPage() {
+  if (!ImGui::BeginChild("general", {0, 0}, ImGuiChildFlags_Borders)) {
+    ImGui::EndChild();
+    return;
+  }
+  ImGui::PushItemWidth(ImGui::GetFontSize() * 14);
+
+  // PN-12
+  ImGui::SeparatorText("Performance");
+  const int current = static_cast<int>(std::lround(mPanels.MaxUpdatesPerSecond()));
+  if (ImGui::BeginCombo("Panels update at most", std::format("{} times a second", current).c_str())) {
+    for (const int rate: PanelManager::UpdateRates) {
+      const auto label = std::format("{} times a second{}", rate, rate == 30 ? " (the default)" : "");
+      if (ImGui::Selectable(label.c_str(), rate == current)) {
+        mPanels.SetMaxUpdatesPerSecond(rate);
+      }
+    }
+    ImGui::EndCombo();
+  }
+  Help("A panel only updates when what it shows changes, and never more often than this. Lower is lighter on your PC; "
+       "30 suits most. A panel can choose fewer (Panels tab).");
+
+  // VR-8: the layer, everywhere or not in some games
+  ImGui::Spacing();
+  ImGui::SeparatorText("Games");
+  auto games = mPanels.Games();
+  bool gamesChanged = ImGui::Checkbox("Use Open Desktop VR in games", &games.mLayerEnabled);
+  Help("Off, games run as if this program weren't installed. Takes effect when a game starts.");
+  ImGui::BeginDisabled(!games.mLayerEnabled);
+  ImGui::TextDisabled("Not in these games (takes effect when they start):");
+  for (std::size_t i = 0; i < games.mDisabledGames.size(); ++i) {
+    ImGui::PushID(static_cast<int>(i));
+    if (ImGui::SmallButton("x")) {
+      games.mDisabledGames.erase(games.mDisabledGames.begin() + static_cast<std::ptrdiff_t>(i));
+      gamesChanged = true;
+      ImGui::PopID();
+      break;
+    }
+    ImGui::SetItemTooltip("Show panels in this game again");
+    ImGui::SameLine();
+    ImGui::TextUnformatted(Utf8(games.mDisabledGames[i]).c_str());
+    ImGui::PopID();
+  }
+  if (games.mDisabledGames.empty()) {
+    ImGui::TextDisabled("None.");
+  }
+  const auto& running = mPanels.AttachedGame();
+  const bool listed = std::ranges::any_of(
+    games.mDisabledGames, [&](const auto& game) { return StringUtil::EqualsIgnoreCase(game, running); });
+  if (!running.empty() && !listed && ImGui::Button(std::format("Not in {} (running now)", Utf8(running)).c_str())) {
+    games.mDisabledGames.push_back(running);
+    gamesChanged = true;
+  }
+  const bool entered = ImGui::InputTextWithHint("##disabledGame", "A game's .exe name", mNewDisabledGame.data(),
+    mNewDisabledGame.size(), ImGuiInputTextFlags_EnterReturnsTrue);
+  ImGui::SameLine();
+  if ((ImGui::Button("Add##disabledGame") || entered) && mNewDisabledGame[0] != '\0') {
+    const auto file = std::filesystem::path {StringUtil::Widen(mNewDisabledGame.data())}.filename().wstring();
+    if (!file.empty()) {
+      games.mDisabledGames.push_back(file);
+      gamesChanged = true;
+    }
+    mNewDisabledGame[0] = '\0';
+  }
+  ImGui::EndDisabled();
+  if (gamesChanged) {
+    mPanels.SetGames(games);
+  }
+
+  // UI-7
+  ImGui::Spacing();
+  ImGui::SeparatorText("Startup");
+  const auto exe = ProcessUtil::ExecutablePath();
+  if (!mStartWithWindows) {
+    mStartWithWindows = Autostart::IsEnabled(exe);
+  }
+  bool start = *mStartWithWindows;
+  if (ImGui::Checkbox("Start with Windows", &start)) {
+    if (Autostart::SetEnabled(start, exe)) {
+      Log::Info("Start with Windows: {}", start ? "on" : "off");
+    } else {
+      Log::Warning("Start with Windows couldn't be turned {}", start ? "on" : "off");
+    }
+    mStartWithWindows = Autostart::IsEnabled(exe);
+  }
+  Help("Starts in the tray when you sign in to Windows, ready before the game.");
+
+  // About
+  ImGui::Spacing();
+  ImGui::SeparatorText("About");
+  ImGui::TextUnformatted(Utf8(Product::DisplayName).c_str());
+  ImGui::TextDisabled("%s", Product::BuildDescription().c_str());
+  ImGui::TextDisabled("Settings and logs: %s", Utf8(Product::DataFolder().wstring()).c_str());
+  if (ImGui::Button("Open the logs folder")) {
+    const auto folder = Product::LogsFolder();
+    ShellExecuteW(mWindow, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  }
+  ImGui::PopItemWidth();
   ImGui::EndChild();
 }
 

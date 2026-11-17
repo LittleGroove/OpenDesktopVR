@@ -39,7 +39,10 @@ struct PanelDefinition {
   bool mFaceOrigin {true};
   float mYawDegrees {0};
   float mPitchDegrees {0};
-  float mWidthMeters {0.36f};// height follows the content's aspect
+  float mWidthMeters {0.36f};// height follows the content's aspect...
+  // ... up to this (PN-14: a box; 0 for none), the width then shrinking to
+  // keep the aspect
+  float mMaxHeightMeters {0};
   double mMaxUpdatesPerSecond {0};// 0 = the global maximum
   Render::Crop mCrop;// trimmed edges in pixels (CT-12)
   // How it looks (PN-4, PN-5), applied when the host draws it (doc 08)
@@ -128,6 +131,15 @@ struct Facing {
   float mPitchDegrees {0};
 };
 Facing FacingOrigin(const float position[3]) noexcept;
+
+// A panel's size in VR for content of `contentWidth` x `contentHeight`
+// pixels: its width, and the height its aspect gives, both shrunk to fit
+// its maximum height if it has one (PN-14)
+struct PanelSize {
+  float mWidth {0};
+  float mHeight {0};
+};
+PanelSize PanelSizeFor(const PanelDefinition& definition, uint32_t contentWidth, uint32_t contentHeight) noexcept;
 
 // Orientation (x, y, z, w) for a definition
 void PanelOrientation(const PanelDefinition& definition, float out[4]) noexcept;

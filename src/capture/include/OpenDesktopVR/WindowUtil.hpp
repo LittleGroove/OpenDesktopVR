@@ -30,6 +30,17 @@ std::optional<WindowInfo> Describe(HWND window) noexcept;
 // Sorted by title.
 std::vector<WindowInfo> ListCaptureCandidates() noexcept;
 
+// A small picture of a window, for the window picker (doc 09): 32-bit BGRA,
+// top row first, opaque
+struct Thumbnail {
+  uint32_t mWidth {0};
+  uint32_t mHeight {0};
+  std::vector<uint8_t> mBgra;
+};
+// Asks the window's app to draw itself (PrintWindow), so never call it from
+// a UI thread. Nothing for a window that's minimized, hung or gone.
+std::optional<Thumbnail> GrabThumbnail(HWND window, uint32_t maxWidth, uint32_t maxHeight) noexcept;
+
 bool IsCloaked(HWND window) noexcept;
 
 // The client area, in the coordinates of a captured frame of this window.

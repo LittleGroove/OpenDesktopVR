@@ -13,6 +13,7 @@ odvr_module(
   ThreadUtil.cpp
   Product.cpp
   ProcessUtil.cpp
+  Autostart.cpp
   DEPS
   odvr::cppwinrt
   shell32

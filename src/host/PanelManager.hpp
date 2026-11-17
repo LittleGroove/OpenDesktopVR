@@ -39,6 +39,7 @@
 
 #include <Windows.h>
 
+#include <array>
 #include <filesystem>
 #include <functional>
 #include <optional>
@@ -103,6 +104,23 @@ class PanelManager {
   }
   void SetKeyboard(const KeyboardSettings& keyboard);
 
+  // PN-12: panels update at most this often ("performance" in settings)
+  double MaxUpdatesPerSecond() const noexcept {
+    return mMaxUpdatesPerSecond;
+  }
+  void SetMaxUpdatesPerSecond(double perSecond);
+  static constexpr std::array<int, 8> UpdateRates {10, 15, 24, 30, 45, 60, 72, 90};
+
+  // The layer in games ("layer" in settings, read by the layer when a game
+  // starts: VR-8)
+  struct GameSettings {
+    bool mLayerEnabled {true};
+    std::vector<std::wstring> mDisabledGames;
+    bool operator==(const GameSettings&) const = default;
+  };
+  GameSettings Games() const;
+  void SetGames(const GameSettings& games);
+
   // Profiles (ADR-038)
   struct ProfileSummary {
     std::string mID;
@@ -166,6 +184,7 @@ class PanelManager {
   std::array<Keybinds::Slots, Keybinds::GlobalActions.size()> mGlobalKeybinds {};
   HandSettings mHands;
   KeyboardSettings mKeyboard;
+  double mMaxUpdatesPerSecond {Panels::DefaultMaxUpdatesPerSecond};
   Events::Event<> mChanged;
   Events::Event<> mAllHidden;
 };

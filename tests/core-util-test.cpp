@@ -6,6 +6,8 @@
 
 #include "check.hpp"
 
+#include <OpenDesktopVR/Autostart.hpp>
+
 #include <OpenDesktopVR/FileUtil.hpp>
 #include <OpenDesktopVR/FrameWakeup.hpp>
 #include <OpenDesktopVR/Product.hpp>
@@ -234,6 +236,19 @@ int main() {
     }
     CloseHandle(timer);
     Check(total / 20 < 5.0, std::format("2 ms waits took {:.2f} ms on average", total / 20));
+  });
+
+  Scenario("Start with Windows: on, off, and only for this program (UI-7), in a test key", [] {
+    // A private key, never the real Run key; removed afterwards
+    const auto parent = std::format(L"Software\\OpenDesktopVR-Test-{}", GetCurrentProcessId());
+    const auto key = parent + L"\\Run";
+    const std::filesystem::path exe {L"C:\\Program Files\\Open Desktop VR\\OpenDesktopVR.exe"};
+    Check(!Autostart::IsEnabled(exe, key.c_str()), "off at first");
+    Check(Autostart::SetEnabled(true, exe, key.c_str()) && Autostart::IsEnabled(exe, key.c_str()), "turned on");
+    Check(!Autostart::IsEnabled(L"C:\\Elsewhere\\OpenDesktopVR.exe", key.c_str()), "another copy of the program isn't it");
+    Check(Autostart::SetEnabled(false, exe, key.c_str()) && !Autostart::IsEnabled(exe, key.c_str()), "turned off");
+    Check(Autostart::SetEnabled(false, exe, key.c_str()), "turning it off again is fine");
+    RegDeleteTreeW(HKEY_CURRENT_USER, parent.c_str());
   });
 
   return Finish();

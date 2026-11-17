@@ -57,6 +57,75 @@ std::optional<WindowInfo> Describe(HWND window) noexcept {
   }
 }
 
+std::optional<Thumbnail> GrabThumbnail(HWND window, uint32_t maxWidth, uint32_t maxHeight) noexcept {
+#ifndef PW_RENDERFULLCONTENT
+  constexpr UINT PW_RENDERFULLCONTENT = 0x00000002;// Windows 8.1 and later
+#endif
+  if (!window || !IsWindow(window) || IsIconic(window) || IsHungAppWindow(window) || maxWidth == 0 || maxHeight == 0) {
+    return std::nullopt;
+  }
+  RECT bounds {};
+  if (!GetWindowRect(window, &bounds)) {
+    return std::nullopt;
+  }
+  const int width = bounds.right - bounds.left;
+  const int height = bounds.bottom - bounds.top;
+  if (width <= 0 || height <= 0 || width > 16384 || height > 16384) {
+    return std::nullopt;
+  }
+  const double scale = std::min({1.0, static_cast<double>(maxWidth) / width, static_cast<double>(maxHeight) / height});
+  const int smallWidth = std::max(1, static_cast<int>(width * scale));
+  const int smallHeight = std::max(1, static_cast<int>(height * scale));
+
+  std::optional<Thumbnail> result;
+  HDC screen = GetDC(nullptr);
+  HDC full = CreateCompatibleDC(screen);
+  HBITMAP fullBitmap = CreateCompatibleBitmap(screen, width, height);
+  HDC smallDC = CreateCompatibleDC(screen);
+  BITMAPINFO info {};
+  info.bmiHeader.biSize = sizeof(info.bmiHeader);
+  info.bmiHeader.biWidth = smallWidth;
+  info.bmiHeader.biHeight = -smallHeight;// top-down
+  info.bmiHeader.biPlanes = 1;
+  info.bmiHeader.biBitCount = 32;
+  info.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HBITMAP smallBitmap = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (full && fullBitmap && smallDC && smallBitmap && bits) {
+    const auto oldFull = SelectObject(full, fullBitmap);
+    const auto oldSmall = SelectObject(smallDC, smallBitmap);
+    if (PrintWindow(window, full, PW_RENDERFULLCONTENT)) {
+      SetStretchBltMode(smallDC, HALFTONE);
+      SetBrushOrgEx(smallDC, 0, 0, nullptr);
+      StretchBlt(smallDC, 0, 0, smallWidth, smallHeight, full, 0, 0, width, height, SRCCOPY);
+      GdiFlush();
+      Thumbnail thumbnail {static_cast<uint32_t>(smallWidth), static_cast<uint32_t>(smallHeight), {}};
+      const auto* source = static_cast<const uint8_t*>(bits);
+      thumbnail.mBgra.assign(source, source + (static_cast<std::size_t>(smallWidth) * smallHeight * 4));
+      for (std::size_t i = 3; i < thumbnail.mBgra.size(); i += 4) {
+        thumbnail.mBgra[i] = 255;// GDI leaves alpha undefined
+      }
+      result = std::move(thumbnail);
+    }
+    SelectObject(full, oldFull);
+    SelectObject(smallDC, oldSmall);
+  }
+  if (smallBitmap) {
+    DeleteObject(smallBitmap);
+  }
+  if (smallDC) {
+    DeleteDC(smallDC);
+  }
+  if (fullBitmap) {
+    DeleteObject(fullBitmap);
+  }
+  if (full) {
+    DeleteDC(full);
+  }
+  ReleaseDC(nullptr, screen);
+  return result;
+}
+
 std::vector<WindowInfo> ListCaptureCandidates() noexcept {
   std::vector<WindowInfo> windows;
   try {
