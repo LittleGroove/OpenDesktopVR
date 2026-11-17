@@ -21,6 +21,10 @@ class InjectingSink final : public PointerSink {
 
   void Pointer(const TouchPanel* panel, const HandInteraction::CursorUpdate& update) override;
 
+  // The stats since the last line, at exit (after the hand thread stopped),
+  // so a session's last minute isn't lost (round 11)
+  void LogLastStats();
+
  private:
   Pointer::Injector& mInjector;
   TimeUtil::PeriodicTimer mStats {std::chrono::seconds(60)};

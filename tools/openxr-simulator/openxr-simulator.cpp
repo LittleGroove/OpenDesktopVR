@@ -30,6 +30,13 @@
 // --bench <s> [hover]: measure the layer's GPU time per frame and what it
 //   hands the runtime to composite, optionally with a pointing hand hovering
 //   in front of the panel. No read-backs.
+// --gestures: with a click log, the rest of doc 11's hand scenarios instead
+//   of the tap script: an angled poke, hold 1 s then drag 40 mm, two-finger
+//   scroll 36 mm, tracking gaps of 300 and 100 ms during drags, reaching
+//   behind the panel, and the hand layer's image wait failing once. Added in
+//   M4c.
+// --depth-order: the host shows overlapping panels at different depths;
+//   every frame's panel layers must be back to front (doc 11). Added in M4c.
 //
 // The click log is from click-target-test, shown in a panel with input
 // enabled; if given, the clicks are checked too.
@@ -57,6 +64,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <optional>
 #include <sstream>
@@ -184,6 +192,26 @@ struct Runtime {
   // each eye's field of view it covers (what the compositor has to blend)
   int mBenchHandFrames {0};
   double mBenchHandCoverage {0};
+
+  // M4c (doc 11, "xrWaitSwapchainImage fails once"): the hand layer's
+  // swapchain, the next wait on it fails once when set, and what followed
+  uint64_t mHandSwapchain {0};
+  bool mFailNextHandWait {false};
+  int mHandWaitFailures {0};
+  int mHandSwapchainsDestroyed {0};
+  int mHandLayerFramesAfterFailure {0};
+  bool mNewHandSwapchainAfterFailure {false};
+  uint64_t mFailedHandSwapchain {0};
+
+  // M4c ("Reach behind a panel"): while set, each hand layer is checked:
+  // the drawn hand must be where the hand is, not moved to the panel's
+  // surface (touch limiting). Distances in the left eye's image, in pixels,
+  // from the drawn hand's middle to the real hand's, and to where touch
+  // limiting would have drawn it.
+  bool mCheckDrawnWhereItIs {false};
+  int mDrawnChecks {0};
+  float mDrawnWorstOffset {0};
+  float mDrawnNearestLimited {1e9f};
 };
 Runtime gRuntime;
 
@@ -228,6 +256,83 @@ RigidPose Relative(const RigidPose& pose, const RigidPose& base) {
     Vector3::Transform(pose.mPosition - base.mPosition, inverse),
     orientation,
   };
+}
+
+// A quad's pose in the world (LOCAL), from the space the layer submitted it
+// in: the game's, which is STAGE with '--stage-offset'. Added in M4c: the
+// script placed hands at the quad's own coordinates, so in STAGE they
+// weren't on the panel.
+RigidPose QuadWorldPose(const XrCompositionLayerQuad& quad) {
+  const auto base = SpacePose(quad.space);
+  const auto& p = quad.pose.position;
+  const auto& o = quad.pose.orientation;
+  const Quaternion local {o.x, o.y, o.z, o.w};
+  Quaternion orientation;
+  DirectX::XMStoreFloat4(
+    &orientation,
+    DirectX::XMQuaternionMultiply(
+      DirectX::XMLoadFloat4(&local),
+      DirectX::XMLoadFloat4(&base.mOrientation)));
+  return {
+    base.mPosition + Vector3::Transform(Vector3 {p.x, p.y, p.z}, base.mOrientation),
+    orientation,
+  };
+}
+
+HandInteraction::Panel WorldPanel(const XrCompositionLayerQuad& quad) {
+  const auto world = QuadWorldPose(quad);
+  return {
+    .mPosition = world.mPosition,
+    .mOrientation = world.mOrientation,
+    .mSize = {quad.size.width, quad.size.height},
+  };
+}
+
+// Where a point in the world falls in the left eye's image, in pixels;
+// nothing if it's behind the eye
+std::optional<std::pair<float, float>> LeftEyePixel(
+  const Vector3& world,
+  const XrFovf& fov,
+  uint32_t width,
+  uint32_t height) {
+  RigidPose eye = HMDPose;
+  eye.mPosition += Vector3::Transform(Vector3 {-IPD / 2, 0, 0}, HMDPose.mOrientation);
+  const auto local = Relative({world, Quaternion::Identity}, eye).mPosition;
+  const float forward = -local.z;
+  if (forward <= 0) {
+    return std::nullopt;
+  }
+  const float tanX = local.x / forward;
+  const float tanY = local.y / forward;
+  return std::pair {
+    (tanX - std::tan(fov.angleLeft))
+      / (std::tan(fov.angleRight) - std::tan(fov.angleLeft)) * width,
+    (std::tan(fov.angleUp) - tanY)
+      / (std::tan(fov.angleUp) - std::tan(fov.angleDown)) * height,
+  };
+}
+
+// The middle of the box around a hand's joints in the left eye's image
+std::optional<std::pair<float, float>> HandMiddle(
+  const HandJoints& hand,
+  const XrFovf& fov,
+  uint32_t width,
+  uint32_t height) {
+  float left = 1e9f;
+  float top = 1e9f;
+  float right = -1e9f;
+  float bottom = -1e9f;
+  for (const auto& joint: hand.mJoints) {
+    const auto pixel = LeftEyePixel(joint.mPosition, fov, width, height);
+    if (!pixel) {
+      return std::nullopt;
+    }
+    left = std::min(left, pixel->first);
+    right = std::max(right, pixel->first);
+    top = std::min(top, pixel->second);
+    bottom = std::max(bottom, pixel->second);
+  }
+  return std::pair {(left + right) / 2, (top + bottom) / 2};
 }
 
 ///// Fake runtime /////
@@ -414,6 +519,9 @@ XRAPI_ATTR XrResult XRAPI_CALL Fake_xrCreateSwapchain(
 }
 
 XRAPI_ATTR XrResult XRAPI_CALL Fake_xrDestroySwapchain(XrSwapchain swapchain) {
+  if (FromHandle(swapchain) == gRuntime.mHandSwapchain) {
+    ++gRuntime.mHandSwapchainsDestroyed;
+  }
   gRuntime.mSwapchains.erase(FromHandle(swapchain));
   return XR_SUCCESS;
 }
@@ -454,7 +562,14 @@ XRAPI_ATTR XrResult XRAPI_CALL Fake_xrAcquireSwapchainImage(
 }
 
 XRAPI_ATTR XrResult XRAPI_CALL
-Fake_xrWaitSwapchainImage(XrSwapchain, const XrSwapchainImageWaitInfo*) {
+Fake_xrWaitSwapchainImage(XrSwapchain swapchain, const XrSwapchainImageWaitInfo*) {
+  if (gRuntime.mFailNextHandWait && gRuntime.mHandSwapchain != 0
+      && FromHandle(swapchain) == gRuntime.mHandSwapchain) {
+    gRuntime.mFailNextHandWait = false;
+    ++gRuntime.mHandWaitFailures;
+    gRuntime.mFailedHandSwapchain = gRuntime.mHandSwapchain;
+    return XR_ERROR_RUNTIME_FAILURE;
+  }
   return XR_SUCCESS;
 }
 
@@ -588,27 +703,47 @@ void InspectHandLayer(const XrCompositionLayerProjection& layer) {
   // Where the right index fingertip really is, in the left eye's image
   // (world space, so a wrong space transform shows up here; XR-12)
   if (gRuntime.mCheckHandPlacement && gRuntime.mHands[1].mIsTracked) {
-    RigidPose eye = HMDPose;
-    eye.mPosition += Vector3::Transform(Vector3 {-IPD / 2, 0, 0}, HMDPose.mOrientation);
-    const auto tip = Relative(
-      {gRuntime.mHands[1][Joint::IndexTip].mPosition, Quaternion::Identity}, eye);
-    const auto& fov = view.fov;
-    const float forward = -tip.mPosition.z;
+    const auto tip = LeftEyePixel(
+      gRuntime.mHands[1][Joint::IndexTip].mPosition, view.fov, width, height);
     ++gRuntime.mHandPlacementChecks;
     bool inside = false;
-    if (forward > 0 && right >= 0) {
-      const float tanX = tip.mPosition.x / forward;
-      const float tanY = tip.mPosition.y / forward;
-      const float px = (tanX - std::tan(fov.angleLeft))
-        / (std::tan(fov.angleRight) - std::tan(fov.angleLeft)) * width;
-      const float py = (std::tan(fov.angleUp) - tanY)
-        / (std::tan(fov.angleUp) - std::tan(fov.angleDown)) * height;
+    if (tip && right >= 0) {
+      const auto [px, py] = *tip;
       constexpr float margin = 10;
       inside = px >= left - margin && px <= right + margin && py >= top - margin
         && py <= bottom + margin;
     }
     if (!inside) {
       ++gRuntime.mHandPlacementMisses;
+    }
+  }
+
+  // Reaching behind a panel: drawn where the hand is, not pushed back out
+  // to the panel's surface as a fingertip pressing it would be
+  if (
+    gRuntime.mCheckDrawnWhereItIs && gRuntime.mHands[1].mIsTracked && right >= 0
+    && gRuntime.mQuad) {
+    const auto& hand = gRuntime.mHands[1];
+    const auto panel = WorldPanel(*gRuntime.mQuad);
+    const auto& tip = hand[Joint::IndexTip];
+    const auto onPanel
+      = HandInteraction::ProjectOntoPanel(tip.mPosition, panel, HMDPose.mPosition);
+    auto limited = hand;
+    const float shift = tip.mRadius - onPanel.mDistance;
+    for (auto& joint: limited.mJoints) {
+      joint.mPosition += onPanel.mFrontNormal * shift;
+    }
+    const auto real = HandMiddle(hand, view.fov, width, height);
+    const auto pushed = HandMiddle(limited, view.fov, width, height);
+    if (real && pushed) {
+      const float x = static_cast<float>(left + right) / 2;
+      const float y = static_cast<float>(top + bottom) / 2;
+      ++gRuntime.mDrawnChecks;
+      gRuntime.mDrawnWorstOffset = std::max(
+        gRuntime.mDrawnWorstOffset, std::hypot(x - real->first, y - real->second));
+      gRuntime.mDrawnNearestLimited = std::min(
+        gRuntime.mDrawnNearestLimited,
+        std::hypot(x - pushed->first, y - pushed->second));
     }
   }
 
@@ -793,13 +928,8 @@ Fake_xrEndFrame(XrSession, const XrFrameEndInfo* info) {
       ++quads;
       const auto& quad
         = *reinterpret_cast<const XrCompositionLayerQuad*>(info->layers[i]);
-      const HandInteraction::Panel panel {
-        .mPosition = {quad.pose.position.x, quad.pose.position.y, quad.pose.position.z},
-        .mOrientation = {quad.pose.orientation.x, quad.pose.orientation.y, quad.pose.orientation.z, quad.pose.orientation.w},
-        .mSize = {quad.size.width, quad.size.height},
-      };
       const auto distance
-        = HandInteraction::DistanceToPanel(HMDPose.mPosition, panel);
+        = HandInteraction::DistanceToPanel(HMDPose.mPosition, WorldPanel(quad));
       if (previous && distance > *previous + 0.001f) {
         outOfOrder = true;
       }
@@ -840,6 +970,13 @@ Fake_xrEndFrame(XrSession, const XrFrameEndInfo* info) {
       if (gRuntime.mSwapchains.contains(
             FromHandle(projection.views[0].subImage.swapchain))) {
         gRuntime.mHandLayerThisFrame = true;
+        const auto handle = FromHandle(projection.views[0].subImage.swapchain);
+        if (gRuntime.mFailedHandSwapchain != 0) {
+          ++gRuntime.mHandLayerFramesAfterFailure;
+          gRuntime.mNewHandSwapchainAfterFailure
+            |= handle != gRuntime.mFailedHandSwapchain;
+        }
+        gRuntime.mHandSwapchain = handle;
         // Virtual Desktop (VDXR) applies one projection layer's field of view
         // to the others, so the hand layer must use exactly the game's, over
         // its whole image
@@ -1026,10 +1163,10 @@ Vector3 OnPanel(
   float distance,
   Vector3* normalOut = nullptr,
   Vector3* upOut = nullptr) {
-  const auto& o = quad.pose.orientation;
-  const Quaternion orientation {o.x, o.y, o.z, o.w};
-  const Vector3 center {
-    quad.pose.position.x, quad.pose.position.y, quad.pose.position.z};
+  // In the world, wherever the game's space is
+  const auto world = QuadWorldPose(quad);
+  const auto& orientation = world.mOrientation;
+  const Vector3 center = world.mPosition;
   const auto right = Vector3::Transform(Vector3::UnitX, orientation);
   const auto up = Vector3::Transform(Vector3::UnitY, orientation);
   auto normal = Vector3::Transform(Vector3::UnitZ, orientation);
@@ -1124,6 +1261,154 @@ void ScriptHands(Step step, double progress, const XrCompositionLayerQuad& quad)
   }
 }
 
+///// '--gestures': the rest of doc 11's hand scenarios (added in M4c) /////
+
+enum class Scenario {
+  AngledPoke,
+  HoldDrag,
+  Scroll,
+  Gap300,
+  Gap100,
+  ReachBehind,
+  End,
+};
+
+struct GestureStep {
+  const char* mName;
+  Scenario mScenario;
+  double mSeconds;
+  // The right hand at `t` (0 to 1) through the step; untracked if not there
+  std::function<HandJoints(float t, const XrCompositionLayerQuad& quad)> mHand;
+  // The hand layer's next image wait fails once, as the step starts
+  bool mFailHandWait {false};
+  // The drawn hand is checked: where the hand is, not limited to the panel
+  bool mCheckDrawn {false};
+};
+
+// The angled poke comes in at about 39 degrees off straight (a slope of
+// 0.8, as the imported test's), moving down the panel, and meets it here
+constexpr float AngledU = 0.5f;
+constexpr float AngledV = 0.55f;
+constexpr float AngledSlope = 0.8f;
+// How far the two-finger scroll drags. Doc 11's 36 mm is exactly 3 notches
+// of 12 mm, and only whole notches are sent, so it gave 2 or 3 depending on
+// rounding; half a millimetre past it gives 3 (measured in M4c: filtering
+// loses under 0.5 mm of the drag)
+constexpr float ScrollMeters = 0.0365f;
+
+std::vector<GestureStep> GestureSteps() {
+  const auto lerp = [](float a, float b, float t) { return a + ((b - a) * t); };
+  // On the line that meets the panel at the aimed point, `d` in front
+  const auto angled = [](float d, const XrCompositionLayerQuad& q) {
+    return HandAt(Pose::Point, q, AngledU, AngledV - (AngledSlope * d / q.size.height), d);
+  };
+  const auto point = [](float u, float v, float d) {
+    return [=](float, const XrCompositionLayerQuad& q) { return HandAt(Pose::Point, q, u, v, d); };
+  };
+  const auto lost = [](float, const XrCompositionLayerQuad&) { return HandJoints {}; };
+  // A drag with a tracking gap in it: poke at (u, v), drag 20 mm right,
+  // lose tracking for `gap` seconds, come back still touching, pull back
+  const auto gapDrag = [&](Scenario scenario, float u, float v, double gap) {
+    const auto dragged = [=](const XrCompositionLayerQuad& q) { return u + (0.020f / q.size.width); };
+    return std::vector<GestureStep> {
+      {"hovering in front", scenario, 0.5, point(u, v, 0.08f)},
+      {"poking in", scenario, 0.3,
+        [=](float t, const auto& q) { return HandAt(Pose::Point, q, u, v, lerp(0.08f, -0.005f, t)); }},
+      {"dragging 20 mm right", scenario, 0.4,
+        [=](float t, const auto& q) { return HandAt(Pose::Point, q, lerp(u, dragged(q), t), v, -0.005f); }},
+      {gap > 0.2 ? "tracking lost for 300 ms" : "tracking lost for 100 ms", scenario, gap, lost},
+      {"back, still touching", scenario, 0.3,
+        [=](float, const auto& q) { return HandAt(Pose::Point, q, dragged(q), v, -0.005f); }},
+      {"pulling back", scenario, 0.3,
+        [=](float t, const auto& q) { return HandAt(Pose::Point, q, dragged(q), v, lerp(-0.005f, 0.08f, t)); }},
+    };
+  };
+
+  std::vector<GestureStep> steps {
+    // Angled poke (doc 11): the click within 1 mm of where the finger meets
+    // the panel
+    {"angled poke: hovering on its line, 8 cm out", Scenario::AngledPoke, 0.6,
+      [=](float, const auto& q) { return angled(0.08f, q); }},
+    {"angled poke: in along it to 1 cm through", Scenario::AngledPoke, 0.4,
+      [=](float t, const auto& q) { return angled(lerp(0.08f, -0.01f, t), q); }},
+    {"angled poke: back out the way it came", Scenario::AngledPoke, 0.3,
+      [=](float t, const auto& q) { return angled(lerp(-0.01f, 0.08f, t), q); }},
+    // Hold 1 s, then drag 40 mm: one down, moves, one up, no early release.
+    // The hand layer's image wait fails once while hovering (XR-15)
+    {"hold and drag: hovering in front (the hand layer's next image wait fails)", Scenario::HoldDrag, 0.6,
+      point(0.3f, 0.45f, 0.08f), true},
+    {"hold and drag: poking in", Scenario::HoldDrag, 0.3,
+      [=](float t, const auto& q) { return HandAt(Pose::Point, q, 0.3f, 0.45f, lerp(0.08f, -0.005f, t)); }},
+    {"hold and drag: holding still for 1 s", Scenario::HoldDrag, 1.0, point(0.3f, 0.45f, -0.005f)},
+    {"hold and drag: dragging 40 mm right", Scenario::HoldDrag, 0.8,
+      [=](float t, const auto& q) {
+        return HandAt(Pose::Point, q, lerp(0.3f, 0.3f + (0.040f / q.size.width), t), 0.45f, -0.005f);
+      }},
+    {"hold and drag: holding at the end", Scenario::HoldDrag, 0.2,
+      [=](float, const auto& q) { return HandAt(Pose::Point, q, 0.3f + (0.040f / q.size.width), 0.45f, -0.005f); }},
+    {"hold and drag: pulling back", Scenario::HoldDrag, 0.3,
+      [=](float t, const auto& q) {
+        return HandAt(Pose::Point, q, 0.3f + (0.040f / q.size.width), 0.45f, lerp(-0.005f, 0.08f, t));
+      }},
+    // Two-finger scroll down 36 mm: 3 wheel notches, natural direction
+    {"scroll: two fingers out, in front", Scenario::Scroll, 0.5,
+      [=](float, const auto& q) { return HandAt(Pose::TwoFingers, q, 0.5f, 0.3f, 0.08f); }},
+    {"scroll: two fingers touching", Scenario::Scroll, 0.3,
+      [=](float t, const auto& q) { return HandAt(Pose::TwoFingers, q, 0.5f, 0.3f, lerp(0.08f, -0.005f, t)); }},
+    {"scroll: dragging down 36.5 mm", Scenario::Scroll, 0.7,
+      [=](float t, const auto& q) {
+        return HandAt(Pose::TwoFingers, q, 0.5f, lerp(0.3f, 0.3f + (ScrollMeters / q.size.height), t), -0.005f);
+      }},
+    {"scroll: holding", Scenario::Scroll, 0.15,
+      [=](float, const auto& q) { return HandAt(Pose::TwoFingers, q, 0.5f, 0.3f + (ScrollMeters / q.size.height), -0.005f); }},
+    {"scroll: pulling back", Scenario::Scroll, 0.3,
+      [=](float t, const auto& q) {
+        return HandAt(Pose::TwoFingers, q, 0.5f, 0.3f + (ScrollMeters / q.size.height), lerp(-0.005f, 0.08f, t));
+      }},
+  };
+  for (auto step: gapDrag(Scenario::Gap300, 0.25f, 0.75f, 0.3)) {
+    steps.push_back(step);
+  }
+  for (auto step: gapDrag(Scenario::Gap100, 0.6f, 0.75f, 0.1)) {
+    steps.push_back(step);
+  }
+  // Reach behind a panel: 0 clicks; drawn where it is (more than 8 cm
+  // behind: not touch-limited)
+  constexpr float behind = -0.12f;
+  steps.insert(steps.end(), {
+    {"reach behind: beside the panel, 12 cm behind it", Scenario::ReachBehind, 0.4, point(-0.35f, 0.5f, behind)},
+    {"reach behind: sliding in behind the panel", Scenario::ReachBehind, 0.6,
+      [=](float t, const auto& q) { return HandAt(Pose::Point, q, lerp(-0.35f, 0.5f, t), 0.5f, behind); }},
+    {"reach behind: behind the panel", Scenario::ReachBehind, 0.5, point(0.5f, 0.5f, behind), false, true},
+    {"reach behind: sliding out", Scenario::ReachBehind, 0.6,
+      [=](float t, const auto& q) { return HandAt(Pose::Point, q, lerp(0.5f, 1.35f, t), 0.5f, behind); }},
+    {"done", Scenario::End, 0.8, lost},
+  });
+  return steps;
+}
+
+// A click-target log line with a time: "DOWN x y t", "UP x y t", "DOUBLE x y t"
+struct Click {
+  std::string mKind;
+  double mX {};
+  double mY {};
+  double mAt {};
+};
+
+std::vector<Click> TimedClicks(const std::vector<std::string>& lines) {
+  std::vector<Click> clicks;
+  for (const auto& line: lines) {
+    std::istringstream fields(line);
+    Click click;
+    if (
+      (line.starts_with("DOWN ") || line.starts_with("UP ") || line.starts_with("DOUBLE "))
+      && (fields >> click.mKind >> click.mX >> click.mY >> click.mAt)) {
+      clicks.push_back(click);
+    }
+  }
+  return clicks;
+}
+
 std::vector<std::string> ReadLines(const std::filesystem::path& path) {
   std::vector<std::string> lines;
   std::ifstream f(path);
@@ -1145,6 +1430,8 @@ int main(int rawArgc, char** rawArgv) {
   // Named options can go anywhere; what's left is positional
   std::string negotiateExport {"xrNegotiateLoaderApiLayerInterface"};
   std::string layerName {"XR_APILAYER_TEST_layer"};
+  bool gestures = false;
+  bool depthOrder = false;
   std::vector<char*> positional;
   for (int i = 0; i < rawArgc; ++i) {
     const std::string_view arg {rawArgv[i]};
@@ -1162,6 +1449,10 @@ int main(int rawArgc, char** rawArgv) {
         {0.4f, -1.1f, 0.7f},
         Quaternion::CreateFromAxisAngle(Vector3::UnitY, 0.6f),
       };
+    } else if (arg == "--gestures") {
+      gestures = true;
+    } else if (arg == "--depth-order") {
+      depthOrder = true;
     } else {
       positional.push_back(rawArgv[i]);
     }
@@ -1172,7 +1463,7 @@ int main(int rawArgc, char** rawArgv) {
     std::printf(
       "Usage: openxr-simulator [--negotiate-export <name>] "
       "[--layer-name <name>] [--early-lookups-fail] [--no-hand-tracking] "
-      "[--stage-offset] "
+      "[--stage-offset] [--gestures] [--depth-order] "
       "<layer DLL> <output folder> "
       "[click log | --watch <s> | --type-keys ... | --bench <s> [hover]]\n");
     return 1;
@@ -1673,6 +1964,259 @@ int main(int rawArgc, char** rawArgv) {
     return 0;
   }
 
+  if (gestures) {
+    if (!clickLog) {
+      std::printf("FAIL: --gestures needs click-target's log\n");
+      return 1;
+    }
+    const auto steps = GestureSteps();
+    std::vector<double> stepStarts(steps.size(), 0);
+    std::printf(
+      "Running the M4c gestures; the host app must show click-target in a "
+      "panel\n");
+    using Clock = std::chrono::steady_clock;
+    const auto start = Clock::now();
+    std::optional<Clock::time_point> scriptStart;
+    std::size_t current = steps.size();
+    std::optional<XrCompositionLayerQuad> panel;
+    // The panel first shows at a provisional size while the window's first
+    // frame arrives: start once its size has held for half a second
+    std::optional<Clock::time_point> sizeSince;
+    XrExtent2Df lastSize {};
+    while (true) {
+      const auto now = Clock::now();
+      if (gRuntime.mQuad && !scriptStart) {
+        const auto size = gRuntime.mQuad->size;
+        if (!sizeSince || size.width != lastSize.width || size.height != lastSize.height) {
+          sizeSince = now;
+          lastSize = size;
+        } else if (now - *sizeSince > std::chrono::milliseconds(500)) {
+          scriptStart = now;
+          std::printf(
+            "Panel %.3fm x %.3fm; click-target is 800 x 600\n",
+            size.width,
+            size.height);
+        }
+      }
+      if (gRuntime.mQuad) {
+        panel = gRuntime.mQuad;
+      }
+      if (
+        !scriptStart
+        && std::chrono::duration<double>(now - start).count() > 15) {
+        std::printf(
+          "FAIL: no settled panel after 15 seconds; is the host app showing "
+          "click-target?\n");
+        return 1;
+      }
+      gRuntime.mHands = {};
+      if (scriptStart) {
+        const double t = std::chrono::duration<double>(now - *scriptStart).count();
+        std::size_t index = 0;
+        double stepStart = 0;
+        while (index < steps.size() && t >= stepStart + steps[index].mSeconds) {
+          stepStart += steps[index].mSeconds;
+          ++index;
+        }
+        if (index >= steps.size()) {
+          break;
+        }
+        const auto& step = steps[index];
+        if (index != current) {
+          current = index;
+          stepStarts[index] = NowMilliseconds();
+          std::printf("  ... %s\n", step.mName);
+          if (step.mFailHandWait) {
+            gRuntime.mFailNextHandWait = true;
+          }
+        }
+        gRuntime.mCheckDrawnWhereItIs = step.mCheckDrawn;
+        gRuntime.mHands[1] = step.mHand(
+          static_cast<float>((t - stepStart) / step.mSeconds), *panel);
+      }
+      const XrFrameEndInfo frameEndInfo {
+        .type = XR_TYPE_FRAME_END_INFO,
+        .displayTime
+        = std::chrono::duration_cast<std::chrono::nanoseconds>(now - start).count()
+          + 1'000'000'000,
+        .environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE,
+        .layerCount = 1,
+        .layers = &gameLayerHeader,
+      };
+      layerEndFrame(session, &frameEndInfo);
+      std::this_thread::sleep_until(now + std::chrono::microseconds(11111));
+    }
+    gRuntime.mCheckDrawnWhereItIs = false;
+    // Give the app time to deliver the last events
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    layerDestroySession(session);
+    layerDestroyInstance(instance);
+
+    // Each scenario's clicks: from its first step to the next scenario's
+    const auto lines = ReadLines(*clickLog);
+    const auto clicks = TimedClicks(lines);
+    const auto startOf = [&](Scenario scenario) {
+      for (std::size_t i = 0; i < steps.size(); ++i) {
+        if (steps[i].mScenario == scenario) {
+          return stepStarts[i];
+        }
+      }
+      return 1e300;
+    };
+    const auto stepStartOf = [&](Scenario scenario, std::string_view name) {
+      for (std::size_t i = 0; i < steps.size(); ++i) {
+        if (steps[i].mScenario == scenario && std::string_view {steps[i].mName}.contains(name)) {
+          return stepStarts[i];
+        }
+      }
+      return 1e300;
+    };
+    const auto during = [&](Scenario scenario, std::string_view kind) {
+      const double from = startOf(scenario);
+      const double to = startOf(static_cast<Scenario>(static_cast<int>(scenario) + 1));
+      std::vector<Click> found;
+      for (const auto& click: clicks) {
+        if (click.mKind == kind && click.mAt >= from && click.mAt < to) {
+          found.push_back(click);
+        }
+      }
+      return found;
+    };
+    const float metersPerPixel = panel->size.width / 800.0f;
+
+    std::printf("\nResults\n");
+    {
+      const auto downs = during(Scenario::AngledPoke, "DOWN");
+      const auto ups = during(Scenario::AngledPoke, "UP");
+      checks.Check(
+        downs.size() == 1 && ups.size() == 1,
+        std::format("angled poke: one click ({} down, {} up)", downs.size(), ups.size()));
+      if (!downs.empty()) {
+        const double aimedX = AngledU * 800;
+        const double aimedY = AngledV * 600;
+        const double missMm
+          = std::hypot(downs[0].mX - aimedX, downs[0].mY - aimedY) * metersPerPixel * 1000;
+        checks.Check(
+          missMm <= 1.0,
+          std::format(
+            "angled poke: the click is {:.2f} mm from where the finger met the "
+            "panel, at ({}, {}) for ({}, {}) (gate: 1 mm)",
+            missMm, downs[0].mX, downs[0].mY, aimedX, aimedY));
+      }
+    }
+    {
+      const auto downs = during(Scenario::HoldDrag, "DOWN");
+      const auto ups = during(Scenario::HoldDrag, "UP");
+      checks.Check(
+        downs.size() == 1 && ups.size() == 1,
+        std::format("hold 1 s then drag 40 mm: one down, one up ({} down, {} up)", downs.size(), ups.size()));
+      if (downs.size() == 1 && ups.size() == 1) {
+        const double dragEnded = stepStartOf(Scenario::HoldDrag, "holding at the end");
+        checks.Check(
+          ups[0].mAt >= dragEnded,
+          std::format(
+            "hold and drag: no early release (up {:.0f} ms after the drag ended)",
+            ups[0].mAt - dragEnded));
+        const double draggedMm = (ups[0].mX - downs[0].mX) * metersPerPixel * 1000;
+        checks.Check(
+          std::abs(draggedMm - 40) <= 4 && std::abs(ups[0].mY - downs[0].mY) * metersPerPixel * 1000 <= 2,
+          std::format("hold and drag: let go {:.1f} mm right of the press (40 mm, within 4)", draggedMm));
+        // click-target writes the moves since the last button before each
+        // one: those before this release came while it was held
+        int dragMoves = 0;
+        for (std::size_t i = 1; i < lines.size(); ++i) {
+          const auto release = TimedClicks({lines[i]});
+          if (
+            !release.empty() && release[0].mKind == "UP"
+            && std::abs(release[0].mAt - ups[0].mAt) < 0.01
+            && lines[i - 1].starts_with("MOVES ")) {
+            dragMoves = std::atoi(lines[i - 1].c_str() + 6);
+          }
+        }
+        checks.Check(dragMoves >= 5, std::format("hold and drag: moves while held ({})", dragMoves));
+      }
+    }
+    {
+      int wheelTotal = 0;
+      for (const auto& line: lines) {
+        if (line.starts_with("WHEEL ")) {
+          wheelTotal += std::atoi(line.c_str() + 6);
+        }
+      }
+      checks.Check(
+        wheelTotal == 360,
+        std::format(
+          "scroll: two fingers down 36.5 mm turned the wheel 3 notches up, the "
+          "natural way ({} notches)",
+          wheelTotal / 120.0));
+      checks.Check(
+        during(Scenario::Scroll, "DOWN").empty(),
+        "scroll: no click");
+    }
+    {
+      const auto downs = during(Scenario::Gap300, "DOWN");
+      const auto ups = during(Scenario::Gap300, "UP");
+      const double lostAt = stepStartOf(Scenario::Gap300, "tracking lost");
+      const double backAt = stepStartOf(Scenario::Gap300, "back, still");
+      checks.Check(
+        downs.size() == 1 && ups.size() == 1,
+        std::format("300 ms tracking gap during a drag: released once, no click on return ({} down, {} up)", downs.size(), ups.size()));
+      if (ups.size() == 1) {
+        checks.Check(
+          ups[0].mAt > lostAt + 200 && ups[0].mAt < backAt + 50,
+          std::format("300 ms gap: released {:.0f} ms into it (after 250 ms)", ups[0].mAt - lostAt));
+      }
+    }
+    {
+      const auto downs = during(Scenario::Gap100, "DOWN");
+      const auto ups = during(Scenario::Gap100, "UP");
+      const double pulledAt = stepStartOf(Scenario::Gap100, "pulling back");
+      checks.Check(
+        downs.size() == 1 && ups.size() == 1 && ups[0].mAt >= pulledAt,
+        std::format(
+          "100 ms tracking gap during a drag: the drag continued, released only "
+          "when pulled back ({} down, {} up)",
+          downs.size(), ups.size()));
+    }
+    {
+      checks.Check(
+        during(Scenario::ReachBehind, "DOWN").empty() && during(Scenario::ReachBehind, "UP").empty(),
+        "reach behind the panel: no clicks");
+      checks.Check(
+        gRuntime.mDrawnChecks > 5 && gRuntime.mDrawnWorstOffset <= 15
+          && gRuntime.mDrawnNearestLimited > 2 * gRuntime.mDrawnWorstOffset,
+        std::format(
+          "reach behind: drawn where the hand is, not pushed to the panel's "
+          "surface ({} frames: at most {:.1f} px from the hand; touch "
+          "limiting would put it {:.0f} px away)",
+          gRuntime.mDrawnChecks,
+          gRuntime.mDrawnWorstOffset,
+          gRuntime.mDrawnNearestLimited));
+    }
+    checks.Check(
+      gRuntime.mHandWaitFailures == 1 && gRuntime.mHandSwapchainsDestroyed >= 1
+        && gRuntime.mNewHandSwapchainAfterFailure && gRuntime.mHandLayerFramesAfterFailure > 10,
+      std::format(
+        "the hand layer's image wait failed once: its swapchain was re-created "
+        "and drawing resumed ({} failed, {} destroyed, {} hand layer frames "
+        "after, on a new swapchain: {})",
+        gRuntime.mHandWaitFailures,
+        gRuntime.mHandSwapchainsDestroyed,
+        gRuntime.mHandLayerFramesAfterFailure,
+        gRuntime.mNewHandSwapchainAfterFailure ? "yes" : "no"));
+    checks.Check(
+      gRuntime.mHandLayerViewMismatches == 0,
+      std::format(
+        "the hand layer always used the game's own views ({} frames didn't)",
+        gRuntime.mHandLayerViewMismatches));
+    checks.Check(CountPrefix(lines, "DOUBLE") == 0, "no double-clicks");
+    std::printf(
+      "\n%s (%d failed)\n",
+      checks.mFailures == 0 ? "PASSED" : "FAILED",
+      checks.mFailures);
+    return checks.mFailures == 0 ? 0 : 1;
+  }
+
   std::printf(
     "Running the script; the host app must be running with a panel in VR\n");
   using Clock = std::chrono::steady_clock;
@@ -1814,6 +2358,15 @@ int main(int rawArgc, char** rawArgv) {
       "the hand layer always uses the game's own eye poses and field of view, "
       "over its whole image ({} frames didn't)",
       gRuntime.mHandLayerViewMismatches));
+  if (depthOrder) {
+    checks.Check(
+      gRuntime.mFramesWithMultipleQuads > 100 && gRuntime.mFramesOutOfOrder == 0,
+      std::format(
+        "overlapping panels at different depths, given nearest first: back "
+        "to front in every frame ({} of {} frames weren't)",
+        gRuntime.mFramesOutOfOrder,
+        gRuntime.mFramesWithMultipleQuads));
+  }
 
   if (clickLog) {
     // Give the app time to deliver the last events
@@ -1832,6 +2385,14 @@ int main(int rawArgc, char** rawArgv) {
       if (line.starts_with("DOWN")) {
         std::printf("  click target: %s (window is 800x600)\n", line.c_str());
       }
+    }
+    // At the aimed point (doc 11; in STAGE too: "taps still land on target")
+    if (const auto clicks = TimedClicks(lines); !clicks.empty() && clicks[0].mKind == "DOWN" && gRuntime.mQuad) {
+      const double missMm = std::hypot(clicks[0].mX - (TargetU * 800), clicks[0].mY - (TargetV * 600))
+        * gRuntime.mQuad->size.width / 800 * 1000;
+      checks.Check(
+        missMm <= 2.0,
+        std::format("the click landed {:.2f} mm from the point aimed at (within 2 mm)", missMm));
     }
     checks.Check(
       CountPrefix(lines, "MOVES") > 0, "the cursor moved over the window");

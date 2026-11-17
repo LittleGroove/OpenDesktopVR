@@ -29,7 +29,14 @@
 //   destroying the injector posts any release still held (INJ-4).
 // - **Double taps** on a window that wants double-clicks (CS_DBLCLKS) send
 //   WM_LBUTTONDBLCLK, at the first tap's point: sent messages never become
-//   double-clicks by themselves.
+//   double-clicks by themselves. A second tap counts if it starts within the
+//   double-click time of the first one's *lift* and lands within 15 mm of it
+//   on the panel; the first must have been a tap (lifted within that time,
+//   without sliding). Decided on the hand thread, from the finger's own
+//   timing (ADR-034, amended after round 11: finger taps are held 110-250 ms
+//   and land 10-20 px apart, so a mouse's rule missed most of them).
+// - **Logs** name the app: a message that timed out, the app not
+//   responding, and when it answers again (with what was skipped).
 #pragma once
 
 #include <OpenDesktopVR/HandInteraction.hpp>
@@ -49,20 +56,27 @@ struct Target {
   // size, in the captured frame's pixels
   RECT mShown {};
   SIZE mClient {};
+  // The panel's size in VR, in meters (0: unknown), for finger distances
+  float mWidthMeters {0};
+  float mHeightMeters {0};
 };
 
 struct Options {
   std::chrono::milliseconds mTimeout {250};
   double mHoverPerSecond {30};
   std::size_t mQueueCapacity {256};
-  // A second tap this close (pixels, each way) and this soon is a double
-  // tap; fingers land a few pixels apart, so wider than a mouse's
+  // A second tap this close to the first (each way, on the panel) is a
+  // double tap, if it also starts soon enough after the first one's lift.
+  // About a fingertip: fingers land 5-10 mm apart (round 11)
+  float mDoubleTapMillimeters {15};
+  // The same in the panel's pixels, if its size isn't known
   int mDoubleTapPixels {16};
 };
 
 struct Stats {
   uint64_t mPresses {0};
   uint64_t mDoubleClicks {0};
+  uint64_t mSkippedPresses {0};// of mSkippedHung: presses (taps that didn't land)
   uint64_t mReleases {0};
   uint64_t mMoves {0};
   uint64_t mMovesMerged {0};

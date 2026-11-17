@@ -68,6 +68,34 @@ add_test(
     -- $<TARGET_FILE:openxr-simulator> ${ODVR_SIM_ARGS} ${ODVR_SIM_OUT}/click ${ODVR_SIM_OUT}/click/click-target.log
 )
 set_tests_properties(sim-click PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL" PASS_REGULAR_EXPRESSION "PASSED" TIMEOUT 200)
+# M4c: the same in STAGE, offset from LOCAL: taps still land where aimed
+add_test(
+  NAME sim-click-stage
+  COMMAND with-host --also $<TARGET_FILE:click-target> ${ODVR_SIM_OUT}/click-stage/click-target.log
+    $<TARGET_FILE:OpenDesktopVR> --window "Click Target"
+    -- $<TARGET_FILE:openxr-simulator> --stage-offset ${ODVR_SIM_ARGS} ${ODVR_SIM_OUT}/click-stage
+      ${ODVR_SIM_OUT}/click-stage/click-target.log
+)
+set_tests_properties(sim-click-stage PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL" PASS_REGULAR_EXPRESSION "PASSED" TIMEOUT 200)
+# M4c: the rest of doc 11's hand scenarios: an angled poke, hold then drag
+# 40 mm, scroll 36 mm, tracking gaps of 300 and 100 ms in a drag, reaching
+# behind the panel, the hand layer's image wait failing once
+add_test(
+  NAME sim-gestures
+  COMMAND with-host --also $<TARGET_FILE:click-target> ${ODVR_SIM_OUT}/gestures/click-target.log
+    $<TARGET_FILE:OpenDesktopVR> --window "Click Target"
+    -- $<TARGET_FILE:openxr-simulator> --gestures ${ODVR_SIM_ARGS} ${ODVR_SIM_OUT}/gestures
+      ${ODVR_SIM_OUT}/gestures/click-target.log
+)
+set_tests_properties(sim-gestures PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL" PASS_REGULAR_EXPRESSION "PASSED" TIMEOUT 200)
+# M4c: two panels overlapping in depth, given nearest first: back to front in
+# every frame
+add_test(
+  NAME sim-depth-order
+  COMMAND with-host $<TARGET_FILE:OpenDesktopVR> --overlapping-panels
+    -- $<TARGET_FILE:openxr-simulator> --depth-order ${ODVR_SIM_ARGS} ${ODVR_SIM_OUT}/depth-order
+)
+set_tests_properties(sim-depth-order PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL" PASS_REGULAR_EXPRESSION "PASSED" TIMEOUT 200)
 
 # The real layer DLL against a minimal fake runtime (WARP; runs without a GPU)
 odvr_executable(layer-dll-test SOURCES layer-dll-test.cpp DEPS odvr::core odvr::openxr_headers odvr::cppwinrt d3d11)

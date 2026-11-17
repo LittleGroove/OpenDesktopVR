@@ -4,6 +4,8 @@
 #include <OpenDesktopVR/AppHelperProtocol.hpp>
 #include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/PointerInjector.hpp>
+#include <OpenDesktopVR/ProcessUtil.hpp>
+#include <OpenDesktopVR/StringUtil.hpp>
 #include <OpenDesktopVR/ThreadUtil.hpp>
 #include <OpenDesktopVR/TimeUtil.hpp>
 
@@ -13,6 +15,8 @@
 #include <deque>
 #include <map>
 #include <mutex>
+#include <optional>
+#include <string>
 #include <thread>
 
 namespace OpenDesktopVR::Pointer {
@@ -94,8 +98,20 @@ struct Event {
   float mV {0};
   int32_t mWheel {0};
   bool mDrag {false};// a move with the button held
+  // Presses: this press's number, and the press it's the second tap of (0:
+  // none). The worker sends a double-click only if it delivered that press.
+  uint64_t mPress {0};
+  uint64_t mDoubleOf {0};
   TimeUtil::TimePoint mQueued {};
 };
+
+// The app that owns a window, for log lines; never sends it anything
+std::string AppName(HWND window) {
+  DWORD process = 0;
+  GetWindowThreadProcessId(window, &process);
+  const auto path = process ? ProcessUtil::ProcessImagePath(process) : std::filesystem::path {};
+  return path.empty() ? std::string {"an app"} : StringUtil::Narrow(path.filename().wstring());
+}
 
 struct Shared {
   Options mOptions;
@@ -114,7 +130,10 @@ class Worker {
   Worker(Shared& shared, HWND window) : mShared(shared), mWindow(window) {
     mThread = std::thread([this] {
       ThreadUtil::SetCurrentThreadName(L"Input");
-      ThreadUtil::CatchAll("input worker", [this] { Main(); });
+      ThreadUtil::CatchAll("input worker", [this] {
+        mAppName = AppName(mWindow);
+        Main();
+      });
     });
   }
   ~Worker() {
@@ -219,50 +238,64 @@ class Worker {
   }
 
   bool Send(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+    const auto sentAt = TimeUtil::Now();
     DWORD_PTR result = 0;
     if (SendMessageTimeoutW(window, message, wParam, lParam, SMTO_NORMAL | SMTO_ABORTIFHUNG,
           static_cast<UINT>(mShared.mOptions.mTimeout.count()), &result)) {
       return true;
     }
     mBusy = true;
+    StoppedResponding(sentAt);
     mShared.Count([](auto& stats) { ++stats.mTimeouts; });
     const auto now = TimeUtil::Now();
     if (now >= mNextTimeoutLog) {
       mNextTimeoutLog = now + 10s;
-      Log::Warning("Input: a window took more than {} ms to take a message; carrying on without it",
+      Log::Warning("Input: {} took more than {} ms to take a message; carrying on without it", mAppName,
         mShared.mOptions.mTimeout.count());
     }
     return false;
+  }
+
+  void StoppedResponding(TimeUtil::TimePoint since) {
+    if (!mNotRespondingSince) {
+      mNotRespondingSince = since;
+      mSkippedPresses = 0;
+      mSkippedOther = 0;
+    }
   }
 
   // A window that didn't take a message in time may still be working
   // through it; until it answers again it's treated as hung (INJ-3), so
   // clicks don't pile up in it to all land at once when it recovers
   bool Responding(HWND top) {
+    bool responding = true;
     if (IsHungAppWindow(top)) {
-      return false;
+      responding = false;
+    } else if (mBusy) {
+      DWORD_PTR result = 0;
+      responding = SendMessageTimeoutW(top, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 50, &result) != 0;
+      mBusy = !responding;
     }
-    if (!mBusy) {
-      return true;
+    if (!responding) {
+      StoppedResponding(TimeUtil::Now());
+    } else if (mNotRespondingSince) {
+      // Checked at the next event, so "within"
+      Log::Info("Input: {} is answering again, within {:.0f} ms of stopping; skipped meanwhile: {} taps, {} moves or wheel",
+        mAppName, TimeUtil::ToMilliseconds(TimeUtil::Now() - *mNotRespondingSince), mSkippedPresses, mSkippedOther);
+      mNotRespondingSince.reset();
     }
-    DWORD_PTR result = 0;
-    if (SendMessageTimeoutW(top, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 50, &result)) {
-      mBusy = false;
-      return true;
-    }
-    return false;
+    return responding;
   }
 
   void Command(Protocol::Command command, LPARAM argument) {
     Send(mWindow, mShared.mCommandMessage, static_cast<WPARAM>(command), argument);
   }
 
-  bool IsDoubleTap(HWND window, POINT screen, DWORD now) {
-    const auto& options = mShared.mOptions;
-    const int dx = std::max(options.mDoubleTapPixels, GetSystemMetrics(SM_CXDOUBLECLK) / 2);
-    const int dy = std::max(options.mDoubleTapPixels, GetSystemMetrics(SM_CYDOUBLECLK) / 2);
-    return mLastDownWindow == window && mLastDownTick != 0 && now - mLastDownTick <= GetDoubleClickTime()
-      && std::abs(screen.x - mLastDownScreen.x) <= dx && std::abs(screen.y - mLastDownScreen.y) <= dy
+  // The hand thread decided it's a second tap; it's sent as a double-click
+  // if the first tap's press was delivered, to this window, and the window
+  // wants double-clicks
+  bool IsDoubleTap(const Event& event, HWND window) const {
+    return event.mDoubleOf != 0 && event.mDoubleOf == mLastPress && mLastDownWindow == window
       && (GetClassLongPtrW(window, GCL_STYLE) & CS_DBLCLKS) != 0;
   }
 
@@ -304,11 +337,16 @@ class Worker {
       }
       PostMessageW(top, mShared.mCommandMessage, static_cast<WPARAM>(Protocol::Command::EndInjection), 0);
       if (event.mKind != Kind::Up && event.mKind != Kind::Leave) {
-        mShared.Count([](auto& stats) { ++stats.mSkippedHung; });
+        const bool press = event.mKind == Kind::Down;
+        (press ? mSkippedPresses : mSkippedOther) += 1;
+        mShared.Count([press](auto& stats) {
+          ++stats.mSkippedHung;
+          stats.mSkippedPresses += press ? 1 : 0;
+        });
         const auto now = TimeUtil::Now();
         if (now >= mNextHungLog) {
           mNextHungLog = now + 10s;
-          Log::Warning("Input: the window isn't responding; taps on it are skipped until it recovers");
+          Log::Warning("Input: {} isn't responding; taps on it are skipped until it answers again", mAppName);
         }
       }
       return;
@@ -356,8 +394,7 @@ class Worker {
         // takes the real foreground whenever Windows allows it (the app was
         // started by the foreground process, or nobody touched the keyboard
         // or mouse for a while). Keys need it (doc 06, M5); clicks don't.
-        const DWORD now = GetTickCount();
-        const bool doubleTap = IsDoubleTap(child, screen, now);
+        const bool doubleTap = IsDoubleTap(event, child);
         if (doubleTap) {
           // At the first tap's point: the app checks the two are close
           local = mLastDownLocal;
@@ -370,9 +407,8 @@ class Worker {
         mCapture = child;
         mHovered = child;
         mLastPoint = local;
-        mLastDownTick = doubleTap ? 0 : now;// a third tap starts over
+        mLastPress = event.mPress;
         mLastDownWindow = child;
-        mLastDownScreen = screen;
         mLastDownLocal = local;
         const double waited = TimeUtil::ToMilliseconds(TimeUtil::Now() - event.mQueued);
         mShared.Count([&](auto& stats) {
@@ -421,10 +457,13 @@ class Worker {
   HWND mHovered {nullptr};
   POINT mLastPoint {};
   TimeUtil::TimePoint mNextHoverAt {};
-  DWORD mLastDownTick {0};
+  uint64_t mLastPress {0};// the last press delivered
   HWND mLastDownWindow {nullptr};
-  POINT mLastDownScreen {};
   POINT mLastDownLocal {};
+  std::string mAppName {"an app"};
+  std::optional<TimeUtil::TimePoint> mNotRespondingSince;
+  uint64_t mSkippedPresses {0};// while not responding, for its log line
+  uint64_t mSkippedOther {0};
   TimeUtil::TimePoint mNextTimeoutLog {};
   TimeUtil::TimePoint mNextHungLog {};
 };
@@ -445,6 +484,24 @@ struct Injector::Impl {
   Stats mLogged {};
   TimeUtil::TimePoint mNextPrune {};
 
+  // Double taps, from the finger's own timing (ADR-034, amended)
+  uint64_t mNextPress {1};
+  uint64_t mPress {0};// the press held now, or the last one
+  TimeUtil::TimePoint mPressedAt {};
+  float mPressU {0};
+  float mPressV {0};
+  bool mPressIsSecond {false};
+  // The last press, if it was a tap: lifted within the double-click time,
+  // where it went down
+  struct Tap {
+    uint64_t mPress {0};
+    uint64_t mPanel {0};
+    TimeUtil::TimePoint mLiftedAt {};
+    float mU {0};
+    float mV {0};
+  };
+  std::optional<Tap> mLastTap;
+
   Worker& WorkerFor(HWND window) {
     auto& worker = mWorkers[window];
     if (!worker) {
@@ -454,7 +511,49 @@ struct Injector::Impl {
   }
 
   void Queue(Kind kind, const Target& target, float u, float v, int32_t wheel = 0, bool drag = false) {
-    WorkerFor(target.mWindow).Enqueue({kind, target, u, v, wheel, drag, {}});
+    WorkerFor(target.mWindow).Enqueue({kind, target, u, v, wheel, drag, 0, 0, {}});
+  }
+
+  // Two points on the panel close enough for a double tap: within the
+  // distance each way, on the panel in VR (or in its pixels, if its size
+  // isn't known)
+  bool Near(const Target& target, float u1, float v1, float u2, float v2) const {
+    const auto& options = mShared.mOptions;
+    if (target.mWidthMeters > 0 && target.mHeightMeters > 0) {
+      const float limit = options.mDoubleTapMillimeters / 1000.0f;
+      return std::abs(u2 - u1) * target.mWidthMeters <= limit && std::abs(v2 - v1) * target.mHeightMeters <= limit;
+    }
+    const auto width = static_cast<float>(target.mShown.right - target.mShown.left);
+    const auto height = static_cast<float>(target.mShown.bottom - target.mShown.top);
+    const auto limit = static_cast<float>(options.mDoubleTapPixels);
+    return std::abs(u2 - u1) * width <= limit && std::abs(v2 - v1) * height <= limit;
+  }
+
+  void Press(uint64_t panelID, const Target& target, float u, float v) {
+    const auto now = TimeUtil::Now();
+    const auto window = std::chrono::milliseconds(GetDoubleClickTime());
+    uint64_t doubleOf = 0;
+    if (mLastTap && mLastTap->mPanel == panelID && now - mLastTap->mLiftedAt <= window
+        && Near(target, mLastTap->mU, mLastTap->mV, u, v)) {
+      doubleOf = mLastTap->mPress;
+    }
+    mLastTap.reset();// a third tap starts over
+    mPress = mNextPress++;
+    mPressedAt = now;
+    mPressU = u;
+    mPressV = v;
+    mPressIsSecond = doubleOf != 0;
+    WorkerFor(target.mWindow).Enqueue({Kind::Down, target, u, v, 0, false, mPress, doubleOf, {}});
+  }
+
+  void Lift(uint64_t panelID, const Target& target, float u, float v) {
+    const auto now = TimeUtil::Now();
+    const auto window = std::chrono::milliseconds(GetDoubleClickTime());
+    mLastTap.reset();
+    if (!mPressIsSecond && now - mPressedAt <= window && Near(target, mPressU, mPressV, u, v)) {
+      mLastTap = Tap {mPress, panelID, now, mPressU, mPressV};
+    }
+    Queue(Kind::Up, target, u, v);
   }
 
   // Workers of windows that have gone
@@ -495,6 +594,7 @@ void Injector::Pointer(uint64_t panelID, const Target* target, const CursorUpdat
     }
     impl.Queue(Kind::Leave, impl.mTarget, impl.mU, impl.mV);
     impl.mOnPanel = false;
+    impl.mLastTap.reset();
   }
   if (!usable) {
     return;
@@ -506,14 +606,14 @@ void Injector::Pointer(uint64_t panelID, const Target* target, const CursorUpdat
   impl.mV = update.mV;
   if (update.mState == TouchState::Touching) {
     if (!impl.mPressed) {
-      impl.Queue(Kind::Down, *target, update.mU, update.mV);
+      impl.Press(panelID, *target, update.mU, update.mV);
       impl.mPressed = true;
     } else {
       impl.Queue(Kind::Move, *target, update.mU, update.mV, 0, true);
     }
   } else {
     if (impl.mPressed) {
-      impl.Queue(Kind::Up, *target, update.mU, update.mV);
+      impl.Lift(panelID, *target, update.mU, update.mV);
       impl.mPressed = false;
     } else {
       impl.Queue(Kind::Move, *target, update.mU, update.mV);
@@ -538,7 +638,7 @@ void Injector::LogStats(const char* title) {
   }
   Log::Info(
     "{}: {} presses ({} double), {} releases, {} moves ({} merged), {} wheel messages; {} timed out, {} skipped (not "
-    "responding), {} releases posted; longest wait for a press so far {:.1f} ms",
+    "responding; {} of them taps), {} releases posted; longest wait for a press so far {:.1f} ms",
     title,
     now.mPresses - last.mPresses,
     now.mDoubleClicks - last.mDoubleClicks,
@@ -548,6 +648,7 @@ void Injector::LogStats(const char* title) {
     now.mWheelMessages - last.mWheelMessages,
     now.mTimeouts - last.mTimeouts,
     now.mSkippedHung - last.mSkippedHung,
+    now.mSkippedPresses - last.mSkippedPresses,
     now.mPostedReleases - last.mPostedReleases,
     now.mLongestWaitMs);
   last = now;

@@ -109,6 +109,11 @@ struct HostPanel {
 // static one on the right, both angled toward the viewer
 std::vector<PanelDefinition> DefaultTestPanels();
 
+// Tests (doc 11, "Two panels overlapping in depth"): the two test patterns,
+// one in front of the other and overlapping it as the viewer sees them,
+// listed nearest first, so the layer has to put them back to front
+std::vector<PanelDefinition> OverlappingTestPanels();
+
 // A new panel for a window, placed in the next free spot of a grid in front
 // of the viewer
 PanelDefinition NewWindowPanel(const WindowUtil::WindowInfo& window, std::size_t existingWindowPanels);

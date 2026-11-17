@@ -24,12 +24,18 @@ void InjectingSink::Pointer(const TouchPanel* panel, const HandInteraction::Curs
       {static_cast<LONG>(shown.mLeft), static_cast<LONG>(shown.mTop), static_cast<LONG>(shown.mLeft + shown.mWidth),
         static_cast<LONG>(shown.mTop + shown.mHeight)},
       {static_cast<LONG>(client.mWidth), static_cast<LONG>(client.mHeight)},
+      panel->mGeometry.mSize.x,
+      panel->mGeometry.mSize.y,
     };
     mInjector.Pointer(panel->mID, &target, filtered);
   }
   if (mStats.Due()) {
     mInjector.LogStats("Input (60 s)");
   }
+}
+
+void InjectingSink::LogLastStats() {
+  mInjector.LogStats("Input (to exit)");
 }
 
 }// namespace OpenDesktopVR::Host

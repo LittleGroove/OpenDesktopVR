@@ -6,6 +6,7 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 #include <string_view>
 
 namespace OpenDesktopVR::Product {
@@ -44,5 +45,12 @@ std::filesystem::path DataFolder();
 std::filesystem::path LogsFolder();
 std::filesystem::path SettingsFile();
 std::filesystem::path ProfilesFolder();
+
+// Which build is running, from the BUILD-INFO.txt a package puts beside the
+// running module (or one folder up, for the tools): "commit 111d544170 on
+// m4, built 2026-11-16 14:39 (Release)", or "a development build (no
+// BUILD-INFO.txt)". So a test round's logs say which build made them. Reads
+// a small file: call it once at start, never per frame. Never throws.
+std::string BuildDescription();
 
 }// namespace OpenDesktopVR::Product

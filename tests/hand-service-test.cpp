@@ -4,7 +4,8 @@
 // The host's hand thread (M4a) with a fake tracking channel and synthetic
 // hands: samples in order, a tap, two-finger scrolling (natural and
 // reversed), tracking gaps during a drag (XR-19: 300 ms lets go once and
-// doesn't click again on return; 100 ms doesn't end the drag), hands turned
+// doesn't click again on return; 100 ms doesn't end the drag), both with no
+// samples and with one hand untracked while samples keep coming, hands turned
 // off mid-touch, the hand state the layer reads, the settings format.
 
 #include "check.hpp"
@@ -268,6 +269,66 @@ int main() {
     Check(sink.Presses() == std::pair {1, 1}, "released only when pulled back");
     const auto stats = service.Stats();
     Check(stats.mResets == 0 && stats.mDrags == 1, std::format("one drag, no let-go ({} drags, {} resets)", stats.mDrags, stats.mResets));
+  });
+
+  // The same rule for one hand whose tracking is lost while samples keep
+  // coming (fingers hidden from the headset's cameras): doc 03 lists "hand
+  // tracking off or lost" with the other 250 ms causes. Found in M4c: the
+  // imported tracker lets go at once, so the host bridges short losses.
+  const HandJoints lost {};
+  Scenario("One hand untracked for 100 ms during a drag, samples still coming: the drag continues (XR-19)", [&] {
+    FakeChannel channel;
+    RecordingSink sink;
+    HandService service {channel, [] { return OnePanel(); }, &sink};
+    service.SetSettings({});
+    service.Start();
+    Feeder feed {channel, service};
+    startDrag(feed);
+    feed.Path(0.1, [&](float) { return lost; });
+    Check(sink.Presses() == std::pair {1, 0}, "still pressed while the hand is lost");
+    feed.Path(0.2, [](float t) { return RightHand(Pose::Point, Lerp(0.03f, 0.05f, t), 0, -0.012f); });
+    Check(sink.Presses() == std::pair {1, 0}, "still pressed after it's back, and dragging on");
+    feed.Path(0.2, [](float t) { return RightHand(Pose::Point, 0.05f, 0, Lerp(-0.012f, 0.08f, t)); });
+    service.Stop();
+    Check(sink.Presses() == std::pair {1, 1}, "released only when pulled back");
+    const auto stats = service.Stats();
+    Check(stats.mResets == 0 && stats.mDrags == 1, std::format("one drag, no let-go ({} drags, {} resets)", stats.mDrags, stats.mResets));
+  });
+
+  Scenario("One hand untracked for 300 ms during a drag: let go once, after 250 ms; no click on return (XR-19)", [&] {
+    FakeChannel channel;
+    RecordingSink sink;
+    HandService service {channel, [] { return OnePanel(); }, &sink};
+    service.SetSettings({});
+    service.Start();
+    Feeder feed {channel, service};
+    startDrag(feed);
+    feed.Path(0.2, [&](float) { return lost; });
+    Check(sink.Presses() == std::pair {1, 0}, "still pressed 200 ms in");
+    feed.Path(0.1, [&](float) { return lost; });
+    Check(sink.Presses() == std::pair {1, 1}, "let go by 300 ms");
+    Check(service.Stats().mResets == 1, "counted as a let-go after tracking stopped");
+    // Back, still pushed into the panel: not a new press
+    feed.Path(0.3, [](float t) { return RightHand(Pose::Point, Lerp(0.03f, 0.05f, t), 0, -0.012f); });
+    feed.Path(0.2, [](float t) { return RightHand(Pose::Point, 0.05f, 0, Lerp(-0.012f, 0.08f, t)); });
+    service.Stop();
+    const auto [downs, ups] = sink.Presses();
+    Check(downs == 1 && ups == 1, std::format("no click on return ({} presses, {} releases in all)", downs, ups));
+  });
+
+  Scenario("A hovering hand that loses tracking is let go at once (only touches are held)", [&] {
+    FakeChannel channel;
+    RecordingSink sink;
+    HandService service {channel, [] { return OnePanel(); }, &sink};
+    service.SetSettings({});
+    service.Start();
+    Feeder feed {channel, service};
+    feed.Path(0.3, [](float) { return RightHand(Pose::Point, 0, 0, 0.05f); });
+    feed.Send(lost);
+    service.Stop();
+    std::scoped_lock lock(sink.mMutex);
+    Check(!sink.mUpdates.empty() && sink.mUpdates.back().mState == HandInteraction::TouchState::NotNear,
+      "the pointer left the panel on the first untracked sample");
   });
 
   Scenario("Hands turned off mid-touch: let go at once, and the layer stops sending samples", [&] {

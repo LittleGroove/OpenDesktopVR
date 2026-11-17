@@ -87,6 +87,7 @@ void StartOnce() {
     }
     Log::Start(config);
     Log::Info("Layer {} loaded into {}", Product::LayerName, StringUtil::Narrow(ProcessUtil::ExecutablePath().wstring()));
+    Log::Info("Build: {}", Product::BuildDescription());
   });
 }
 

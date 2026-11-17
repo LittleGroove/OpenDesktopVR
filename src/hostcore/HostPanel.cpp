@@ -29,6 +29,18 @@ std::vector<PanelDefinition> DefaultTestPanels() {
   return {animated, still};
 }
 
+std::vector<PanelDefinition> OverlappingTestPanels() {
+  auto panels = DefaultTestPanels();
+  auto behind = panels[0];
+  auto inFront = panels[1];
+  behind.mPosition[0] = -0.08f;
+  behind.mPosition[2] = -0.75f;
+  inFront.mPosition[0] = 0.08f;
+  inFront.mPosition[1] = -0.08f;
+  inFront.mPosition[2] = -0.45f;
+  return {inFront, behind};
+}
+
 PanelDefinition NewWindowPanel(const WindowUtil::WindowInfo& window, std::size_t existingWindowPanels) {
   PanelDefinition panel;
   panel.mID = NewPanelID();

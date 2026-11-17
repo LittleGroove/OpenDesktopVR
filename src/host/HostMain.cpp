@@ -5,7 +5,7 @@
 // renders panels and shares them with the layer in each game.
 //
 //   OpenDesktopVR.exe [--no-register] [--exit-after <s>] [--fence-delay-ms <n>] [--static-panels]
-//                     [--resizing-panels] [--window <title>] [--warp] [--settings]
+//                     [--resizing-panels] [--overlapping-panels] [--window <title>] [--warp] [--settings]
 //                     [--settings-screenshot <png>] [--picker-screenshot <png>] [--settings-delay <ms>]
 //
 // --no-register      don't register the layer (tests, side-by-side builds)
@@ -17,6 +17,8 @@
 // --test-keybind <vk>  test instances: this key shows or hides all panels
 // --test-look        the static test panel tinted red at half brightness
 //                    (PN-5: its pixels are checked)
+// --overlapping-panels  test instances: the test panels one in front of the
+//                    other, nearest first (doc 11's depth-order scenario)
 // --window <title>   test instances: a window panel matching this title
 //                    (repeat it for more)
 // --warp             allow software rendering if there's no GPU (CI)
@@ -70,6 +72,7 @@ struct Options {
   bool mStaticPanels {false};
   bool mResizingPanels {false};
   bool mTestLook {false};
+  bool mOverlappingPanels {false};
   UINT mTestKeybind {0};
   bool mTestInstance {false};
   std::vector<std::wstring> mTestWindowTitles;
@@ -101,6 +104,8 @@ Options ParseOptions() {
       options.mResizingPanels = true;
     } else if (arg == L"--test-look") {
       options.mTestLook = true;
+    } else if (arg == L"--overlapping-panels") {
+      options.mOverlappingPanels = true;
     } else if (arg == L"--test-keybind" && i + 1 < argc) {
       options.mTestKeybind = static_cast<UINT>(std::clamp(_wtoi(argv[++i]), 0, 0xFE));
     } else if (arg == L"--warp") {
@@ -162,6 +167,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     logConfig.mFile = folder / L"host.log";
   }
   Log::Start(logConfig);
+  Log::Info("Build: {}", Product::BuildDescription());
 
   // Elevation and UAC are the top cause of support requests (CMP-8)
   const auto uac = ProcessUtil::UacEnabled();
@@ -227,6 +233,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       }
       testPanels.push_back(std::move(panel));
     }
+    if (options.mOverlappingPanels && testPanels.empty()) {
+      testPanels = Host::OverlappingTestPanels();
+    }
     if (options.mTestLook && testPanels.empty()) {
       testPanels = Host::DefaultTestPanels();
       auto& still = testPanels.back();
@@ -281,6 +290,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     }
     exitCode = tray.Run();
     hands.Stop();
+    injectingSink.LogLastStats();
     renderer.Stop();
   });
 

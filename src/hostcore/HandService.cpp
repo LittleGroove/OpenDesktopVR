@@ -12,8 +12,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <format>
 #include <mutex>
 #include <numbers>
+#include <string>
 #include <optional>
 #include <thread>
 
@@ -104,6 +106,18 @@ struct HandService::Impl {
   std::array<Touch, 2> mTouches {};
   double mNow {0};// the newest sample's display time, in seconds
 
+  // XR-19 for one hand, while samples keep coming: a touching hand whose
+  // tracking is lost (fingers hidden for a few frames) is held where it was
+  // last tracked for up to the gap, then let go (doc 03: "hand tracking off
+  // or lost"). The imported tracker lets go at once, so this is bridged
+  // here; found in M4c.
+  struct Held {
+    HandJoints mJoints;// the last tracked pose, while touching
+    std::optional<double> mLostSince;// display time, seconds
+  };
+  std::array<Held, 2> mHeld {};
+  std::array<bool, 2> mLostTooLong {};// let go for that: said in the touch log
+
   mutable std::mutex mStatsMutex;
   HandServiceStats mStats;
   // Per stats line
@@ -135,7 +149,8 @@ struct HandService::Impl {
   // `gap`: tracking stopped (counted when it lets go of a touch)
   void Reset(const char* why, bool gap = true);
   void WriteState();
-  void MaybeWriteStats(TimeUtil::TimePoint now);
+  // Every stats period; and once at exit, so the last part isn't lost
+  void MaybeWriteStats(TimeUtil::TimePoint now, bool exiting = false);
   const TouchPanel* Entry(uint64_t panelID) const;
   template <class Change>
   void Count(Change&& change) {
@@ -224,6 +239,7 @@ void HandService::Impl::Main() {
     Reset("the host is stopping", false);
     mFlags = 0;
     WriteState();
+    MaybeWriteStats(TimeUtil::Now(), true);
   });
 }
 
@@ -355,6 +371,28 @@ void HandService::Impl::Process(const SharedAbi::TrackingSample& sample) {
       out.mJoints[j] = {{p[0], p[1], p[2]}, {p[3], p[4], p[5], p[6]}, in.mJoints[j].mRadius};
     }
   }
+  const double gapSeconds = std::chrono::duration<double>(mOptions.mGap).count();
+  for (std::size_t h = 0; h < 2; ++h) {
+    auto& held = mHeld[h];
+    if (hands[h].mIsTracked) {
+      held.mJoints = hands[h];
+      held.mLostSince.reset();
+      continue;
+    }
+    if (mTouches[h].mActive && held.mJoints.mIsTracked) {
+      if (!held.mLostSince) {
+        held.mLostSince = mNow;
+      }
+      if (mNow - *held.mLostSince <= gapSeconds) {
+        hands[h] = held.mJoints;
+        continue;
+      }
+      mLostTooLong[h] = true;
+      Count([](auto& stats) { ++stats.mResets; });
+    }
+    // Not touching, or lost too long: let go; when it's back it starts fresh
+    held = {};
+  }
 
   // Back to front from the head, as the layer draws them: where panels
   // overlap, the nearer (drawn later) wins
@@ -443,7 +481,8 @@ void HandService::Impl::LogTouches(const FrameResult& result) {
       }
       continue;
     }
-    EndTouch(h, nullptr);
+    EndTouch(h, mLostTooLong[h] ? "its tracking was lost for 250 ms" : nullptr);
+    mLostTooLong[h] = false;
   }
 }
 
@@ -478,6 +517,8 @@ void HandService::Impl::Reset(const char* why, bool gap) {
   for (std::size_t h = 0; h < 2; ++h) {
     EndTouch(h, why);
   }
+  mHeld = {};
+  mLostTooLong = {};
   mLastDisplayTime.reset();
   mVisibility = {};
   mActive = false;
@@ -499,8 +540,8 @@ void HandService::Impl::WriteState() {
   Count([](auto& stats) { ++stats.mStateWrites; });
 }
 
-void HandService::Impl::MaybeWriteStats(TimeUtil::TimePoint now) {
-  if (now < mNextStats) {
+void HandService::Impl::MaybeWriteStats(TimeUtil::TimePoint now, bool exiting) {
+  if (now < mNextStats && !exiting) {
     return;
   }
   mNextStats = now + mOptions.mStatsPeriod;
@@ -513,10 +554,10 @@ void HandService::Impl::MaybeWriteStats(TimeUtil::TimePoint now) {
   }();
   const double samples = static_cast<double>(mPeriodSamples);
   Log::Info(
-    "Hands ({} s): {} samples ({} skipped); hands tracked: left {:.0f}%, right {:.0f}%; {} touches; sample to host "
+    "Hands ({}): {} samples ({} skipped); hands tracked: left {:.0f}%, right {:.0f}%; {} touches; sample to host "
     "{:.2f} ms on average, at most {:.2f} ms; in all: {} taps, {} holds, {} drags, {:.1f} wheel notches, {} let go "
     "after tracking stopped",
-    mOptions.mStatsPeriod.count(),
+    exiting ? std::string {"to exit"} : std::format("{} s", mOptions.mStatsPeriod.count()),
     mPeriodSamples,
     mPeriodSkipped,
     100.0 * static_cast<double>(mPeriodTracked[0]) / samples,

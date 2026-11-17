@@ -8,7 +8,9 @@
 //   the exact point; the foreground and the click target's place in the
 //   z-order don't change (R1);
 // - hover: at most about 30 moves a second (doc 05);
-// - a double tap becomes a double-click;
+// - a double tap becomes a double-click: timed from the first tap's lift,
+//   within 15 mm on the panel; not after a long hold, not 20 mm apart, not
+//   after the double-click time, and a third tap starts over;
 // - the wheel, with its point;
 // - leaving the panel lets go and clears hover (INJ-5); the panel going
 //   away mid-drag lets go (INJ-4); the injector going away mid-drag posts
@@ -25,6 +27,7 @@
 #include "foreground.hpp"
 
 #include <OpenDesktopVR/AppHelperService.hpp>
+#include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/PointerInjector.hpp>
 
 #include <Windows.h>
@@ -49,6 +52,7 @@ using Testing::Scenario;
 namespace {
 
 std::filesystem::path gClickTarget;
+std::filesystem::path gLogFile;
 
 double NowMilliseconds() {
   LARGE_INTEGER frequency {};
@@ -182,17 +186,25 @@ CursorUpdate At(float u, float v, TouchState state, int32_t wheel = 0) {
   return {.mPanelID = 1, .mU = u, .mV = v, .mState = state, .mWheel = wheel};
 }
 
-// A tap on the panel: hover, press, release, at 90 updates a second
-void Tap(Pointer::Injector& injector, const Pointer::Target& target, float u, float v) {
+// A tap on the panel: hover, press, release, at 90 updates a second; held
+// for `held` (a quick mouse-like tap by default)
+void Tap(Pointer::Injector& injector, const Pointer::Target& target, float u, float v,
+  std::chrono::milliseconds held = 33ms) {
   for (int i = 0; i < 3; ++i) {
     injector.Pointer(1, &target, At(u, v, TouchState::Hovering));
     std::this_thread::sleep_for(11ms);
   }
-  for (int i = 0; i < 3; ++i) {
+  const auto until = std::chrono::steady_clock::now() + held;
+  do {
     injector.Pointer(1, &target, At(u, v, TouchState::Touching));
     std::this_thread::sleep_for(11ms);
-  }
+  } while (std::chrono::steady_clock::now() < until);
   injector.Pointer(1, &target, At(u, v, TouchState::Hovering));
+}
+
+// The double-click time, as the hand thread uses it
+std::chrono::milliseconds DoubleClickTime() {
+  return std::chrono::milliseconds(GetDoubleClickTime());
 }
 
 // This test's own window: the foreground, like the game
@@ -215,6 +227,16 @@ int main(int argc, char** argv) {
     return 2;
   }
   gClickTarget = std::filesystem::absolute(argv[1]);
+  // The injector's log lines, checked by the hung-app scenario
+  gLogFile = std::filesystem::temp_directory_path() / std::format(L"odvr-pointer-{}.log", GetCurrentProcessId());
+  {
+    std::error_code ignored;
+    std::filesystem::remove(gLogFile, ignored);
+    Log::Config config;
+    config.mFile = gLogFile;
+    config.mDebuggerOutput = false;
+    Log::Start(config);
+  }
   const HWND game = MakeGameWindow();
   AppHelper::AppHelperService helper;
 
@@ -296,6 +318,68 @@ int main(int argc, char** argv) {
     Tap(injector, panel, 0.5f, 0.5f);
     Check(WaitFor([&] { return target.Count("UP") == 3; }, 3s) && target.Count("DOWN") == 2,
       "a tap after the double-click time: a plain press");
+  });
+
+  // Round 11: finger taps are held 110-250 ms and land 5-10 mm apart, so a
+  // mouse's rule (press to press, a few pixels) missed most double taps.
+  // The panel here is 45 cm wide (Notepad-like), 800 x 600 pixels.
+  Scenario("A finger's double tap: timed from the first one's lift, within 15 mm (ADR-034, amended)", [&] {
+    Target target;
+    Pointer::Injector injector;
+    auto panel = target.AsTarget();
+    panel.mWidthMeters = 0.45f;
+    panel.mHeightMeters = 0.3375f;
+    const auto held = DoubleClickTime() / 2;
+    const float apart = 0.010f / panel.mWidthMeters;// 10 mm: 18 pixels
+    Tap(injector, panel, 0.5f, 0.5f, held);
+    std::this_thread::sleep_for(DoubleClickTime() * 7 / 10);
+    // Press to press: held + 70% + the hover lead-in, more than the double-click time
+    Tap(injector, panel, 0.5f + apart, 0.5f, held);
+    Check(WaitFor([&] { return target.Count("UP") == 2; }, 3s), "both taps arrived");
+    Check(target.Count("DOWN") == 1 && target.Count("DOUBLE") == 1,
+      std::format("a slow finger's double tap, 10 mm apart, is a double-click ({} presses, {} double)",
+        target.Count("DOWN"), target.Count("DOUBLE")));
+    const auto first = target.Fields("DOWN ");
+    const auto second = target.Fields("DOUBLE ");
+    Check(first.size() >= 2 && second.size() >= 2 && first[0] == second[0] && first[1] == second[1],
+      "at the first tap's point");
+
+    // A third tap straight after starts over: a plain press
+    std::this_thread::sleep_for(100ms);
+    Tap(injector, panel, 0.5f, 0.5f);
+    Check(WaitFor([&] { return target.Count("UP") == 3; }, 3s) && target.Count("DOWN") == 2 && target.Count("DOUBLE") == 1,
+      "a third tap straight after: a plain press");
+    Check(injector.GetStats().mDoubleClicks == 1, "counted: one double-click");
+  });
+
+  Scenario("Not a double tap: 20 mm apart, a long hold first, or too long after the lift", [&] {
+    Target target;
+    Pointer::Injector injector;
+    auto panel = target.AsTarget();
+    panel.mWidthMeters = 0.45f;
+    panel.mHeightMeters = 0.3375f;
+    // 20 mm apart
+    Tap(injector, panel, 0.3f, 0.5f);
+    std::this_thread::sleep_for(100ms);
+    Tap(injector, panel, 0.3f + (0.020f / panel.mWidthMeters), 0.5f);
+    Check(WaitFor([&] { return target.Count("UP") == 2; }, 3s) && target.Count("DOWN") == 2 && target.Count("DOUBLE") == 0,
+      "two taps 20 mm apart: two presses");
+    std::this_thread::sleep_for(DoubleClickTime() + 100ms);
+
+    // A hold longer than the double-click time, then a quick tap on it
+    Tap(injector, panel, 0.6f, 0.5f, DoubleClickTime() + 200ms);
+    std::this_thread::sleep_for(100ms);
+    Tap(injector, panel, 0.6f, 0.5f);
+    Check(WaitFor([&] { return target.Count("UP") == 4; }, 3s) && target.Count("DOWN") == 4 && target.Count("DOUBLE") == 0,
+      "a long hold, then a tap: two presses");
+    std::this_thread::sleep_for(DoubleClickTime() + 100ms);
+
+    // Lifted, then the next tap after the double-click time
+    Tap(injector, panel, 0.7f, 0.5f);
+    std::this_thread::sleep_for(DoubleClickTime() + 100ms);
+    Tap(injector, panel, 0.7f, 0.5f);
+    Check(WaitFor([&] { return target.Count("UP") == 6; }, 3s) && target.Count("DOWN") == 6 && target.Count("DOUBLE") == 0,
+      "a second tap after the double-click time from the lift: a plain press");
   });
 
   Scenario("The wheel, at its point", [&] {
@@ -386,8 +470,28 @@ int main(int argc, char** argv) {
     // Responding again: taps work
     Tap(injector, panel, 0.5f, 0.5f);
     Check(WaitFor([&] { return target.Count("DOWN") == 2 && target.Count("UP") >= 2; }, 3s), "after it recovers, a tap lands");
+    Check(injector.GetStats().mSkippedPresses == 2,
+      std::format("counted: the two taps while it hung ({})", injector.GetStats().mSkippedPresses));
+
+    // Round 11: the log lines name the app, and say when it answers again
+    Log::Stop();
+    std::string log;
+    {
+      std::ifstream file(gLogFile);
+      std::stringstream text;
+      text << file.rdbuf();
+      log = text.str();
+    }
+    Check(log.contains("Input: click-target.exe took more than 250 ms"), "the timeout's log line names the app");
+    Check(log.contains("Input: click-target.exe isn't responding"), "so does the not-responding line");
+    Check(log.contains("Input: click-target.exe is answering again") && log.contains("skipped meanwhile: 2 taps"),
+      "and a line says when it answered again, with the two taps it skipped");
   });
 
   DestroyWindow(game);
+  Log::Stop();
+  std::error_code ignored;
+  std::filesystem::remove(gLogFile, ignored);
+  std::filesystem::remove(std::filesystem::path {gLogFile}.replace_extension(L".previous.log"), ignored);
   return Testing::Finish();
 }
