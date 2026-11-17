@@ -73,20 +73,27 @@ RegistryLocation UserImplicitLayers() {
   return {};
 }
 
-std::optional<std::string> ReadManifestLayerName(const std::filesystem::path& manifest) noexcept {
+ManifestInfo ReadManifest(const std::filesystem::path& manifest) noexcept {
+  ManifestInfo info;
   const auto text = FileUtil::ReadAll(manifest);
   if (!text) {
-    return std::nullopt;
+    return info;
   }
   const auto json = JsonUtil::Parse(*text);
   if (!json) {
-    return std::nullopt;
+    return info;
   }
   const auto layer = JsonUtil::Get<JsonUtil::Json>(*json, "api_layer");
   if (!layer) {
-    return std::nullopt;
+    return info;
   }
-  return JsonUtil::Get<std::string>(*layer, "name");
+  info.mLayerName = JsonUtil::Get<std::string>(*layer, "name");
+  info.mLibraryPath = JsonUtil::Get<std::string>(*layer, "library_path");
+  return info;
+}
+
+std::optional<std::string> ReadManifestLayerName(const std::filesystem::path& manifest) noexcept {
+  return ReadManifest(manifest).mLayerName;
 }
 
 bool IsOurs(const std::filesystem::path& manifest, const std::optional<std::string>& layerName) noexcept {
@@ -109,7 +116,9 @@ std::vector<LayerEntry> ListLayers(const RegistryLocation& location) {
     entry.mManifestPath = value.mName;
     entry.mEnabled = value.mIsDword && value.mData == 0;
     entry.mManifestExists = FileUtil::Exists(entry.mManifestPath);
-    entry.mLayerName = ReadManifestLayerName(entry.mManifestPath);
+    auto manifest = ReadManifest(entry.mManifestPath);
+    entry.mLayerName = std::move(manifest.mLayerName);
+    entry.mLibraryPath = std::move(manifest.mLibraryPath);
     entry.mIsOurs = IsOurs(entry.mManifestPath, entry.mLayerName);
     entries.push_back(std::move(entry));
   }

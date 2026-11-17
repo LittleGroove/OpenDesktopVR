@@ -2,29 +2,14 @@
 // Copyright (c) 2026 Robert McGough. All rights reserved.
 
 #include <OpenDesktopVR/GameFollower.hpp>
-
-#include <Windows.h>
+#include <OpenDesktopVR/ProcessUtil.hpp>
 
 #include <utility>
 
 namespace OpenDesktopVR::Host {
 
-namespace {
-
-bool ProcessIsRunning(uint32_t processID) {
-  const HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, processID);
-  if (!process) {
-    return false;
-  }
-  const bool running = WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
-  CloseHandle(process);
-  return running;
-}
-
-}// namespace
-
 GameFollower::GameFollower(IsRunning isRunning)
-  : mIsRunning(isRunning ? std::move(isRunning) : IsRunning {&ProcessIsRunning}) {
+  : mIsRunning(isRunning ? std::move(isRunning) : IsRunning {[](uint32_t id) { return ProcessUtil::IsRunning(id); }}) {
 }
 
 std::optional<GameFollower::Change> GameFollower::Update(uint32_t processID, const std::wstring& executable) {

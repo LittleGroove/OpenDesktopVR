@@ -13,8 +13,10 @@ odvr_module(
   TestPattern.cpp
   LayerConfig.cpp
   HandBounds.cpp
+  LayerChain.cpp
   DEPS
   odvr::core
+  odvr::xrshared
   odvr::settings
   odvr::openxr_headers
   odvr::xrutil

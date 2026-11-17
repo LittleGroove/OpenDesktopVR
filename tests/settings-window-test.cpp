@@ -7,6 +7,8 @@
 // drawn in the product's theme, paints nothing while idle, opens within
 // doc 08's 50 ms (DU-3) when opened as a user would, a moment after start,
 // and that the window picker opens and gets its list from a worker thread.
+// M6c: the Diagnostics tab draws its checks and stays idle; "Save debug
+// info" (as --save-debug-info) writes a bundle from a private data folder.
 //
 //   settings-window-test <host exe>
 
@@ -162,6 +164,37 @@ int wmain(int argc, wchar_t** argv) {
     const auto corner = &image->mBgra[(static_cast<std::size_t>(image->mWidth) * 2 + 2) * 4];
     Check(Near(corner, Dimmed(Theme::Background), 4), "the settings behind the picker are dimmed");
     Check(CountNear(*image, Theme::Surface, 3) > 10'000, "the picker is drawn on the theme's surface colour");
+  });
+
+  Scenario("The Diagnostics tab: the self-test's marks, then idle (M6c: UI-10, LG-3, RN-12)", [&] {
+    const auto image = Screenshot(L"--settings-screenshot", folder.Path() + L"\\diagnostics.png", 0, L"--settings-diagnostics");
+    if (!image) {
+      return;
+    }
+    const auto marks = CountNear(*image, Theme::StatusGood, 12) + CountNear(*image, Theme::StatusWarning, 12)
+      + CountNear(*image, Theme::StatusProblem, 12);
+    Check(marks > 40, std::format("the checks' coloured marks are drawn ({} pixels)", marks));
+    Check(CountNear(*image, Theme::Text, 10) > 300, "text is drawn");
+  });
+
+  Scenario("Save debug info writes a bundle (M6c: LG-4), here from a private data folder", [&] {
+    const auto data = folder.Path() + L"\\data";
+    const auto zip = folder.Path() + L"\\debug.zip";
+    SetEnvironmentVariableW(L"OPENDESKTOPVR_DATA_FOLDER", data.c_str());
+    const auto run = RunHost(std::format(L"--save-debug-info \"{}\" --exit-after 3", zip));
+    SetEnvironmentVariableW(L"OPENDESKTOPVR_DATA_FOLDER", nullptr);
+    Check(run.mExited && run.mExitCode == 0, "the host saved it and quit cleanly");
+    std::ifstream file {std::filesystem::path {zip}, std::ios::binary};
+    const std::string bytes {std::istreambuf_iterator<char>(file), {}};
+    Check(bytes.starts_with("PK\x03\x04"), std::format("a .zip was written ({} bytes)", bytes.size()));
+    for (const char* name: {"README.txt", "system.txt", "openxr-layers.txt", "self-test.txt", "in-game.txt", "apps.txt",
+           "log-recent.txt", "logs/host.log"}) {
+      Check(bytes.find(name) != std::string::npos, std::format("it holds {}", name));
+    }
+    Check(bytes.find("[ok] Open Desktop VR runs as a normal app") != std::string::npos
+        || bytes.find("Open Desktop VR runs as a normal app") != std::string::npos,
+      "the self-test's results are in it");
+    Check(bytes.find("Build: ") != std::string::npos, "the recent log lines are in it");
   });
 
   Scenario("The Keybinds tab: every action with two slots, in the theme (M3c)", [&] {

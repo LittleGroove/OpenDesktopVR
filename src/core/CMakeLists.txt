@@ -14,8 +14,11 @@ odvr_module(
   Product.cpp
   ProcessUtil.cpp
   Autostart.cpp
+  CrashHandler.cpp
+  LogRing.cpp
   DEPS
   odvr::cppwinrt
   shell32
   advapi32
+  dbghelp
 )

@@ -15,6 +15,7 @@
 
 #include <OpenDesktopVR/D3D11Util.hpp>
 #include <OpenDesktopVR/Layer/Composition.hpp>
+#include <OpenDesktopVR/Layer/LayerChain.hpp>
 #include <OpenDesktopVR/Layer/LayerConfig.hpp>
 
 #include <winrt/base.h>
@@ -111,6 +112,9 @@ struct InstanceState {
   bool mHandTrackingEnabled {false};
   std::string mApplicationName;
   std::string mRuntimeName;
+  // For the host's diagnostics (M6c; CMP-1, CMP-2, CMP-7)
+  ChainSummary mChain;
+  bool mDepthEnabled {false};
 };
 
 }// namespace OpenDesktopVR::Layer

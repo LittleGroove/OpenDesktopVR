@@ -226,19 +226,28 @@ struct Game {
   std::vector<const XrCompositionLayerBaseHeader*> mHeaders;
   XrTime mTime {1};
 
-  explicit Game(Layer& layer) : mLayer(layer) {
-    XrApiLayerNextInfo next {
-      XR_LOADER_INTERFACE_STRUCT_API_LAYER_NEXT_INFO, XR_API_LAYER_NEXT_INFO_STRUCT_VERSION, sizeof(XrApiLayerNextInfo)};
-    strcpy_s(next.layerName, std::string {Product::LayerName}.c_str());
-    next.nextGetInstanceProcAddr = &F_xrGetInstanceProcAddr;
-    next.nextCreateApiLayerInstance = &F_xrCreateApiLayerInstance;
+  // `below`: other layers' names, between ours and the fake runtime (they
+  // only name entries of the chain; calls go straight to the runtime).
+  // `moreExtensions`: enabled by the game besides D3D11.
+  explicit Game(Layer& layer, const std::vector<std::string>& below = {}, const std::vector<const char*>& moreExtensions = {})
+    : mLayer(layer) {
+    std::vector<XrApiLayerNextInfo> chain(1 + below.size());
+    for (std::size_t i = 0; i < chain.size(); ++i) {
+      auto& next = chain[i];
+      next = {XR_LOADER_INTERFACE_STRUCT_API_LAYER_NEXT_INFO, XR_API_LAYER_NEXT_INFO_STRUCT_VERSION, sizeof(XrApiLayerNextInfo)};
+      strcpy_s(next.layerName, i == 0 ? std::string {Product::LayerName}.c_str() : below[i - 1].c_str());
+      next.nextGetInstanceProcAddr = &F_xrGetInstanceProcAddr;
+      next.nextCreateApiLayerInstance = &F_xrCreateApiLayerInstance;
+      next.next = i + 1 < chain.size() ? &chain[i + 1] : nullptr;
+    }
     XrApiLayerCreateInfo layerInfo {
       XR_LOADER_INTERFACE_STRUCT_API_LAYER_CREATE_INFO, XR_API_LAYER_CREATE_INFO_STRUCT_VERSION, sizeof(XrApiLayerCreateInfo)};
-    layerInfo.nextInfo = &next;
-    const char* extensions[] {XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
+    layerInfo.nextInfo = chain.data();
+    std::vector<const char*> extensions {XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
+    extensions.insert(extensions.end(), moreExtensions.begin(), moreExtensions.end());
     XrInstanceCreateInfo info {XR_TYPE_INSTANCE_CREATE_INFO};
-    info.enabledExtensionCount = 1;
-    info.enabledExtensionNames = extensions;
+    info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+    info.enabledExtensionNames = extensions.data();
     strcpy_s(info.applicationInfo.applicationName, "layer-dll-test");
     info.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 0);
     mLayer.mRequest.createApiLayerInstance(&info, &layerInfo, &mInstance);

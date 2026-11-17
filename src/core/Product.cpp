@@ -39,6 +39,11 @@ std::filesystem::path LogsFolder() {
   return root.empty() ? root : root / L"logs";
 }
 
+std::filesystem::path CrashDumpsFolder() {
+  const auto root = DataFolder();
+  return root.empty() ? root : root / L"crashdumps";
+}
+
 std::filesystem::path SettingsFile() {
   const auto root = DataFolder();
   return root.empty() ? root : root / L"settings.json";

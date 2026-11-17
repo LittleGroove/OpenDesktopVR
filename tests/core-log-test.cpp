@@ -9,6 +9,7 @@
 
 #include <OpenDesktopVR/FileUtil.hpp>
 #include <OpenDesktopVR/Log.hpp>
+#include <OpenDesktopVR/LogRing.hpp>
 #include <OpenDesktopVR/TimeUtil.hpp>
 
 #include <atomic>
@@ -189,6 +190,44 @@ int main() {
     const auto exitStart = TimeUtil::Now();
     Log::Stop(Log::StopMode::ProcessExit);
     Check(TimeUtil::ToMilliseconds(TimeUtil::Now() - exitStart) < 5, "the process-exit stop doesn't wait at all");
+  });
+
+  Scenario("The log viewer's ring keeps the newest lines, Info and up only (LG-3)", [] {
+    Log::LogRing ring {3, false};
+    const auto add = [&ring](Log::Level level, std::string_view text) {
+      ring.Add(Log::Entry {.mFileTime = 0, .mThreadID = 1, .mLevel = level, .mText = text});
+    };
+    add(Log::Level::Info, "one");
+    add(Log::Level::Debug, "hover detail");
+    add(Log::Level::Warning, "two");
+    Check(ring.Lines().size() == 2, "Debug lines stay out of it");
+    const auto before = ring.Version();
+    add(Log::Level::Info, "three");
+    add(Log::Level::Error, "four");
+    Check(ring.Version() != before, "its version changes when a line is added (the viewer redraws only then)");
+    const auto lines = ring.Lines();
+    Check(lines.size() == 3, std::format("at most its capacity ({} lines)", lines.size()));
+    Check(
+      lines.size() == 3 && lines[0].mText.ends_with("two") && lines[1].mText.ends_with("three") && lines[2].mText.ends_with("four"),
+      "oldest first; the oldest dropped off");
+    Check(ring.Dropped() == 1, "it counts what dropped off");
+    Check(ring.Text().find("WARN") != std::string::npos && ring.Text().ends_with("four\r\n"), "as text: one formatted line each");
+
+    // Collecting from the log thread, and outliving nothing
+    {
+      Log::LogRing live;
+      Log::Start({.mDebuggerOutput = false});
+      for (int i = 0; i < 1500; ++i) {
+        Log::Info("line {}", i);
+        if (i % 100 == 99) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(20));// the log queue (256) drains
+        }
+      }
+      Log::Stop();
+      const auto kept = live.Lines();
+      Check(kept.size() == Log::LogRing::DefaultCapacity, std::format("{} lines kept of 1500 (bounded)", kept.size()));
+      Check(!kept.empty() && kept.back().mText.ends_with("line 1499"), "the newest line is last");
+    }
   });
 
   return Finish();

@@ -11,6 +11,7 @@
 // --screenshot: once panels have shown for 2 s, save the window as a PNG
 // and exit (for checking the host's drawing without looking)
 
+#include <OpenDesktopVR/CrashHandler.hpp>
 #include <OpenDesktopVR/GpuDevice.hpp>
 #include <OpenDesktopVR/HostLink.hpp>
 #include <OpenDesktopVR/ImageFile.hpp>
@@ -55,7 +56,7 @@ class Mirror {
     mLink = std::make_unique<HostLink::Client>(mGpu->Device(), HostLink::ClientOptions {.mWritesStatus = false});
 
     WNDCLASSEXW windowClass {sizeof(windowClass)};
-    windowClass.lpfnWndProc = &Mirror::WindowProc;
+    windowClass.lpfnWndProc = &CrashHandler::GuardedProcedure<&Mirror::WindowProc>;
     windowClass.hInstance = instance;
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     windowClass.lpszClassName = WindowClass;
@@ -241,6 +242,9 @@ class Mirror {
 }// namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+  if (const auto dumps = Product::CrashDumpsFolder(); !dumps.empty()) {
+    CrashHandler::Install(dumps, L"odvr-mirror");// TH-10
+  }
   Log::Config config;
   if (const auto folder = Product::LogsFolder(); !folder.empty()) {
     config.mFile = folder / L"mirror.log";

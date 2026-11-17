@@ -14,11 +14,15 @@ odvr_test(hand-render-test PORTED NO_CTEST SOURCES hand-render-test.cpp DEPS odv
 odvr_test(core-events-test SOURCES core-events-test.cpp DEPS odvr::core)
 odvr_test(core-log-test SOURCES core-log-test.cpp DEPS odvr::core)
 odvr_test(core-util-test SOURCES core-util-test.cpp DEPS odvr::core)
+# Crash reports (M6c, TH-10): child processes crash on purpose
+odvr_test(crash-test SOURCES crash-test.cpp DEPS odvr::core)
 odvr_test(settings-test SOURCES settings-test.cpp DEPS odvr::settings)
 
 # Layer logic, OpenXR helpers and registration (M1)
 odvr_test(layer-logic-test SOURCES layer-logic-test.cpp DEPS odvr::layerlogic odvr::xrutil)
 odvr_test(registration-test SOURCES registration-test.cpp DEPS odvr::registration)
+# Diagnostics and support (M6c): self-test verdicts, the debug bundle, redaction
+odvr_test(diagnostics-test SOURCES diagnostics-test.cpp DEPS odvr::diagnostics)
 
 # The real layer DLL in the simulator (fake runtime + fake game). "FAIL" in
 # the output fails the test: some simulator modes print checks but exit 0.

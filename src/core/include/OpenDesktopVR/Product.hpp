@@ -44,6 +44,8 @@ std::wstring KernelObjectName(std::wstring_view object, unsigned abiVersion);
 // %LOCALAPPDATA%\<product>; or, for tests, OPENDESKTOPVR_DATA_FOLDER
 std::filesystem::path DataFolder();
 std::filesystem::path LogsFolder();
+// Crash dumps and crashes.txt (CrashHandler; TH-10)
+std::filesystem::path CrashDumpsFolder();
 std::filesystem::path SettingsFile();
 std::filesystem::path ProfilesFolder();
 

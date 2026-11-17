@@ -12,6 +12,7 @@ odvr_executable(
   PanelManager.cpp
   SettingsWindow.cpp
   KeybindService.cpp
+  Support.cpp
   DEPS
   odvr::hostcore
   odvr::hostlink
@@ -21,6 +22,7 @@ odvr_executable(
   odvr::apphelperhost
   odvr::settings
   odvr::registration
+  odvr::diagnostics
   odvr::ui
   odvr::imgui
   odvr::gfx

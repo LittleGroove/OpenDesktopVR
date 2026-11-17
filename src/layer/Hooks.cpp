@@ -272,6 +272,17 @@ Hook_xrCreateApiLayerInstance(const XrInstanceCreateInfo* info, const XrApiLayer
     StartOnce();
     const std::span<const char* const> gameExtensions {info->enabledExtensionNames, info->enabledExtensionCount};
     state->mApplicationName = info->applicationInfo.applicationName;
+    // The diagnostics page and self-test (M6c): what sits between us and the
+    // runtime (CMP-1, CMP-2), and whether the game may submit depth (CMP-7)
+    state->mChain = SummarizeChain(nextInfo, Product::LayerName);
+    state->mDepthEnabled = EnablesExtension(gameExtensions, XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME);
+    Log::Info("API layers below ours, toward the runtime: {}", state->mChain.Describe());
+    if (state->mDepthEnabled) {
+      Log::Info("The game enables XR_KHR_composition_layer_depth: with depth submitted, some runtimes hide overlays "
+                "behind the game (CMP-7)");
+    } else {
+      Log::Info("The game doesn't enable XR_KHR_composition_layer_depth");
+    }
     state->mConfig = LoadLayerConfig();
     const auto exe = ProcessUtil::ExecutablePath().filename().wstring();
     if (state->mConfig.IsDisabledFor(exe)) {

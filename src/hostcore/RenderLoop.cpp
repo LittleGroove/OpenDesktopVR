@@ -453,8 +453,12 @@ void RenderLoop::Impl::FollowLayer() {
         status->mLayerProcessID,
         std::string {status->mRuntime, strnlen(status->mRuntime, sizeof(status->mRuntime))});
     }
+    if (mStats.mLayerProcessID != status->mLayerProcessID) {
+      mStats.mLayerAttachedAt = std::chrono::steady_clock::now();
+    }
     mStats.mLayerProcessID = status->mLayerProcessID;
     mStats.mLayerExecutable = StringUtil::Widen(std::string {status->mExecutable, strnlen(status->mExecutable, sizeof(status->mExecutable))});
+    mStats.mLayerStatus = *status;
   }
   // The game's adapter: shared textures only open on the same GPU
   const LUID adapter {status->mAdapterLuidLow, status->mAdapterLuidHigh};

@@ -50,6 +50,9 @@ std::optional<bool> UacEnabled() noexcept;
 // Its executable's full path; empty if it can't be read
 std::filesystem::path ProcessImagePath(unsigned long processID) noexcept;
 
+// Whether it's still running (false if it can't be opened at all)
+bool IsRunning(unsigned long processID) noexcept;
+
 // Whether a DLL built like this process can load into it: same architecture,
 // not a 32-bit process under WOW64 (ADR-015). nullopt if it can't be read.
 std::optional<bool> SameArchitecture(unsigned long processID) noexcept;

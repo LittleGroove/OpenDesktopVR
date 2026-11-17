@@ -5,15 +5,19 @@
 // M1 cases the simulator doesn't script: negotiation, pre-instance lookups
 // (XR-8), zero-layer frames (XR-6), another thread (XR-5), the layer limit
 // (XR-9), a failed image wait (XR-15), a second session (XR-18), an
-// unsupported graphics API, the disable variable, and the game's D3D11 state
-// (XR-20).
+// unsupported graphics API, the disable variable, the game's D3D11 state
+// (XR-20), and what the layer logs about the chain and depth (M6c).
+//
+// The layer's data folder (settings, its log) is a private temporary one.
 //
 // Usage: layer-dll-test <layer DLL>
 
 #include "check.hpp"
 #include "fake-openxr.hpp"
 
+#include <OpenDesktopVR/FileUtil.hpp>
 #include <OpenDesktopVR/Product.hpp>
+#include <OpenDesktopVR/StringUtil.hpp>
 
 #include <Windows.h>
 
@@ -51,6 +55,9 @@ int main(int argc, char** argv) {
     nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
     gRT.mDevice.put(), nullptr, gRT.mContext.put()));
   _putenv_s(std::string {Product::TestPanelEnvVar}.c_str(), "1");
+  // Never the user's own settings or logs
+  TempFolder dataFolder;
+  _putenv_s("OPENDESKTOPVR_DATA_FOLDER", StringUtil::Narrow(dataFolder.Path()).c_str());
 
   Layer layer;
   layer.mModule = LoadLibraryA(argv[1]);
@@ -149,6 +156,33 @@ int main(int argc, char** argv) {
     D3D11_VIEWPORT after {};
     gRT.mContext->RSGetViewports(&count, &after);
     Check(count == 1 && std::memcmp(&after, &viewport, sizeof(viewport)) == 0, "the viewport is unchanged");
+  });
+
+  Scenario("The layer logs the layers below it and the game's depth extension (M6c: CMP-1, CMP-2, CMP-7)", [&] {
+    {
+      Game plain {layer};
+    }
+    Game game {layer, {"XR_APILAYER_NOVENDOR_XRNeckSafer", "XR_APILAYER_ULTRALEAP_hand_tracking"},
+      {XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME}};
+    Check(game.mInstance != XR_NULL_HANDLE, "instance created through a longer chain");
+    // The layer's log thread writes within a moment
+    const auto log = std::filesystem::path {dataFolder.Path()} / L"logs" / L"layer-layer-dll-test.log";
+    std::string text;
+    for (int i = 0; i < 40; ++i) {
+      text = FileUtil::ReadAll(log).value_or("");
+      if (text.find("XR_APILAYER_ULTRALEAP_hand_tracking") != std::string::npos) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    Check(text.find("API layers below ours, toward the runtime: none") != std::string::npos, "none below: said so");
+    Check(
+      text.find("API layers below ours, toward the runtime: XR_APILAYER_NOVENDOR_XRNeckSafer, XR_APILAYER_ULTRALEAP_hand_tracking")
+        != std::string::npos,
+      "the layers below, nearest first, are logged");
+    Check(text.find("The game doesn't enable XR_KHR_composition_layer_depth") != std::string::npos, "no depth: said so");
+    Check(text.find("The game enables XR_KHR_composition_layer_depth") != std::string::npos, "depth enabled: logged (CMP-7)");
+    Check(gRT.mEnabledExtensions.size() >= 2, "the game's depth extension reached the runtime");
   });
 
   Scenario("The disable variable turns the layer into a pass-through", [&] {

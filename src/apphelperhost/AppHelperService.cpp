@@ -4,6 +4,7 @@
 #include <OpenDesktopVR/AppHelperProtocol.hpp>
 #include <OpenDesktopVR/AppHelperRules.hpp>
 #include <OpenDesktopVR/AppHelperService.hpp>
+#include <OpenDesktopVR/CrashHandler.hpp>
 #include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/ProcessUtil.hpp>
 #include <OpenDesktopVR/Product.hpp>
@@ -147,7 +148,7 @@ struct AppHelperService::Impl : std::enable_shared_from_this<Impl> {
     ThreadUtil::SetCurrentThreadName(L"App helper");
     const HINSTANCE instance = GetModuleHandleW(nullptr);
     WNDCLASSEXW windowClass {sizeof(windowClass)};
-    windowClass.lpfnWndProc = &Impl::WindowProc;
+    windowClass.lpfnWndProc = &CrashHandler::GuardedProcedure<&Impl::WindowProc>;
     windowClass.hInstance = instance;
     windowClass.lpszClassName = WindowClass;
     RegisterClassExW(&windowClass);// may exist already (a second service in tests)

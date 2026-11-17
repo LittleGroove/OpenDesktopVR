@@ -3,6 +3,7 @@
 
 #include "KeybindService.hpp"
 
+#include <OpenDesktopVR/CrashHandler.hpp>
 #include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/StringUtil.hpp>
 #include <OpenDesktopVR/ThreadUtil.hpp>
@@ -34,7 +35,7 @@ KeybindService::KeybindService(HINSTANCE instance, PanelManager& panels)
       }
     }) {
   WNDCLASSEXW windowClass {sizeof(windowClass)};
-  windowClass.lpfnWndProc = &KeybindService::WindowProc;
+  windowClass.lpfnWndProc = &CrashHandler::GuardedProcedure<&KeybindService::WindowProc>;
   windowClass.hInstance = instance;
   windowClass.lpszClassName = WindowClass;
   RegisterClassExW(&windowClass);

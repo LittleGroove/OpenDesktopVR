@@ -21,10 +21,12 @@
 
 #include "KeybindService.hpp"
 #include "PanelManager.hpp"
+#include "Support.hpp"
 
 #include <OpenDesktopVR/AppHelperService.hpp>
 #include <OpenDesktopVR/HostLink.hpp>
 #include <OpenDesktopVR/KeyboardLayout.hpp>
+#include <OpenDesktopVR/LogRing.hpp>
 #include <OpenDesktopVR/RenderLoop.hpp>
 #include <OpenDesktopVR/ThreadUtil.hpp>
 #include <OpenDesktopVR/TimeUtil.hpp>
@@ -53,7 +55,7 @@ namespace OpenDesktopVR::Host {
 class SettingsWindow {
  public:
   SettingsWindow(HINSTANCE instance, RenderLoop& renderer, PanelManager& panels, KeybindService& keybinds,
-    AppHelper::AppHelperService& appHelper);
+    AppHelper::AppHelperService& appHelper, const Log::LogRing& logRing);
   ~SettingsWindow();
   SettingsWindow(const SettingsWindow&) = delete;
   SettingsWindow& operator=(const SettingsWindow&) = delete;
@@ -88,6 +90,9 @@ class SettingsWindow {
   }
   void ShowKeybindsTab() noexcept {
     mSelectKeybinds = true;
+  }
+  void ShowDiagnosticsTab() noexcept {
+    mSelectDiagnostics = true;
   }
 
  private:
@@ -130,11 +135,27 @@ class SettingsWindow {
   void HandsPage();
   // Performance, games, startup and about
   void GeneralPage();
+  // Diagnostics and support (M6c, doc 09): the "doesn't show in game"
+  // self-test (UI-10), the game's status, each app's helper, A/B switches,
+  // the log viewer (LG-3), and "Save debug info" (LG-4)
+  void DiagnosticsPage();
+  void SelfTestSection();
+  void LogSection();
+  void SupportSection();
+  void PrivacyPopup();
+  // The self-test runs on a worker (it reads the registry and other
+  // processes); its result shows when ready
+  void StartSelfTest();
+  void TakeSelfTest();
+  void StartBundle(std::filesystem::path zip);
+  // Once a second while the tab shows: repaint only if what it shows changed
+  void CheckDiagnostics();
   // Profiles (ADR-038): switch, make, rename, delete, games, export, import
   void ProfilesPage();
-  // A native file dialog for a profile file; nullopt if cancelled. Only
-  // ever outside a frame: its modal loop paints this window (round 15)
-  std::optional<std::filesystem::path> AskProfileFile(bool save, const std::wstring& name);
+  // A native file dialog for a profile file, or a debug-info .zip; nullopt
+  // if cancelled. Only ever outside a frame: its modal loop paints this
+  // window (round 15)
+  std::optional<std::filesystem::path> AskProfileFile(bool save, const std::wstring& name, bool debugInfo = false);
   // The export or import asked for during a frame, run once it's done
   void RunPendingDialog();
   // The virtual keyboard's settings, on the Hands tab (K10)
@@ -161,6 +182,7 @@ class SettingsWindow {
   PanelManager& mPanels;
   KeybindService& mKeybinds;
   AppHelper::AppHelperService& mAppHelper;
+  const Log::LogRing& mLogRing;
   Events::Subscription mPanelsChanged;// repaints when keybinds hide panels
 
   // A keybind being set
@@ -219,6 +241,7 @@ class SettingsWindow {
     bool mSave {false};// export; otherwise import
     std::string mProfileID;
     std::wstring mName;
+    bool mDebugInfo {false};// "Save debug info": a .zip, then the bundle
   };
   std::optional<PendingDialog> mPendingDialog;
   // Inside a frame: a frame never starts inside another (round 15: a file
@@ -260,6 +283,26 @@ class SettingsWindow {
   std::vector<WindowUtil::WindowInfo> mWindows;
   std::array<char, 128> mFilter {};
   int mPickerSelection {-1};
+
+  // The Diagnostics tab
+  bool mSelectDiagnostics {false};
+  bool mDiagnosticsDrawn {false};// this frame
+  bool mDiagnosticsWasDrawn {false};// the frame before: the checks run again each time the tab comes into view
+  bool mDiagnosticsTimer {false};
+  ThreadUtil::BackgroundTask<std::vector<Diagnostics::SelfCheck>> mSelfTestTask;
+  std::optional<std::vector<Diagnostics::SelfCheck>> mSelfTest;
+  bool mSelfTestWanted {true};// run on the next frame that shows the tab
+  uint64_t mLogVersion {~0ull};
+  std::vector<Log::LogRing::Line> mLogLines;
+  bool mLogScrollToEnd {true};
+  // What the page last showed of the game, to repaint only on a change
+  uint32_t mShownGame {0};
+  uint32_t mShownSession {0};
+  uint64_t mShownFrames {0};
+  bool mOpenPrivacy {false};
+  ThreadUtil::BackgroundTask<Diagnostics::BundleResult> mBundleTask;
+  std::optional<Diagnostics::BundleResult> mBundleResult;
+  std::filesystem::path mBundlePath;
 
   // Tests
   std::optional<std::filesystem::path> mScreenshot;

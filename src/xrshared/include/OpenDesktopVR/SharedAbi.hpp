@@ -138,9 +138,21 @@ struct LayerStatus {
   // The panel the head points at (doc 05 "Gaze focus"), or 0: the host
   // draws it with its "looked at" opacity (PN-4)
   uint64_t mFocusedPanelID;
-  uint8_t mReserved[40];
+  // Diagnostics (M6c; CMP-1, CMP-2, CMP-7). Formerly reserved: a layer
+  // from before M6c leaves them zero, which reads as "not known".
+  uint32_t mChainFlags;    // ChainFlags
+  uint32_t mLayersBelow;   // API layers between ours and the runtime
+  uint32_t mKnownBelow;    // KnownLayers::Kind bits among them
+  uint32_t mNearestRuntime;// the Kind of the one nearest the runtime, or 0
+  uint8_t mReserved[24];
 };
 static_assert(sizeof(LayerStatus) == 512);
+static_assert(offsetof(LayerStatus, mChainFlags) == 472);
+
+enum ChainFlags : uint32_t {
+  ChainKnown = 1u << 0,  // the fields above are filled in
+  DepthEnabled = 1u << 1,// the game enabled XR_KHR_composition_layer_depth
+};
 
 enum class GraphicsApi : uint32_t { Unknown = 0, D3D11 = 1, D3D12 = 2, Vulkan = 3, OpenGL = 4 };
 

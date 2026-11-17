@@ -4,6 +4,7 @@
 #include "SettingsWindow.hpp"
 
 #include <OpenDesktopVR/Autostart.hpp>
+#include <OpenDesktopVR/CrashHandler.hpp>
 #include <OpenDesktopVR/ImageFile.hpp>
 #include <OpenDesktopVR/ProcessUtil.hpp>
 #include <OpenDesktopVR/Log.hpp>
@@ -44,6 +45,8 @@ constexpr UINT_PTR ScreenshotIdleStart = 2;
 constexpr UINT_PTR ScreenshotIdleEnd = 3;
 constexpr UINT_PTR PreviewTimer = 4;// the live preview: has the panel changed?
 constexpr UINT PreviewCheckMs = 100;
+constexpr UINT_PTR DiagnosticsTimer = 5;// the Diagnostics tab: has its content changed?
+constexpr UINT DiagnosticsCheckMs = 1000;
 constexpr float PreviewMaxHeight = 220;
 constexpr UINT PaintIntervalMs = 33;// at most about 30 paints a second
 constexpr int TailFrames = 15;      // half a second after the last input
@@ -160,11 +163,11 @@ bool DragPixels(const char* label, uint32_t* pixels, uint32_t maximum) {
 }// namespace
 
 SettingsWindow::SettingsWindow(HINSTANCE instance, RenderLoop& renderer, PanelManager& panels, KeybindService& keybinds,
-  AppHelper::AppHelperService& appHelper)
-  : mInstance(instance), mRenderer(renderer), mPanels(panels), mKeybinds(keybinds), mAppHelper(appHelper) {
+  AppHelper::AppHelperService& appHelper, const Log::LogRing& logRing)
+  : mInstance(instance), mRenderer(renderer), mPanels(panels), mKeybinds(keybinds), mAppHelper(appHelper), mLogRing(logRing) {
   mPanelsChanged = mPanels.Changed().Subscribe([this] { Invalidate(); });
   WNDCLASSEXW windowClass {sizeof(windowClass)};
-  windowClass.lpfnWndProc = &SettingsWindow::WindowProc;
+  windowClass.lpfnWndProc = &CrashHandler::GuardedProcedure<&SettingsWindow::WindowProc>;
   windowClass.hInstance = instance;
   windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
   windowClass.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
@@ -388,6 +391,8 @@ bool SettingsWindow::Create() {
 }
 
 void SettingsWindow::Destroy() {
+  mDiagnosticsTimer = false;// timers go with the window
+  mDiagnosticsDrawn = false;
   // The preview's views are on this window's device; the link goes with it
   mPreviewViews.clear();
   mLink.reset();
@@ -525,6 +530,10 @@ LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         CheckPreview();
         return 0;
       }
+      if (wParam == DiagnosticsTimer) {
+        CheckDiagnostics();
+        return 0;
+      }
       if (wParam == PaintTimer) {
         Paint();
         if (mWindow && --mFramesLeft <= 0 && !mListing.Started()) {
@@ -630,7 +639,8 @@ void SettingsWindow::Paint() {
     // A preview on the page: its first image (the host starts drawing once
     // this window watches), or 3 s
     const bool previewReady = !mPreviewDrawn || mPreviewShowing || TimeUtil::Now() - mOpenedAt >= std::chrono::seconds(3);
-    if (settled && previewReady && mPaints >= ScreenshotAfterPaints && !mListing.Started() && !mThumbnailTask.Started()) {
+    if (settled && previewReady && mPaints >= ScreenshotAfterPaints && !mListing.Started() && !mThumbnailTask.Started()
+        && !mSelfTestTask.Started()) {
       TakeScreenshot();// before Present: a flip-model buffer is undefined after it
     } else {
       KeepPainting(2);
@@ -714,6 +724,8 @@ void SettingsWindow::BuildUi() {
 
   mPreviewDrawn = false;
   mPreviewShowing = false;
+  mDiagnosticsWasDrawn = std::exchange(mDiagnosticsDrawn, false);
+  TakeSelfTest();
   const auto panels = mPanels.Panels();// a copy: edits below replace the originals
   const auto selected = std::ranges::find(panels, mSelected, &PanelDefinition::mID);
   if (selected == panels.end()) {
@@ -748,7 +760,7 @@ void SettingsWindow::BuildUi() {
 
     if (ImGui::BeginTabBar("pages", ImGuiTabBarFlags_DrawSelectedOverline)) {
       // Tests (DU-3): each tab in turn, one a frame
-      constexpr int TabCount = 5;
+      constexpr int TabCount = 6;
       const auto cycle = [&](int index) {
         return mCycleTab == index ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
       };
@@ -788,6 +800,11 @@ void SettingsWindow::BuildUi() {
         GeneralPage();
         ImGui::EndTabItem();
       }
+      const auto diagnosticsFlags = (std::exchange(mSelectDiagnostics, false) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None) | cycle(5);
+      if (ImGui::BeginTabItem("Diagnostics", nullptr, diagnosticsFlags)) {
+        DiagnosticsPage();
+        ImGui::EndTabItem();
+      }
       if (mCycleTab >= 0 && ++mCycleTab > TabCount) {
         mCycleTab = -1;// done: back to the first
       }
@@ -795,6 +812,7 @@ void SettingsWindow::BuildUi() {
     }
     WindowPicker();
     CapturePopup();
+    PrivacyPopup();
   }
   ImGui::End();
 }
@@ -1547,9 +1565,332 @@ void SettingsWindow::GeneralPage() {
   ImGui::EndChild();
 }
 
+// ---- Diagnostics (M6c, doc 09) -------------------------------------------------
+
+namespace {
+
+ImVec4 StatusColor(Diagnostics::Verdict verdict) {
+  const auto rgb = [verdict] {
+    switch (verdict) {
+      case Diagnostics::Verdict::Pass:
+        return Theme::StatusGood;
+      case Diagnostics::Verdict::Warning:
+        return Theme::StatusWarning;
+      case Diagnostics::Verdict::Fail:
+        return Theme::StatusProblem;
+      default:
+        return Theme::TextDim;
+    }
+  }();
+  const auto c = Theme::ToRgba(rgb);
+  return {c.r, c.g, c.b, c.a};
+}
+
+ImVec4 ToImVec4(uint32_t rgb) {
+  const auto c = Theme::ToRgba(rgb);
+  return {c.r, c.g, c.b, c.a};
+}
+
+// A round mark in the verdict's colour, the height of a line of text
+void StatusMark(Diagnostics::Verdict verdict) {
+  const float size = ImGui::GetTextLineHeight();
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  ImGui::GetWindowDrawList()->AddCircleFilled({at.x + size / 2, at.y + size / 2}, size * 0.3f, ImGui::GetColorU32(StatusColor(verdict)));
+  ImGui::Dummy({size, size});
+}
+
+void Rows(const char* id, const std::vector<Host::Support::Row>& rows) {
+  if (ImGui::BeginTable(id, 2, ImGuiTableFlags_SizingStretchProp)) {
+    ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthStretch, 0.35f);
+    ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch, 0.65f);
+    for (const auto& row: rows) {
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      ImGui::TextDisabled("%s", row.mLabel.c_str());
+      ImGui::TableSetColumnIndex(1);
+      ImGui::TextWrapped("%s", row.mValue.c_str());
+    }
+    ImGui::EndTable();
+  }
+}
+
+}// namespace
+
+void SettingsWindow::DiagnosticsPage() {
+  mDiagnosticsDrawn = true;
+  if (!mDiagnosticsWasDrawn) {
+    mSelfTestWanted = true;// just came into view: fresh checks
+  }
+  if (mWindow && !mDiagnosticsTimer) {
+    SetTimer(mWindow, DiagnosticsTimer, DiagnosticsCheckMs, nullptr);
+    mDiagnosticsTimer = true;
+  }
+  if (mSelfTestWanted) {
+    StartSelfTest();
+  }
+  if (!ImGui::BeginChild("diagnostics", {0, 0}, ImGuiChildFlags_Borders)) {
+    ImGui::EndChild();
+    return;
+  }
+  SelfTestSection();
+
+  const auto stats = mRenderer.Stats();
+  mShownGame = stats.mLayerStatus ? stats.mLayerStatus->mLayerProcessID : 0;
+  mShownSession = stats.mLayerStatus ? stats.mLayerStatus->mSessionState : 0;
+  mShownFrames = stats.mLayerStatus ? stats.mLayerStatus->mFramesSinceAttach : 0;
+  ImGui::Spacing();
+  ImGui::SeparatorText("In game");
+  if (const auto rows = Support::DescribeGame(stats); rows.empty()) {
+    ImGui::TextWrapped("No game has loaded the layer since Open Desktop VR started.");
+  } else {
+    Rows("game", rows);
+  }
+
+  ImGui::Spacing();
+  ImGui::SeparatorText("Apps");
+  if (const auto rows = Support::DescribeHelpers(mPanels, mAppHelper); rows.empty()) {
+    ImGui::TextDisabled("No window panels.");
+  } else {
+    Rows("apps", rows);
+  }
+
+  // Doc 09: A/B switches for performance reports
+  ImGui::Spacing();
+  ImGui::SeparatorText("Compare performance");
+  ImGui::TextWrapped("Turn these off and on while watching the game's frame rate, to see what Open Desktop VR costs:");
+  bool showing = mPanels.AnyShowing();
+  if (ImGui::Checkbox("Show panels in VR##ab", &showing)) {
+    Log::Info("Panels {} (Diagnostics tab)", mPanels.ToggleAll() ? "shown" : "hidden");
+  }
+  ImGui::SameLine();
+  auto hands = mPanels.Hands();
+  if (ImGui::Checkbox("Use my hands on panels##ab", &hands.mEnabled)) {
+    mPanels.SetHands(hands);
+    Log::Info("Hands on panels: {} (Diagnostics tab)", hands.mEnabled ? "on" : "off");
+  }
+
+  LogSection();
+  SupportSection();
+  ImGui::EndChild();
+}
+
+void SettingsWindow::SelfTestSection() {
+  ImGui::SeparatorText("Panels don't show in the game?");
+  ImGui::BeginDisabled(mSelfTestTask.Started());
+  if (ImGui::Button(mSelfTestTask.Started() ? "Checking..." : "Check again")) {
+    mSelfTestWanted = true;
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::TextDisabled("Start Open Desktop VR before the game for the most to check.");
+  if (!mSelfTest) {
+    return;
+  }
+  const float indent = ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemSpacing.x;
+  for (const auto& check: *mSelfTest) {
+    ImGui::PushID(static_cast<int>(check.mID));
+    StatusMark(check.mVerdict);
+    ImGui::SameLine();
+    ImGui::TextUnformatted(check.mTitle.c_str());
+    ImGui::Indent(indent);
+    ImGui::PushStyleColor(ImGuiCol_Text, ToImVec4(Theme::TextDim));
+    ImGui::TextWrapped("%s", check.mDetail.c_str());
+    ImGui::PopStyleColor();
+    if (!check.mFix.empty()) {
+      ImGui::TextWrapped("%s", check.mFix.c_str());
+    }
+    if (check.mID == Diagnostics::CheckID::Recenter && ImGui::Button("Bring panels in front of me")) {
+      mRenderer.Recenter();
+      Log::Info("Recentered from the Diagnostics tab");
+    }
+    ImGui::Unindent(indent);
+    ImGui::PopID();
+  }
+}
+
+void SettingsWindow::LogSection() {
+  ImGui::Spacing();
+  ImGui::SeparatorText("Log");
+  if (const auto version = mLogRing.Version(); version != mLogVersion) {
+    mLogVersion = version;
+    mLogLines = mLogRing.Lines();
+    mLogScrollToEnd = true;
+  }
+  const float height = ImGui::GetTextLineHeightWithSpacing() * 12;
+  if (ImGui::BeginChild("log", {0, height}, ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar)) {
+    const bool atEnd = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 1;
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(mLogLines.size()));
+    while (clipper.Step()) {
+      for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+        const auto& line = mLogLines[static_cast<std::size_t>(i)];
+        const bool marked = line.mLevel >= Log::Level::Warning;
+        if (marked) {
+          ImGui::PushStyleColor(
+            ImGuiCol_Text, ToImVec4(line.mLevel == Log::Level::Error ? Theme::StatusProblem : Theme::StatusWarning));
+        }
+        ImGui::TextUnformatted(line.mText.c_str());
+        if (marked) {
+          ImGui::PopStyleColor();
+        }
+      }
+    }
+    // New lines: follow them, unless scrolled up to read
+    if (std::exchange(mLogScrollToEnd, false) && (atEnd || ImGui::GetScrollMaxY() == 0)) {
+      ImGui::SetScrollHereY(1.0f);
+    }
+  }
+  ImGui::EndChild();
+  if (ImGui::Button("Copy")) {
+    ImGui::SetClipboardText(mLogRing.Text().c_str());
+  }
+  ImGui::SetItemTooltip("Copies these lines, to paste into a message");
+  ImGui::SameLine();
+  if (ImGui::Button("Open the logs folder##diagnostics")) {
+    const auto folder = Product::LogsFolder();
+    ShellExecuteW(mWindow, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled("The newest %zu lines; the files hold more.", mLogRing.Capacity());
+}
+
+void SettingsWindow::SupportSection() {
+  ImGui::Spacing();
+  ImGui::SeparatorText("Support");
+  ImGui::BeginDisabled(mBundleTask.Started() || mPendingDialog.has_value());
+  if (ImGui::Button(mBundleTask.Started() ? "Saving..." : "Save debug info...")) {
+    mOpenPrivacy = true;
+  }
+  ImGui::EndDisabled();
+  ImGui::SetItemTooltip("One file with what helps find a problem, to send with a report");
+  ImGui::SameLine();
+  if (ImGui::Button("Open the mirror")) {
+    const auto mirror = ProcessUtil::ExecutablePath().parent_path() / L"odvr-mirror.exe";
+    ShellExecuteW(mWindow, L"open", mirror.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  }
+  ImGui::SetItemTooltip("Shows panels on the desktop, as the game gets them");
+  if (mBundleTask.Started()) {
+    if (!mBundleTask.Running()) {
+      mBundleResult = mBundleTask.Take().value_or(Diagnostics::BundleResult {false, 0, 0, "unexpected error"});
+    } else {
+      KeepPainting(2);
+    }
+  }
+  if (mBundleResult) {
+    if (mBundleResult->mOk) {
+      ImGui::TextWrapped("Saved %s (%zu files, %zu KB).", Utf8(mBundlePath.filename().wstring()).c_str(), mBundleResult->mFiles,
+        mBundleResult->mBytes / 1024);
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Show it")) {
+        const auto select = std::format(L"/select,\"{}\"", mBundlePath.wstring());
+        ShellExecuteW(mWindow, L"open", L"explorer.exe", select.c_str(), nullptr, SW_SHOWNORMAL);
+      }
+    } else {
+      ImGui::PushStyleColor(ImGuiCol_Text, ToImVec4(Theme::StatusProblem));
+      ImGui::TextWrapped("Couldn't save it: %s", mBundleResult->mError.c_str());
+      ImGui::PopStyleColor();
+    }
+  }
+}
+
+void SettingsWindow::PrivacyPopup() {
+  constexpr const char* Title = "Before you save";
+  if (std::exchange(mOpenPrivacy, false)) {
+    ImGui::OpenPopup(Title);
+  }
+  ImGui::SetNextWindowSize({ImGui::GetFontSize() * 30, 0});
+  if (!ImGui::BeginPopupModal(Title, nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings)) {
+    return;
+  }
+  // Doc 09: a short disclaimer before saving
+  ImGui::TextWrapped("%s", std::string {Diagnostics::PrivacyNotice()}.c_str());
+  ImGui::Spacing();
+  if (ImGui::Button("Choose where to save...") && !mPendingDialog) {
+    mPendingDialog = PendingDialog {true, {}, Diagnostics::SuggestedBundleName(), true};
+    PostMessageW(mWindow, FileDialogMessage, 0, 0);// once this frame is done (round 15)
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndPopup();
+}
+
+void SettingsWindow::StartSelfTest() {
+  mSelfTestWanted = false;
+  if (mSelfTestTask.Started()) {
+    return;
+  }
+  const auto stats = mRenderer.Stats();
+  auto input = Support::FromHost(stats, mPanels);
+  const uint32_t game = stats.mLayerStatus ? stats.mLayerStatus->mLayerProcessID : 0;
+  mSelfTestTask = ThreadUtil::BackgroundTask<std::vector<Diagnostics::SelfCheck>>::Start(L"Self-test", [input, game]() mutable {
+    Support::AddSystem(input, game);
+    return Diagnostics::RunSelfTest(input);
+  });
+  KeepPainting(2);
+}
+
+void SettingsWindow::TakeSelfTest() {
+  if (!mSelfTestTask.Started()) {
+    return;
+  }
+  if (mSelfTestTask.Running()) {
+    KeepPainting(2);
+    return;
+  }
+  if (auto result = mSelfTestTask.Take()) {
+    mSelfTest = std::move(*result);
+    std::size_t problems = 0;
+    for (const auto& check: *mSelfTest) {
+      problems += check.mVerdict == Diagnostics::Verdict::Fail || check.mVerdict == Diagnostics::Verdict::Warning;
+    }
+    Log::Info("Self-test: {} checks, {} to look at", mSelfTest->size(), problems);
+  }
+  KeepPainting(TailFrames);
+}
+
+void SettingsWindow::StartBundle(std::filesystem::path zip) {
+  if (mBundleTask.Started()) {
+    return;
+  }
+  const auto stats = mRenderer.Stats();
+  Support::BundleRequest request;
+  request.mZip = zip;
+  request.mSelfTest = Support::FromHost(stats, mPanels);
+  request.mGameProcessID = stats.mLayerStatus ? stats.mLayerStatus->mLayerProcessID : 0;
+  request.mStatus = Support::FormatRows(Support::DescribeGame(stats));
+  request.mHelpers = Support::FormatRows(Support::DescribeHelpers(mPanels, mAppHelper));
+  request.mRecentLog = mLogRing.Text();
+  mBundlePath = zip;
+  mBundleResult.reset();
+  mBundleTask = ThreadUtil::BackgroundTask<Diagnostics::BundleResult>::Start(
+    L"Debug info", [request = std::move(request)]() mutable { return Support::SaveBundle(std::move(request)); });
+  KeepPainting(2);
+}
+
+void SettingsWindow::CheckDiagnostics() {
+  // Stops once a frame has gone by without the tab
+  if (!mWindow || !mDiagnosticsDrawn) {
+    if (mWindow) {
+      KillTimer(mWindow, DiagnosticsTimer);
+    }
+    mDiagnosticsTimer = false;
+    return;
+  }
+  const auto stats = mRenderer.Stats();
+  const uint32_t game = stats.mLayerStatus ? stats.mLayerStatus->mLayerProcessID : 0;
+  const uint32_t session = stats.mLayerStatus ? stats.mLayerStatus->mSessionState : 0;
+  const uint64_t frames = stats.mLayerStatus ? stats.mLayerStatus->mFramesSinceAttach : 0;
+  if (mLogRing.Version() != mLogVersion || game != mShownGame || session != mShownSession || frames != mShownFrames) {
+    KeepPainting(1);
+  }
+}
+
 // ---- Profiles (ADR-038) ------------------------------------------------------
 
-std::optional<std::filesystem::path> SettingsWindow::AskProfileFile(bool save, const std::wstring& name) {
+std::optional<std::filesystem::path> SettingsWindow::AskProfileFile(bool save, const std::wstring& name, bool debugInfo) {
   // The file dialogs need COM on this (the UI) thread
   const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
   struct Uninit {
@@ -1565,9 +1906,15 @@ std::optional<std::filesystem::path> SettingsWindow::AskProfileFile(bool save, c
         IID_PPV_ARGS(dialog.put())))) {
     return std::nullopt;
   }
-  const COMDLG_FILTERSPEC types[] {{L"Open Desktop VR profile", L"*.json"}, {L"All files", L"*.*"}};
-  dialog->SetFileTypes(static_cast<UINT>(std::size(types)), types);
-  dialog->SetDefaultExtension(L"json");
+  const COMDLG_FILTERSPEC profileTypes[] {{L"Open Desktop VR profile", L"*.json"}, {L"All files", L"*.*"}};
+  const COMDLG_FILTERSPEC zipTypes[] {{L"Zip file", L"*.zip"}};
+  if (debugInfo) {
+    dialog->SetFileTypes(static_cast<UINT>(std::size(zipTypes)), zipTypes);
+    dialog->SetDefaultExtension(L"zip");
+  } else {
+    dialog->SetFileTypes(static_cast<UINT>(std::size(profileTypes)), profileTypes);
+    dialog->SetDefaultExtension(L"json");
+  }
   if (save) {
     dialog->SetFileName(name.c_str());
   }
@@ -1590,7 +1937,11 @@ void SettingsWindow::RunPendingDialog() {
   if (!pending || !mWindow) {
     return;
   }
-  if (pending->mSave) {
+  if (pending->mDebugInfo) {
+    if (const auto file = AskProfileFile(true, pending->mName, true)) {
+      StartBundle(*file);
+    }
+  } else if (pending->mSave) {
     if (const auto file = AskProfileFile(true, pending->mName)) {
       mPanels.ExportProfile(pending->mProfileID, *file);// by ID: it may be gone by now (DU-2)
     }

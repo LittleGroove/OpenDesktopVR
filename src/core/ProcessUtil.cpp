@@ -153,6 +153,19 @@ std::filesystem::path ProcessImagePath(unsigned long processID) noexcept {
   }
 }
 
+bool IsRunning(unsigned long processID) noexcept {
+  if (processID == 0) {
+    return false;
+  }
+  const HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, processID);
+  if (!process) {
+    return false;
+  }
+  const bool running = WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
+  CloseHandle(process);
+  return running;
+}
+
 std::optional<bool> SameArchitecture(unsigned long processID) noexcept {
   HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processID);
   if (!process) {

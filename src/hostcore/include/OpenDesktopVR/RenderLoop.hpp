@@ -77,6 +77,11 @@ struct RenderStats {
   uint32_t mLayerProcessID {0};
   // The game it's in, as the layer reports it (per-game profiles, ADR-038)
   std::wstring mLayerExecutable;
+  // The layer's last report, for the diagnostics page and the self-test
+  // (M6c); nullopt until a layer attaches. Kept after the game ends.
+  std::optional<SharedAbi::LayerStatus> mLayerStatus;
+  // When that layer attached
+  std::chrono::steady_clock::time_point mLayerAttachedAt {};
 };
 
 class RenderLoop {

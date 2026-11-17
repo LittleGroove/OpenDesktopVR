@@ -36,11 +36,19 @@ struct LayerEntry {
   bool mEnabled {false};// data is DWORD 0
   bool mManifestExists {false};
   std::optional<std::string> mLayerName;// from the manifest, if readable
+  std::optional<std::string> mLibraryPath;// its DLL, as the manifest gives it (LG-4)
   bool mIsOurs {false};
 };
 
 // The layer name in a manifest file, if it can be read
 std::optional<std::string> ReadManifestLayerName(const std::filesystem::path& manifest) noexcept;
+
+struct ManifestInfo {
+  std::optional<std::string> mLayerName;
+  std::optional<std::string> mLibraryPath;
+};
+// Both, from one read; empty fields if it can't be read
+ManifestInfo ReadManifest(const std::filesystem::path& manifest) noexcept;
 
 // Ours if the manifest names our layer, or (when it's gone) has our file name
 bool IsOurs(const std::filesystem::path& manifest, const std::optional<std::string>& layerName) noexcept;

@@ -220,6 +220,10 @@ void Session::PrepareReport() noexcept {
   report.mGraphicsApi = static_cast<uint32_t>(SharedAbi::GraphicsApi::D3D11);
   report.mMaxLayerCount = mMaxLayers;
   report.mHandTrackingAvailable = mInstance.mHandTrackingEnabled ? 1 : 0;
+  report.mChainFlags = SharedAbi::ChainKnown | (mInstance.mDepthEnabled ? SharedAbi::DepthEnabled : 0u);
+  report.mLayersBelow = static_cast<uint32_t>(mInstance.mChain.mBelow.size());
+  report.mKnownBelow = mInstance.mChain.mKnownBelow;
+  report.mNearestRuntime = mInstance.mChain.mNearestRuntime;
   // The host renders on the game's adapter, or shared textures won't open
   winrt::com_ptr<IDXGIDevice> dxgiDevice;
   winrt::com_ptr<IDXGIAdapter> adapter;

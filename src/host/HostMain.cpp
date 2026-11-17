@@ -39,25 +39,33 @@
 //                    its keybind would show it (sim-keyboard)
 // --test-recenter-after <s>  test instances: recenter this long after the
 //                    start, as the keybind would (sim-recenter)
+// --settings-diagnostics  tests: open the settings window on its
+//                    Diagnostics tab
+// --save-debug-info <zip>  tests: save the debug bundle there once
+//                    started, as "Save debug info" would (M6c)
 
 #include "KeybindService.hpp"
 #include "PanelManager.hpp"
 #include "SettingsWindow.hpp"
+#include "Support.hpp"
 #include "TrayIcon.hpp"
 
 #include <OpenDesktopVR/AppHelperService.hpp>
 #include <OpenDesktopVR/ClickSound.hpp>
+#include <OpenDesktopVR/CrashHandler.hpp>
 #include <OpenDesktopVR/InjectingSink.hpp>
 #include <OpenDesktopVR/KeyboardService.hpp>
 #include <OpenDesktopVR/KeyboardSource.hpp>
 #include <OpenDesktopVR/LayerRegistration.hpp>
 #include <OpenDesktopVR/Log.hpp>
+#include <OpenDesktopVR/LogRing.hpp>
 #include <OpenDesktopVR/ProcessUtil.hpp>
 #include <OpenDesktopVR/Product.hpp>
 #include <OpenDesktopVR/RenderLoop.hpp>
 #include <OpenDesktopVR/SharedAbi.hpp>
 #include <OpenDesktopVR/SharedMemory.hpp>
 #include <OpenDesktopVR/StringUtil.hpp>
+#include <OpenDesktopVR/SystemInfo.hpp>
 #include <OpenDesktopVR/TestPatternSource.hpp>
 #include <OpenDesktopVR/WindowCaptureSource.hpp>
 #include <OpenDesktopVR/ThreadUtil.hpp>
@@ -97,6 +105,8 @@ struct Options {
   bool mSettingsProfiles {false};
   bool mSettingsCycleTabs {false};
   bool mSettingsGeneral {false};
+  bool mSettingsDiagnostics {false};
+  std::wstring mDebugInfoZip;
   bool mShowKeyboard {false};
   double mTestRecenterAfterSeconds {0};
   std::wstring mScreenshot;
@@ -141,6 +151,10 @@ Options ParseOptions() {
       options.mSettingsGeneral = true;
     } else if (arg == L"--settings-cycle-tabs") {
       options.mSettingsCycleTabs = true;
+    } else if (arg == L"--settings-diagnostics") {
+      options.mSettingsDiagnostics = true;
+    } else if (arg == L"--save-debug-info" && i + 1 < argc) {
+      options.mDebugInfoZip = argv[++i];
     } else if (arg == L"--show-keyboard") {
       options.mShowKeyboard = true;
     } else if (arg == L"--test-recenter-after" && i + 1 < argc) {
@@ -180,6 +194,10 @@ void RegisterLayer() {
 }// namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+  // First, so a crash anywhere after leaves a report (TH-10)
+  if (const auto dumps = Product::CrashDumpsFolder(); !dumps.empty()) {
+    CrashHandler::Install(dumps, L"OpenDesktopVR");
+  }
   // Window rectangles and capture crops in physical pixels (doc 04 "DPI")
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   const auto options = ParseOptions();
@@ -191,6 +209,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     return 0;// already running: its tray icon is the way in
   }
 
+  // The Diagnostics tab's log viewer (LG-3): from the first line on
+  Log::LogRing logRing;
   Log::Config logConfig;
   if (const auto folder = Product::LogsFolder(); !folder.empty()) {
     logConfig.mFile = folder / L"host.log";
@@ -205,6 +225,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     ProcessUtil::ElevationName(ProcessUtil::CurrentProcessElevation()),
     ProcessUtil::CurrentElevationType(),
     uac ? (*uac ? "on" : "off") : "unknown");
+  // Doc 09 "Environment checks at startup": explained, never blocking
+  const auto environment = Diagnostics::CheckEnvironment();
+  for (const auto& fact: environment.mFacts) {
+    Log::Info("{}", fact);
+  }
+  for (const auto& problem: environment.mProblems) {
+    Log::Warning("{}", problem);
+  }
 
   int exitCode = 0;
   ThreadUtil::CatchAll("host main", [&] {
@@ -335,7 +363,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       slots[0] = Keybinds::Binding::From({Keybinds::Button {Keybinds::DeviceKind::Keyboard, {}, options.mTestKeybind}});
       panels.SetGlobalKeybinds(Keybinds::ActionKind::ToggleAllPanels, slots);// in memory: a test instance saves nothing
     }
-    Host::SettingsWindow settings {instance, renderer, panels, keybinds, appHelper};
+    Host::SettingsWindow settings {instance, renderer, panels, keybinds, appHelper, logRing};
     Host::TrayIcon tray {instance, renderer, panels, settings};
     if (options.mExitAfterSeconds > 0) {
       tray.QuitAfter(options.mExitAfterSeconds);
@@ -361,7 +389,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       if (options.mSettingsHands) {
         settings.ShowHandsTab();
       }
+      if (options.mSettingsDiagnostics) {
+        settings.ShowDiagnosticsTab();
+      }
       settings.Show();
+    }
+    if (!options.mDebugInfoZip.empty()) {
+      // Tests: as "Save debug info" would, without the dialogs
+      const auto stats = renderer.Stats();
+      Host::Support::BundleRequest request;
+      request.mZip = options.mDebugInfoZip;
+      request.mSelfTest = Host::Support::FromHost(stats, panels);
+      request.mStatus = Host::Support::FormatRows(Host::Support::DescribeGame(stats));
+      request.mHelpers = Host::Support::FormatRows(Host::Support::DescribeHelpers(panels, appHelper));
+      request.mRecentLog = logRing.Text();
+      Host::Support::SaveBundle(std::move(request));
     }
     exitCode = tray.Run();
     hands.Stop();

@@ -11,6 +11,7 @@
 #include <OpenDesktopVR/Layer/Composition.hpp>
 #include <OpenDesktopVR/Layer/ExtensionPolicy.hpp>
 #include <OpenDesktopVR/Layer/HandBounds.hpp>
+#include <OpenDesktopVR/Layer/LayerChain.hpp>
 #include <OpenDesktopVR/Layer/LayerConfig.hpp>
 #include <OpenDesktopVR/Layer/TestPattern.hpp>
 #include <OpenDesktopVR/Product.hpp>
@@ -299,6 +300,50 @@ int main() {
     Check(Union(PixelRect {}, PixelRect {1, 2, 3, 4}) == PixelRect {1, 2, 3, 4}, "an empty rectangle adds nothing to a union");
     Check(Union(PixelRect {0, 0, 10, 10}, PixelRect {5, 5, 20, 20}) == PixelRect {0, 0, 20, 20}, "a union holds both");
     Check(Pad(PixelRect {0, 5, 10, 10}, 2, 11, 100) == PixelRect {0, 3, 11, 12}, "padding stays within the image");
+  });
+
+  Scenario("Known layers are told apart by name (CMP-1, CMP-2)", [] {
+    using namespace OpenDesktopVR::KnownLayers;
+    Check(Classify("XR_APILAYER_ULTRALEAP_hand_tracking") == Ultraleap, "Ultraleap");
+    Check(Classify("C:\\Program Files\\Ultraleap\\OpenXR\\UltraleapHandTracking.json") == Ultraleap, "Ultraleap by its path");
+    Check(Classify("XR_APILAYER_NOVENDOR_XRNeckSafer") == PoseChanging, "XRNeckSafer: pose-changing");
+    Check(Classify("XR_APILAYER_NOVENDOR_motion_compensation") == PoseChanging, "motion compensation: pose-changing");
+    Check(Classify("XR_APILAYER_NOVENDOR_OBSMirror") == MirrorCapture, "a mirror layer");
+    Check(Classify("XR_APILAYER_NOVENDOR_toolkit") == None, "anything else: no advice");
+    Check(Classify(std::string {Product::LayerName}) == None, "ours is none of them");
+  });
+
+  Scenario("The chain below ours, from the loader's entries (M6c)", [] {
+    using namespace OpenDesktopVR::KnownLayers;
+    const auto entry = [](const char* name) {
+      XrApiLayerNextInfo info {XR_LOADER_INTERFACE_STRUCT_API_LAYER_NEXT_INFO, XR_API_LAYER_NEXT_INFO_STRUCT_VERSION, sizeof(XrApiLayerNextInfo)};
+      strcpy_s(info.layerName, name);
+      return info;
+    };
+    auto ours = entry(std::string {Product::LayerName}.c_str());
+    auto neck = entry("XR_APILAYER_NOVENDOR_XRNeckSafer");
+    auto leap = entry("XR_APILAYER_ULTRALEAP_hand_tracking");
+    ours.next = &neck;
+    neck.next = &leap;
+    const auto summary = Layer::SummarizeChain(&ours, Product::LayerName);
+    Check(summary.mBelow.size() == 2 && summary.mBelow[0] == "XR_APILAYER_NOVENDOR_XRNeckSafer", "ours is skipped; nearest first");
+    Check(summary.mKnownBelow == (PoseChanging | Ultraleap), "both kinds are below");
+    Check(summary.mNearestRuntime == Ultraleap, "Ultraleap is last, nearest the runtime");
+    Check(summary.Describe() == "XR_APILAYER_NOVENDOR_XRNeckSafer, XR_APILAYER_ULTRALEAP_hand_tracking", "described in order");
+
+    ours.next = nullptr;
+    Check(Layer::SummarizeChain(&ours, Product::LayerName).Describe() == "none", "nothing below: none");
+    Check(Layer::SummarizeChain(&neck, Product::LayerName).mBelow.size() == 2, "a chain starting below ours is read whole");
+    Check(Layer::SummarizeChain(nullptr, Product::LayerName).mBelow.empty(), "no chain: nothing");
+
+    // A malformed, circular chain is read at most 64 entries
+    leap.next = &neck;
+    ours.next = &neck;
+    Check(Layer::SummarizeChain(&ours, Product::LayerName).mBelow.size() == 64, "a circular chain stops at 64 entries");
+
+    const char* extensions[] {"XR_KHR_D3D11_enable", XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME};
+    Check(Layer::EnablesExtension(extensions, XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME), "the depth extension is found");
+    Check(!Layer::EnablesExtension({extensions, 1}, XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME), "and not when absent");
   });
 
   return Finish();

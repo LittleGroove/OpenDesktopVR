@@ -3,6 +3,7 @@
 
 #include "TrayIcon.hpp"
 
+#include <OpenDesktopVR/CrashHandler.hpp>
 #include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/Product.hpp>
 
@@ -51,7 +52,7 @@ constexpr wchar_t WindowClass[] = L"OpenDesktopVR.Host";
 TrayIcon::TrayIcon(HINSTANCE instance, RenderLoop& renderer, PanelManager& panels, SettingsWindow& settings)
   : mInstance(instance), mRenderer(renderer), mPanels(panels), mSettings(settings) {
   WNDCLASSEXW windowClass {sizeof(windowClass)};
-  windowClass.lpfnWndProc = &TrayIcon::WindowProc;
+  windowClass.lpfnWndProc = &CrashHandler::GuardedProcedure<&TrayIcon::WindowProc>;
   windowClass.hInstance = instance;
   windowClass.lpszClassName = WindowClass;
   RegisterClassExW(&windowClass);

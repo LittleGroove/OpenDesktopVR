@@ -18,6 +18,10 @@ inline constexpr uint32_t Text = 0xF0F0F0;
 inline constexpr uint32_t TextDim = 0xA8B0C0;
 inline constexpr uint32_t Accent = 0xF0B040;    // touch targets, the selected item
 inline constexpr uint32_t AccentDim = 0xB08530;
+// Status marks (the Diagnostics tab's checks)
+inline constexpr uint32_t StatusGood = 0x48C060;   // green
+inline constexpr uint32_t StatusWarning = 0xE8A838;// amber
+inline constexpr uint32_t StatusProblem = 0xE04848;// red
 
 // Orientation markers on test cards and patterns
 inline constexpr uint32_t CornerTopLeft = 0xE04848;// red

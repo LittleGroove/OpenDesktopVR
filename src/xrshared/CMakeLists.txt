@@ -8,6 +8,7 @@ odvr_module(
   xrshared
   SOURCES
   SharedMemory.cpp
+  KnownLayers.cpp
   DEPS
   odvr::core
 )

@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Robert McGough. All rights reserved.
 
 #include <OpenDesktopVR/ControllerState.hpp>
+#include <OpenDesktopVR/CrashHandler.hpp>
 #include <OpenDesktopVR/InputThread.hpp>
 #include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/StringUtil.hpp>
@@ -229,7 +230,7 @@ void InputThread::Impl::Main() {
 bool InputThread::Impl::CreateWindowAndInputs() {
   const auto instance = GetModuleHandleW(nullptr);
   WNDCLASSEXW windowClass {sizeof(windowClass)};
-  windowClass.lpfnWndProc = &WindowProc;
+  windowClass.lpfnWndProc = &CrashHandler::GuardedProcedure<&WindowProc>;
   windowClass.hInstance = instance;
   windowClass.lpszClassName = WindowClass;
   RegisterClassExW(&windowClass);
