@@ -121,8 +121,11 @@ class SettingsWindow {
   void HandsPage();
   // Profiles (ADR-038): switch, make, rename, delete, games, export, import
   void ProfilesPage();
-  // A native file dialog for a profile file; nullopt if cancelled
+  // A native file dialog for a profile file; nullopt if cancelled. Only
+  // ever outside a frame: its modal loop paints this window (round 15)
   std::optional<std::filesystem::path> AskProfileFile(bool save, const std::wstring& name);
+  // The export or import asked for during a frame, run once it's done
+  void RunPendingDialog();
   // The virtual keyboard's settings, on the Hands tab (K10)
   void KeyboardSettingsUi(bool handsEnabled);
   bool LayoutCombo(const char* label, std::string* klid, const char* none);
@@ -194,6 +197,15 @@ class SettingsWindow {
   std::array<char, 128> mProfileName {};
   std::array<char, 128> mNewGame {};
   bool mSelectProfiles {false};
+  struct PendingDialog {
+    bool mSave {false};// export; otherwise import
+    std::string mProfileID;
+    std::wstring mName;
+  };
+  std::optional<PendingDialog> mPendingDialog;
+  // Inside a frame: a frame never starts inside another (round 15: a file
+  // dialog opened mid-frame painted this window from its modal loop)
+  bool mInFrame {false};
   uint64_t mFieldsFor {0};
   std::array<char, 256> mName {};
   std::array<char, 1024> mExecutable {};

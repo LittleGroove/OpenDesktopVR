@@ -24,12 +24,6 @@ PanelManager::PanelManager(RenderLoop& renderer, bool persistent, std::vector<Pa
     mTestPanels(std::move(testPanels)) {
 }
 
-PanelManager::~PanelManager() {
-  if (mGameProcess) {
-    CloseHandle(mGameProcess);
-  }
-}
-
 Settings::DocumentSpec PanelManager::Spec() const {
   return Settings::GlobalSettingsSpec();
 }
@@ -267,35 +261,24 @@ std::optional<std::string> PanelManager::ImportProfile(const std::filesystem::pa
 }
 
 void PanelManager::FollowGame(uint32_t processID, const std::wstring& executable) {
-  // The game ended: back to the profile it replaced, if it switched one in
-  // and the user hasn't chosen another since
-  if (mGameProcess && WaitForSingleObject(mGameProcess, 0) != WAIT_TIMEOUT) {
-    CloseHandle(mGameProcess);
-    mGameProcess = nullptr;
-    mGameProcessID = 0;
-    Log::Info("Profiles: {} ended", StringUtil::Narrow(mGameExecutable));
-    mGameExecutable.clear();
+  const auto change = mGame.Update(processID, executable);
+  if (!change) {
+    return;
+  }
+  if (change->mKind == GameFollower::Change::Kind::Ended) {
+    // Back to the profile it replaced, if it switched one in and the user
+    // hasn't chosen another since
+    Log::Info("Profiles: {} ended", StringUtil::Narrow(change->mExecutable));
     if (const auto back = std::exchange(mProfileBeforeGame, std::nullopt)) {
       Switch(*back, "the game ended", false);
     }
     mChanged.Emit();
-  }
-  if (processID == 0 || processID == mGameProcessID) {
     return;
   }
-  // A new game's layer attached: its profile, if one claims it
-  if (mGameProcess) {
-    CloseHandle(mGameProcess);
-  }
-  mGameProcess = OpenProcess(SYNCHRONIZE, FALSE, processID);
-  mGameProcessID = processID;
-  mGameExecutable = executable;
-  if (!mGameProcess) {
-    mGameProcessID = 0;// it has already gone
-    return;
-  }
+  // A game's layer attached: its profile, if one claims it
+  Log::Info("Profiles: {} started", StringUtil::Narrow(change->mExecutable));
   mChanged.Emit();
-  if (const auto id = mProfiles.ForGame(executable); id && *id != mActiveProfile) {
+  if (const auto id = mProfiles.ForGame(change->mExecutable); id && *id != mActiveProfile) {
     const auto before = mActiveProfile;
     if (Switch(*id, "the game claims it", false)) {
       mProfileBeforeGame = before;

@@ -28,6 +28,7 @@
 #pragma once
 
 #include <OpenDesktopVR/Events.hpp>
+#include <OpenDesktopVR/GameFollower.hpp>
 #include <OpenDesktopVR/HandService.hpp>
 #include <OpenDesktopVR/HostPanel.hpp>
 #include <OpenDesktopVR/KeyboardConfig.hpp>
@@ -50,7 +51,6 @@ class PanelManager {
   // `persistent` false: a test instance; `testPanels` (or the built-in
   // test panels), never saved
   PanelManager(RenderLoop& renderer, bool persistent, std::vector<PanelDefinition> testPanels = {});
-  ~PanelManager();
   PanelManager(const PanelManager&) = delete;
   PanelManager& operator=(const PanelManager&) = delete;
 
@@ -130,9 +130,9 @@ class PanelManager {
   // The game whose layer is attached (process ID 0: none), about once a
   // second from the UI thread: per-game switching
   void FollowGame(uint32_t processID, const std::wstring& executable);
-  // What FollowGame last saw ("" while none)
+  // The game followed now ("" while none)
   const std::wstring& AttachedGame() const noexcept {
-    return mGameExecutable;
+    return mGame.Executable();
   }
 
   Events::Event<>& Changed() noexcept {
@@ -158,9 +158,7 @@ class PanelManager {
   ProfileLibrary mProfiles;
   std::string mActiveProfile;
   // Per-game switching: the game followed, and the profile to go back to
-  uint32_t mGameProcessID {0};
-  HANDLE mGameProcess {nullptr};
-  std::wstring mGameExecutable;
+  GameFollower mGame;
   std::optional<std::string> mProfileBeforeGame;
   std::vector<PanelDefinition> mPanels;
   std::vector<PanelDefinition> mTestPanels;

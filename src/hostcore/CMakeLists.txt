@@ -18,6 +18,7 @@ odvr_module(
   KeyboardConfig.cpp
   KeyboardService.cpp
   ProfileLibrary.cpp
+  GameFollower.cpp
   DEPS
   odvr::vkeyboard
   odvr::inject

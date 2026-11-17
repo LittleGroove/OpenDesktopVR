@@ -34,6 +34,7 @@ namespace {
 
 constexpr wchar_t WindowClass[] = L"OpenDesktopVR.Settings";
 constexpr UINT ReopenMessage = WM_APP + 1;// the graphics device was lost
+constexpr UINT FileDialogMessage = WM_APP + 2;// a file dialog asked for during a frame
 
 constexpr UINT_PTR PaintTimer = 1;
 constexpr UINT_PTR ScreenshotIdleStart = 2;
@@ -473,6 +474,10 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND window, UINT message, WPARAM wP
 }
 
 LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
+  if (message == FileDialogMessage) {
+    RunPendingDialog();
+    return 0;
+  }
   if (mImGui) {
     ImGui::SetCurrentContext(mImGui);
     if (ImGui_ImplWin32_WndProcHandler(mWindow, message, wParam, lParam)) {
@@ -548,9 +553,16 @@ LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
 }
 
 void SettingsWindow::Paint() {
-  if (!mWindow || !mImGui || !mSwapchain) {
+  if (!mWindow || !mImGui || !mSwapchain || mInFrame) {
     return;
   }
+  mInFrame = true;
+  struct FrameDone {
+    bool& mInFrame;
+    ~FrameDone() {
+      mInFrame = false;
+    }
+  } frameDone {mInFrame};
   if (mOccluded) {
     if (mSwapchain->Present(0, DXGI_PRESENT_TEST) == DXGI_STATUS_OCCLUDED) {
       return;// minimized or covered: nothing to paint
@@ -1235,6 +1247,23 @@ std::optional<std::filesystem::path> SettingsWindow::AskProfileFile(bool save, c
   return result;
 }
 
+void SettingsWindow::RunPendingDialog() {
+  const auto pending = std::exchange(mPendingDialog, std::nullopt);
+  if (!pending || !mWindow) {
+    return;
+  }
+  if (pending->mSave) {
+    if (const auto file = AskProfileFile(true, pending->mName)) {
+      mPanels.ExportProfile(pending->mProfileID, *file);// by ID: it may be gone by now (DU-2)
+    }
+  } else if (const auto file = AskProfileFile(false, {})) {
+    if (const auto id = mPanels.ImportProfile(*file)) {
+      mSelectedProfile = *id;
+    }
+  }
+  KeepPainting(TailFrames);
+}
+
 void SettingsWindow::ProfilesPage() {
   if (!ImGui::BeginChild("profiles", {0, 0}, ImGuiChildFlags_Borders)) {
     ImGui::EndChild();
@@ -1264,12 +1293,10 @@ void SettingsWindow::ProfilesPage() {
     }
     ImGui::EndListBox();
   }
-  if (ImGui::Button("Import...")) {
-    if (const auto file = AskProfileFile(false, {})) {
-      if (const auto id = mPanels.ImportProfile(*file)) {
-        mSelectedProfile = *id;
-      }
-    }
+  if (ImGui::Button("Import...") && !mPendingDialog) {
+    // Opened once this frame is done (round 15)
+    mPendingDialog = PendingDialog {false, {}, {}};
+    PostMessageW(mWindow, FileDialogMessage, 0, 0);
   }
   ImGui::SetItemTooltip("Adds a profile from a file someone exported");
   ImGui::EndGroup();
@@ -1354,10 +1381,9 @@ void SettingsWindow::ProfilesPage() {
     }
     ImGui::SetItemTooltip("A new profile with a copy of the panels in use; switch to it to change them");
     ImGui::SameLine();
-    if (ImGui::Button("Export...")) {
-      if (const auto file = AskProfileFile(true, profile.mName + L".json")) {
-        mPanels.ExportProfile(profile.mID, *file);// by ID: it may be gone by now (DU-2)
-      }
+    if (ImGui::Button("Export...") && !mPendingDialog) {
+      mPendingDialog = PendingDialog {true, profile.mID, profile.mName + L".json"};
+      PostMessageW(mWindow, FileDialogMessage, 0, 0);
     }
     ImGui::SetItemTooltip("Saves this profile as one file, to share or keep");
     ImGui::SameLine();

@@ -10,17 +10,21 @@
 //   games; a file that isn't a profile imports nothing (TH-9);
 // - the game that claims a profile, by executable file name in any case;
 // - repeated panel IDs within a profile are made unique;
-// - settings.json version 1 is backed up and migrated to version 2.
+// - settings.json version 1 is backed up and migrated to version 2;
+// - the game followed: an ended game whose ID lingers in the stats is
+//   never followed again (test round 15: profiles flipped every second).
 
 #include "check.hpp"
 
 #include <OpenDesktopVR/FileUtil.hpp>
+#include <OpenDesktopVR/GameFollower.hpp>
 #include <OpenDesktopVR/GlobalSettings.hpp>
 #include <OpenDesktopVR/ProfileLibrary.hpp>
 
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <set>
 
 using namespace OpenDesktopVR;
 using namespace OpenDesktopVR::Host;
@@ -152,6 +156,27 @@ int main() {
       "migrated, with the old file backed up");
     Check(JsonUtil::GetOr<int>(loaded.mDocument, Settings::VersionKey, 0) == 2 && loaded.mDocument.contains("panels"),
       "version 2, the panel list still there for the host to move");
+  });
+
+  Scenario("A game that ended is never followed again, though its ID lingers (test round 15)", [] {
+    std::set<uint32_t> running {100};
+    GameFollower follower {[&](uint32_t id) { return running.contains(id); }};
+    const auto started = follower.Update(100, L"EliteDangerous64.exe");
+    Check(started && started->mKind == GameFollower::Change::Kind::Started && follower.Executable() == L"EliteDangerous64.exe",
+      "Elite's layer attached: followed");
+    Check(!follower.Update(100, L"EliteDangerous64.exe"), "the same game a second later: nothing new");
+    running.erase(100);
+    const auto ended = follower.Update(100, L"EliteDangerous64.exe");
+    Check(ended && ended->mKind == GameFollower::Change::Kind::Ended && follower.Executable().empty(), "Elite exited: ended");
+    int changes = 0;
+    for (int second = 0; second < 10; ++second) {
+      changes += follower.Update(100, L"EliteDangerous64.exe") ? 1 : 0;
+    }
+    Check(changes == 0, std::format("its ID still in the stats for 10 s: never followed again ({} changes)", changes));
+    Check(!follower.Update(300, L"gone.exe") && follower.Executable().empty(), "a process already gone when first seen: not followed");
+    running.insert(200);
+    const auto next = follower.Update(200, L"EliteDangerous64.exe");
+    Check(next && next->mKind == GameFollower::Change::Kind::Started, "Elite started again (a new process): followed");
   });
 
   return Testing::Finish();
