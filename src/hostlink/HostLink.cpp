@@ -130,9 +130,23 @@ void Client::TryConnect() noexcept {
   mHandState = {};
   mHostProcessID = header.mHostProcessID;
   mGeneration = std::atomic_ref<uint64_t> {const_cast<uint64_t&>(header.mSessionGeneration)}.load();
+  // Recenters asked for before we connected aren't ours to do
+  mRecenterSeen = std::atomic_ref<uint64_t> {const_cast<uint64_t&>(header.mRecenterCount)}.load();
   mSnapshot.mPanelCount = 0;
   ++mCounters.mConnects;
   Log::Info("Host link: connected to the host app (process {})", mHostProcessID);
+}
+
+bool Client::TakeRecenterRequest() noexcept {
+  if (!IsConnected()) {
+    return false;
+  }
+  const auto count = std::atomic_ref<uint64_t> {Block()->mHeader.mRecenterCount}.load(std::memory_order_relaxed);
+  if (count == mRecenterSeen) {
+    return false;
+  }
+  mRecenterSeen = count;
+  return true;
 }
 
 void Client::WakeHost() noexcept {

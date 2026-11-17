@@ -52,7 +52,7 @@ class Hands {
   Hands(
     const NextFunctions& next,
     XrSession session,
-    XrSpace localSpace,
+    const XrSpace& localSpace,
     ID3D11Device* device,
     ID3D11DeviceContext1* context,
     const D3D11Util::PrivateContextState& contextState,
@@ -87,7 +87,8 @@ class Hands {
 
   const NextFunctions& mNext;
   XrSession mSession;
-  XrSpace mLocalSpace;
+  // The session's panel space: re-made at each recenter (ADR-037)
+  const XrSpace& mLocalSpace;
   ID3D11Device* mDevice;
   ID3D11DeviceContext1* mContext;
   const D3D11Util::PrivateContextState& mContextState;

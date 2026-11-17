@@ -51,7 +51,7 @@ double MillisecondsSince(TimeUtil::TimePoint start) {
 HostPanels::HostPanels(
   const NextFunctions& next,
   XrSession session,
-  XrSpace localSpace,
+  const XrSpace& localSpace,
   ID3D11Device* device,
   ID3D11DeviceContext1* context,
   const D3D11Util::PrivateContextState& contextState,

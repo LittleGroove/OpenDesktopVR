@@ -105,6 +105,9 @@ class Client {
   // The host's latest hand state; all zero (hands off) while not connected
   // or if a read clashed twice in a row
   SharedAbi::HandState ReadHandState() noexcept;
+  // True once each time the host's "Recenter" keybind was used since the
+  // last call (ADR-037); never for presses before this link connected
+  bool TakeRecenterRequest() noexcept;
 
   ClientCounters Counters() const noexcept {
     return mCounters;
@@ -129,6 +132,7 @@ class Client {
   SharedAbi::HandState mHandState {};
   uint32_t mHostProcessID {0};
   uint64_t mGeneration {0};
+  uint64_t mRecenterSeen {0};
   SharedAbi::PanelTable mSnapshot {};
   std::array<PanelResources, SharedAbi::MaxPanels> mResources {};
   TimeUtil::TimePoint mNextAttempt {};

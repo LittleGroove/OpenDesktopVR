@@ -453,14 +453,6 @@ class Worker {
         break;
       }
       case Kind::Down: {
-        // Made active on its own thread first, if it isn't (doc 07 "Target
-        // selection"; ADR-036): Chromium apps and Firefox only focus a text
-        // field, and show its caret, in an active window, and the keyboard
-        // shows from that caret (VK-1). Where Windows lets the app take the
-        // real foreground when it activates, the helper gives it straight
-        // back (ADR-035).
-        Send(mWindow, mShared.mCommandMessage, static_cast<WPARAM>(InjectionHookProtocol::Command::ActivateWindow),
-          reinterpret_cast<LPARAM>(mWindow));
         const bool doubleTap = IsDoubleTap(event, child);
         if (doubleTap) {
           // At the first tap's point: the app checks the two are close
@@ -470,6 +462,16 @@ class Worker {
         Send(child, WM_MOUSEMOVE, 0, PackClient(local));
         Command(Protocol::Command::SetMouseButtons, MK_LBUTTON);
         Send(child, doubleTap ? WM_LBUTTONDBLCLK : WM_LBUTTONDOWN, MK_LBUTTON, PackClient(local));
+        // Then made active on its own thread, if it isn't (doc 07 "Target
+        // selection"; ADR-036): Chromium apps and Firefox only show the
+        // caret of the field the press focused in an active window, and
+        // the keyboard shows from that caret (VK-1). After the press, so the
+        // press's latency never includes it (doc 11's gate: one activation
+        // that took the foreground and gave it back cost a frame). Where
+        // Windows lets the app take the real foreground, the helper gives it
+        // straight back (ADR-035).
+        Send(mWindow, mShared.mCommandMessage, static_cast<WPARAM>(InjectionHookProtocol::Command::ActivateWindow),
+          reinterpret_cast<LPARAM>(mWindow));
         mDown = true;
         mCapture = child;
         mHovered = child;

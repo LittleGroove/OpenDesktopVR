@@ -56,7 +56,10 @@ struct Header {
   // An auto-reset event (a handle value in the host process) the layer
   // sets after writing a tracking sample; the host's hand thread waits on it
   uint64_t mTrackingEvent;
-  uint8_t mReserved[8];
+  // Bumped by the host's "Recenter" keybind: layers put panels where the
+  // head is then (ADR-037). These 8 bytes were reserved: an older host
+  // leaves them 0, which never asks, so the version stays the same.
+  uint64_t mRecenterCount;
 };
 static_assert(sizeof(Header) == 64);
 

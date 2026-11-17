@@ -21,7 +21,9 @@
 // - writes a stats line every 60 s (LG-2), one line per panel;
 // - carries hands between the layer and the hand thread: the tracking
 //   event and ring, the hand state, and the panels the hands may touch as
-//   last published (doc 03 "Layer to host", "Host to layer").
+//   last published (doc 03 "Layer to host", "Host to layer");
+// - passes "Recenter" on to the layer (ADR-037): a count in the shared
+//   block, which the layer turns into a recenter at the head.
 #pragma once
 
 #include <OpenDesktopVR/HandService.hpp>
@@ -103,6 +105,8 @@ class RenderLoop {
   std::shared_ptr<const TouchPanels> TouchablePanels() const;
   // "Use my hands" (any thread): with it off, no app is readied for input
   void SetHandsEnabled(bool enabled);
+  // The "Recenter" keybind (any thread): panels go where the head is now
+  void Recenter();
 
  private:
   struct Impl;

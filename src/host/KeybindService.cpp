@@ -128,6 +128,12 @@ void KeybindService::Run(const Keybinds::Action& action) {
         Log::Info("Keybind: the keyboard {}", mToggleKeyboard() ? "shown" : "hidden");
       }
       return;
+    case ActionKind::Recenter:
+      if (mRecenter) {
+        Log::Info("Keybind: recenter");
+        mRecenter();
+      }
+      return;
   }
 }
 

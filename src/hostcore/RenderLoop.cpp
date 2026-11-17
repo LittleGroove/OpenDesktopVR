@@ -103,6 +103,9 @@ struct RenderLoop::Impl {
   } mChannel {*this};
   std::atomic<bool> mHandsEnabled {true};
   bool mHandsApplied {true};
+  // "Recenter": asked for (any thread), and as last written to the block
+  std::atomic<uint64_t> mRecenterCount {0};
+  std::optional<uint64_t> mRecenterWritten;
   mutable std::mutex mTouchMutex;
   std::shared_ptr<const TouchPanels> mTouchPanels {std::make_shared<const TouchPanels>()};
   bool mHighResolutionTimer {false};
@@ -168,6 +171,11 @@ RenderLoop::RenderLoop(RenderLoopOptions options, SourceFactory factory) : mImpl
 
 RenderLoop::~RenderLoop() {
   Stop();
+}
+
+void RenderLoop::Recenter() {
+  mImpl->mRecenterCount.fetch_add(1);
+  FrameWakeup::RequestFrameSoon();
 }
 
 void RenderLoop::SetHandsEnabled(bool enabled) {
@@ -391,6 +399,7 @@ void RenderLoop::Impl::EnsurePublisher(TimeUtil::TimePoint now) {
   if (mPublisher) {
     Log::Info("Shared memory created; layers can attach");
     mSharedPublisher.store(&*mPublisher, std::memory_order_release);
+    mRecenterWritten.reset();// a new block: written again
     mChannel.Rewrite(*mPublisher);
     for (auto& panel: mPanels) {
       panel->mDirty->Mark(Panels::Dirty::Structural);
@@ -775,6 +784,10 @@ void RenderLoop::Impl::Main() {
     }
 
     EnsurePublisher(now);
+    if (const auto recenter = mRecenterCount.load(); mPublisher && mRecenterWritten != recenter) {
+      mPublisher->WriteRecenterCount(recenter);
+      mRecenterWritten = recenter;
+    }
     ApplyPendingPanels();
     FollowHandsEnabled();
     if (layerWoke) {

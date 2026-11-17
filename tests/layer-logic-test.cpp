@@ -235,6 +235,13 @@ int main() {
     const auto facing = XrUtil::Rotate(placed.orientation, {0, 0, 1});
     Check(Near(facing.x, 1) && Near(facing.y, 0), "the panel faces back toward the head, and stays level");
 
+    // ADR-037: after a recenter, panels are placed from the head, level
+    const auto level = XrUtil::LevelPose(head);
+    const auto up = XrUtil::Rotate(level.orientation, {0, 1, 0});
+    const auto ahead = XrUtil::Rotate(level.orientation, {0, 0, -1});
+    Check(Near(level.position.y, 1.2f) && Near(up.y, 1) && Near(ahead.x, -1) && Near(ahead.y, 0),
+      "the level pose: at the head, upright, facing where the head faces (its yaw only)");
+
     const XrPosef panel {{0, 0, 0, 1}, {0, 1, -1}};
     Check(Near(XrUtil::DistanceToRect(panel, {0.4f, 0.2f}, {0, 1, 0}), 1), "straight in front: the plane distance");
     Check(Near(XrUtil::DistanceToRect(panel, {0.4f, 0.2f}, {0.5f, 1, -1}), 0.3f), "beside it: to the nearest edge");

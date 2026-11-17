@@ -38,6 +38,12 @@
 //   M4c.
 // --depth-order: the host shows overlapping panels at different depths;
 //   every frame's panel layers must be back to front (doc 11). Added in M4c.
+// --recenter: test round 13's finding (ADR-037). With the host's test
+//   panels: the head moves, then the runtime recenters as VDXR did, moving
+//   LOCAL's origin to 45 cm above the head (the event for LOCAL, then the
+//   change); panels must then sit from the head as they sat from LOCAL's
+//   origin at the start. Then the host's "Recenter" keybind (its
+//   --test-recenter-after) must do the same at the head's new place.
 // --type <text> <log>: doc 11's typing scenario (M5b). With the keyboard
 //   showing (the host's --show-keyboard) and a window panel of
 //   edit-target-app writing its text to <log>: tap the panel (where keys
@@ -75,6 +81,7 @@
 #include <format>
 #include <fstream>
 #include <functional>
+#include <deque>
 #include <map>
 #include <optional>
 #include <sstream>
@@ -116,7 +123,8 @@ RigidPose MakeHMDPose() {
   }
   return {{0, 1.2f, 0}, orientation};
 }
-const RigidPose HMDPose = MakeHMDPose();
+// Moved by '--recenter' (M5c); fixed otherwise
+RigidPose HMDPose = MakeHMDPose();
 constexpr float IPD = 0.064f;
 
 XrPosef ToXr(const RigidPose& pose) {
@@ -150,6 +158,14 @@ struct Runtime {
   RigidPose mStage {};
   bool mInstanceCreated {false};
   std::map<uint64_t, XrReferenceSpaceType> mSpaces;
+  // Each space's offset from its type's origin (poseInReferenceSpace)
+  std::map<uint64_t, RigidPose> mSpaceOffsets;
+  // LOCAL's origin in the world; moved by a recenter ('--recenter')
+  RigidPose mLocal {};
+  // Events for xrPollEvent
+  std::deque<XrEventDataBuffer> mEvents;
+  // This frame's panel layers
+  std::vector<XrCompositionLayerQuad> mQuads;
   std::map<uint64_t, FakeSwapchain> mSwapchains;
   std::map<uint64_t, XrHandEXT> mHandTrackers;
   int mHandTrackersCreated {0};
@@ -242,16 +258,32 @@ uint64_t NewHandle() {
   return gRuntime.mNextHandle++;
 }
 
+// `offset` in a space whose origin is `base`, in the world
+RigidPose ComposePose(const RigidPose& base, const RigidPose& offset) {
+  Quaternion orientation;
+  DirectX::XMStoreFloat4(
+    &orientation,
+    DirectX::XMQuaternionMultiply(
+      DirectX::XMLoadFloat4(&offset.mOrientation),
+      DirectX::XMLoadFloat4(&base.mOrientation)));
+  return {base.mPosition + Vector3::Transform(offset.mPosition, base.mOrientation), orientation};
+}
+
 RigidPose SpacePose(XrSpace space) {
-  const auto it = gRuntime.mSpaces.find(FromHandle(space));
+  const auto handle = FromHandle(space);
+  const auto it = gRuntime.mSpaces.find(handle);
+  // LOCAL's origin is the world's until a recenter; STAGE's too, without
+  // --stage-offset
+  RigidPose base = gRuntime.mLocal;
   if (it != gRuntime.mSpaces.end() && it->second == XR_REFERENCE_SPACE_TYPE_VIEW) {
-    return HMDPose;
+    base = HMDPose;
+  } else if (it != gRuntime.mSpaces.end() && it->second == XR_REFERENCE_SPACE_TYPE_STAGE) {
+    base = gRuntime.mStageOffset ? gRuntime.mStage : RigidPose {};
   }
-  if (it != gRuntime.mSpaces.end() && it->second == XR_REFERENCE_SPACE_TYPE_STAGE && gRuntime.mStageOffset) {
-    return gRuntime.mStage;
+  if (const auto offset = gRuntime.mSpaceOffsets.find(handle); offset != gRuntime.mSpaceOffsets.end()) {
+    return ComposePose(base, offset->second);
   }
-  // LOCAL (and STAGE without --stage-offset) is the world origin here
-  return {};
+  return base;
 }
 
 // `pose` (in world space), relative to `base`
@@ -444,12 +476,27 @@ XRAPI_ATTR XrResult XRAPI_CALL Fake_xrCreateReferenceSpace(
   XrSpace* space) {
   const auto handle = NewHandle();
   gRuntime.mSpaces[handle] = info->referenceSpaceType;
+  const auto& p = info->poseInReferenceSpace;
+  gRuntime.mSpaceOffsets[handle] = {
+    {p.position.x, p.position.y, p.position.z},
+    {p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w},
+  };
   *space = ToHandle<XrSpace>(handle);
   return XR_SUCCESS;
 }
 
 XRAPI_ATTR XrResult XRAPI_CALL Fake_xrDestroySpace(XrSpace space) {
   gRuntime.mSpaces.erase(FromHandle(space));
+  gRuntime.mSpaceOffsets.erase(FromHandle(space));
+  return XR_SUCCESS;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL Fake_xrPollEvent(XrInstance, XrEventDataBuffer* event) {
+  if (gRuntime.mEvents.empty()) {
+    return XR_EVENT_UNAVAILABLE;
+  }
+  *event = gRuntime.mEvents.front();
+  gRuntime.mEvents.pop_front();
   return XR_SUCCESS;
 }
 
@@ -978,6 +1025,7 @@ Fake_xrEndFrame(XrSession, const XrFrameEndInfo* info) {
   }
   gRuntime.mHandLayerThisFrame = false;
   gRuntime.mQuadCount = 0;
+  gRuntime.mQuads.clear();
   gRuntime.mKeyboardQuad.reset();
   {
     std::optional<float> previous;
@@ -1008,6 +1056,7 @@ Fake_xrEndFrame(XrSession, const XrFrameEndInfo* info) {
     const auto layer = info->layers[i];
     if (layer->type == XR_TYPE_COMPOSITION_LAYER_QUAD) {
       ++gRuntime.mQuadCount;
+      gRuntime.mQuads.push_back(*reinterpret_cast<const XrCompositionLayerQuad*>(layer));
       if (!gRuntime.mQuad) {
         const auto& quad
           = *reinterpret_cast<const XrCompositionLayerQuad*>(layer);
@@ -1095,6 +1144,7 @@ const std::map<std::string_view, PFN_xrVoidFunction>& FakeFunctions() {
     FN(xrCreateReferenceSpace),
     FN(xrDestroySpace),
     FN(xrLocateSpace),
+    FN(xrPollEvent),
     FN(xrEnumerateSwapchainFormats),
     FN(xrCreateSwapchain),
     FN(xrDestroySwapchain),
@@ -1496,6 +1546,7 @@ int main(int rawArgc, char** rawArgv) {
   std::string layerName {"XR_APILAYER_TEST_layer"};
   bool gestures = false;
   bool depthOrder = false;
+  bool recenter = false;
   std::vector<char*> positional;
   for (int i = 0; i < rawArgc; ++i) {
     const std::string_view arg {rawArgv[i]};
@@ -1517,6 +1568,8 @@ int main(int rawArgc, char** rawArgv) {
       gestures = true;
     } else if (arg == "--depth-order") {
       depthOrder = true;
+    } else if (arg == "--recenter") {
+      recenter = true;
     } else {
       positional.push_back(rawArgv[i]);
     }
@@ -1712,6 +1765,7 @@ int main(int rawArgc, char** rawArgv) {
     = reinterpret_cast<PFN_xrDestroySession>(layerFunction("xrDestroySession"));
   const auto layerDestroyInstance = reinterpret_cast<PFN_xrDestroyInstance>(
     layerFunction("xrDestroyInstance"));
+  const auto layerPollEvent = reinterpret_cast<PFN_xrPollEvent>(layerFunction("xrPollEvent"));
 
   XrGraphicsBindingD3D11KHR binding {
     .type = XR_TYPE_GRAPHICS_BINDING_D3D11_KHR,
@@ -1764,6 +1818,129 @@ int main(int rawArgc, char** rawArgv) {
   };
   const auto gameLayerHeader
     = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&gameLayer);
+
+  // '--recenter' (M5c, ADR-037)
+  if (recenter) {
+    using Clock = std::chrono::steady_clock;
+    const auto start = Clock::now();
+    const auto displayTime = [&] {
+      return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count() + 1'000'000'000;
+    };
+    // Frames for `seconds` (the game polls events first, as games do)
+    const auto run = [&](double seconds) {
+      const auto until = Clock::now() + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(seconds));
+      while (Clock::now() < until) {
+        XrEventDataBuffer event {XR_TYPE_EVENT_DATA_BUFFER};
+        while (layerPollEvent && layerPollEvent(instance, &event) == XR_SUCCESS) {
+          event = {XR_TYPE_EVENT_DATA_BUFFER};
+        }
+        const XrFrameEndInfo frameEndInfo {
+          .type = XR_TYPE_FRAME_END_INFO,
+          .displayTime = displayTime(),
+          .environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE,
+          .layerCount = 1,
+          .layers = &gameLayerHeader,
+        };
+        layerEndFrame(session, &frameEndInfo);
+        std::this_thread::sleep_for(std::chrono::microseconds(11111));
+      }
+    };
+    // Where each panel is (by its swapchain), in the world
+    using Placement = std::map<uint64_t, RigidPose>;
+    const auto placements = [] {
+      Placement placed;
+      for (const auto& quad: gRuntime.mQuads) {
+        placed[FromHandle(quad.subImage.swapchain)] = QuadWorldPose(quad);
+      }
+      return placed;
+    };
+    // The head, level: what panels are placed from after a recenter
+    const auto level = [](const RigidPose& head) {
+      const auto forward = Vector3::Transform(-Vector3::UnitZ, head.mOrientation);
+      const float yaw = std::atan2(-forward.x, -forward.z);
+      return RigidPose {head.mPosition, Quaternion::CreateFromAxisAngle(Vector3::UnitY, yaw)};
+    };
+    // The largest difference between two placements: metres, and degrees
+    const auto differ = [](const Placement& a, const Placement& b) {
+      float metres = a.size() == b.size() && !a.empty() ? 0.0f : 99.0f;
+      float degrees = 0;
+      for (const auto& [id, pose]: a) {
+        const auto other = b.find(id);
+        if (other == b.end()) {
+          return std::pair {99.0f, 180.0f};
+        }
+        metres = std::max(metres, Vector3::Distance(pose.mPosition, other->second.mPosition));
+        const float dot = std::abs(pose.mOrientation.Dot(other->second.mOrientation));
+        degrees = std::max(degrees, 2.0f * std::acos(std::min(dot, 1.0f)) * 180.0f / 3.14159265f);
+      }
+      return std::pair {metres, degrees};
+    };
+    // Each panel placed from `origin`, as it was from LOCAL's origin at the
+    // start
+    const auto expected = [](const Placement& atStart, const RigidPose& origin) {
+      Placement placed;
+      for (const auto& [id, pose]: atStart) {
+        placed[id] = ComposePose(origin, pose);
+      }
+      return placed;
+    };
+
+    std::printf("Recenter (test round 13): waiting for the host's panels\n");
+    const auto deadline = Clock::now() + std::chrono::seconds(20);
+    while (gRuntime.mQuads.size() < 2 && Clock::now() < deadline) {
+      run(0.1);
+    }
+    run(1.0);
+    const auto atStart = placements();
+    checks.Check(atStart.size() >= 2, std::format("the host's test panels show ({})", atStart.size()));
+
+    // The head moves (stands up a little, leans, turns): nothing moves yet
+    const auto headAtStart = HMDPose;
+    HMDPose = {headAtStart.mPosition + Vector3 {0.15f, 0.25f, 0.10f},
+      ComposePose({{}, headAtStart.mOrientation}, {{}, Quaternion::CreateFromAxisAngle(Vector3::UnitY, 0.45f)}).mOrientation};
+    run(0.5);
+    auto [moved, turned] = differ(placements(), atStart);
+    checks.Check(moved < 0.001f && turned < 0.1f,
+      std::format("moving the head moves no panel ({:.1f} mm, {:.2f} degrees)", moved * 1000, turned));
+
+    // The runtime recenters as VDXR did in round 13: LOCAL's new origin
+    // 45 cm above the head, turned with it; the event for LOCAL and STAGE
+    const auto head = HMDPose;
+    gRuntime.mLocal = {head.mPosition + Vector3 {0, 0.45f, 0}, level(head).mOrientation};
+    for (const auto type: {XR_REFERENCE_SPACE_TYPE_LOCAL, XR_REFERENCE_SPACE_TYPE_STAGE}) {
+      XrEventDataBuffer buffer {XR_TYPE_EVENT_DATA_BUFFER};
+      auto& changed = *reinterpret_cast<XrEventDataReferenceSpaceChangePending*>(&buffer);
+      changed = {XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING, nullptr, session, type, displayTime(), XR_FALSE, {}};
+      gRuntime.mEvents.push_back(buffer);
+    }
+    run(1.0);
+    std::tie(moved, turned) = differ(placements(), expected(atStart, level(head)));
+    checks.Check(moved < 0.005f && turned < 0.5f,
+      std::format("after the runtime's recenter, panels sit from the head as they sat from LOCAL's origin, not 45 cm "
+                  "up with LOCAL's new origin ({:.1f} mm, {:.2f} degrees off)",
+        moved * 1000, turned));
+
+    // The host's "Recenter" keybind (--test-recenter-after), with the head
+    // somewhere else again
+    HMDPose = {head.mPosition + Vector3 {-0.20f, -0.10f, 0.05f},
+      ComposePose({{}, head.mOrientation}, {{}, Quaternion::CreateFromAxisAngle(Vector3::UnitY, -0.7f)}).mOrientation};
+    const auto keybindHead = HMDPose;
+    const auto keybindDeadline = Clock::now() + std::chrono::seconds(40);
+    bool followed = false;
+    while (!followed && Clock::now() < keybindDeadline) {
+      run(0.2);
+      std::tie(moved, turned) = differ(placements(), expected(atStart, level(keybindHead)));
+      followed = moved < 0.005f && turned < 0.5f;
+    }
+    checks.Check(followed,
+      std::format("the host's Recenter keybind puts panels the same way, where the head is then ({:.1f} mm, {:.2f} degrees off)",
+        moved * 1000, turned));
+
+    layerDestroySession(session);
+    layerDestroyInstance(instance);
+    std::printf("\n%s (%d failed)\n", checks.mFailures == 0 ? "PASSED" : "FAILED", checks.mFailures);
+    return checks.mFailures == 0 ? 0 : 1;
+  }
 
   // Typing on the virtual keyboard
   if (!typeKeys.empty()) {
@@ -2372,6 +2549,11 @@ int main(int rawArgc, char** rawArgv) {
   int scriptFrames = 0;
   std::optional<double> scriptFirstFrameAt;
   double scriptLastFrameAt = 0;
+  // When the frame after the one that touched started: the latency gate's
+  // "one frame" is that frame as it really ran (M5c: a Debug simulator's
+  // frames are one or two 15.6 ms timer ticks, so its average was the
+  // wrong measure for the one frame that counts)
+  std::optional<double> afterContactFrameAt;
   Step lastStep = Step::Waiting;
   bool savedTouching = false;
   bool savedHovering = false;
@@ -2413,6 +2595,9 @@ int main(int rawArgc, char** rawArgv) {
 
     // The press latency gate (doc 11) starts at the frame whose tracking
     // sample reports contact
+    if (gRuntime.mContactAt && !afterContactFrameAt) {
+      afterContactFrameAt = NowMilliseconds();
+    }
     if (step == Step::PokeIn && !gRuntime.mContactAt && 0.08 + (-0.015 - 0.08) * progress <= 0.010) {
       gRuntime.mContactAt = NowMilliseconds();
     }
@@ -2572,10 +2757,12 @@ int main(int rawArgc, char** rawArgv) {
         break;
       }
       if (gRuntime.mContactAt && scriptFirstFrameAt && scriptFrames > 1) {
-        // One frame plus 2 ms (doc 11, "Latency"), at the simulator's real
-        // frame interval
-        const double frame
+        // One frame plus 2 ms (doc 11, "Latency"): the frame after contact,
+        // as it really ran, or the average frame if that was shorter (a
+        // press the depth filter catches a frame later is within the gate)
+        const double average
           = (scriptLastFrameAt - *scriptFirstFrameAt) / (scriptFrames - 1);
+        const double frame = std::max(average, afterContactFrameAt ? *afterContactFrameAt - *gRuntime.mContactAt : 0.0);
         const double latency = clickedAt - *gRuntime.mContactAt;
         checks.Check(
           latency <= frame + 2.0,

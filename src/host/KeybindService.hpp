@@ -55,6 +55,10 @@ class KeybindService {
   void SetKeyboardToggle(std::function<bool()> toggle) {
     mToggleKeyboard = std::move(toggle);
   }
+  // "Recenter": panels where the head is now (ADR-037)
+  void SetRecenter(std::function<void()> recenter) {
+    mRecenter = std::move(recenter);
+  }
 
  private:
   static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
@@ -68,6 +72,7 @@ class KeybindService {
   Keybinds::InputThread mInput;
   Events::Subscription mChanged;
   std::function<bool()> mToggleKeyboard;
+  std::function<void()> mRecenter;
 };
 
 }// namespace OpenDesktopVR::Host

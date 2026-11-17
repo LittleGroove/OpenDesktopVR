@@ -48,7 +48,7 @@ class HostPanels {
   HostPanels(
     const NextFunctions& next,
     XrSession session,
-    XrSpace localSpace,
+    const XrSpace& localSpace,
     ID3D11Device* device,
     ID3D11DeviceContext1* context,
     const D3D11Util::PrivateContextState& contextState,
@@ -126,7 +126,8 @@ class HostPanels {
 
   const NextFunctions& mNext;
   XrSession mSession;
-  XrSpace mLocalSpace;
+  // The session's panel space: re-made at each recenter (ADR-037)
+  const XrSpace& mLocalSpace;
   ID3D11DeviceContext1* mContext;
   winrt::com_ptr<ID3D11DeviceContext4> mWaitContext;
   const D3D11Util::PrivateContextState& mContextState;

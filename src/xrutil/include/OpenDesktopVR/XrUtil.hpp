@@ -74,6 +74,10 @@ XrQuaternionf FromYaw(float radians) noexcept;
 // Looking straight up or down falls back to 0.
 float YawOf(const XrQuaternionf& orientation) noexcept;
 
+// `head`, turned by its yaw only (level): where panels are placed from
+// after a recenter (doc 03 "Keep only yaw"; ADR-037)
+XrPosef LevelPose(const XrPosef& head) noexcept;
+
 // A level pose `forward` meters in front of `head` (yaw only, so panels stay
 // level; doc 03 "Recenter"), `drop` meters below it, facing the head
 XrPosef PlaceInFront(const XrPosef& head, float forward, float drop) noexcept;

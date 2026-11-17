@@ -100,6 +100,15 @@ add_test(
     -- $<TARGET_FILE:openxr-simulator> ${ODVR_SIM_ARGS} ${ODVR_SIM_OUT}/keyboard --type hi ${ODVR_SIM_OUT}/keyboard/typed.txt
 )
 set_tests_properties(sim-keyboard PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL" PASS_REGULAR_EXPRESSION "PASSED" TIMEOUT 200)
+# M5c (test round 13, ADR-037): recentering. The head moves; the runtime
+# recenters with LOCAL's new origin above the head, as VDXR did; then the
+# host's Recenter keybind. Panels must end up placed from the head each time
+add_test(
+  NAME sim-recenter
+  COMMAND with-host $<TARGET_FILE:OpenDesktopVR> --test-recenter-after 15
+    -- $<TARGET_FILE:openxr-simulator> --recenter ${ODVR_SIM_ARGS} ${ODVR_SIM_OUT}/recenter
+)
+set_tests_properties(sim-recenter PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL" PASS_REGULAR_EXPRESSION "PASSED" TIMEOUT 200)
 # M4c: two panels overlapping in depth, given nearest first: back to front in
 # every frame
 add_test(

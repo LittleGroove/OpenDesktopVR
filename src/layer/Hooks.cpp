@@ -233,8 +233,15 @@ XRAPI_ATTR XrResult XRAPI_CALL Hook_xrPollEvent(XrInstance instance, XrEventData
         Log::Info("Session state: {}", static_cast<int>(changed.state));
       } else if (event->type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING) {
         const auto& changed = *reinterpret_cast<const XrEventDataReferenceSpaceChangePending*>(event);
-        // Panels live in LOCAL, so they follow a LOCAL recenter by themselves
         Log::Info("Reference space {} is changing (recenter)", static_cast<int>(changed.referenceSpaceType));
+        // LOCAL's new origin may not be at the head (VDXR, test round 13):
+        // panels go where the head is once the change is made (ADR-037)
+        if (changed.referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL) {
+          std::shared_lock lock(G().mMutex);
+          if (G().mAttached && G().mAttached->Handle() == changed.session) {
+            G().mAttached->RecenterAt(changed.changeTime);
+          }
+        }
       }
     });
   }

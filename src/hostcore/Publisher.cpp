@@ -49,6 +49,10 @@ uint64_t Publisher::Generation() const noexcept {
   return std::atomic_ref<uint64_t> {Block().mHeader.mSessionGeneration}.load();
 }
 
+void Publisher::WriteRecenterCount(uint64_t count) noexcept {
+  std::atomic_ref<uint64_t> {Block().mHeader.mRecenterCount}.store(count, std::memory_order_relaxed);
+}
+
 void Publisher::BumpGeneration() noexcept {
   std::atomic_ref<uint64_t> {Block().mHeader.mSessionGeneration}.fetch_add(2);
 }

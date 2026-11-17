@@ -32,7 +32,7 @@ class TestPanel {
   TestPanel(
     const NextFunctions& next,
     XrSession session,
-    XrSpace localSpace,
+    const XrSpace& localSpace,
     ID3D11Device* device,
     DXGI_FORMAT format,
     const TestPanelOptions& options = {});
@@ -56,6 +56,8 @@ class TestPanel {
   static constexpr uint64_t ContentKey = 1;// the content never changes
 
   TestPanelOptions mOptions;
+  // The session's panel space: re-made at each recenter (ADR-037)
+  const XrSpace& mSpace;
   PanelSwapchain mSwapchain;
   winrt::com_ptr<ID3D11Texture2D> mTexture;
   XrCompositionLayerQuad mQuad {XR_TYPE_COMPOSITION_LAYER_QUAD};

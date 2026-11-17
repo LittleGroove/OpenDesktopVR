@@ -48,6 +48,8 @@ class Publisher {
   bool ReadTrackingSample(uint64_t index, SharedAbi::TrackingSample& out) const noexcept;
   // What the layer draws of each hand, and whether it should send samples
   void WriteHandState(const SharedAbi::HandState& state) noexcept;
+  // How many times the "Recenter" keybind was used (ADR-037)
+  void WriteRecenterCount(uint64_t count) noexcept;
 
  private:
   explicit Publisher(SharedMemory memory) noexcept : mMemory(std::move(memory)) {

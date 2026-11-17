@@ -116,9 +116,11 @@ bool Session::Initialize(const XrSessionCreateInfo& info) {
   mPanelFormat = *format;
   Log::Info("Panel swapchain format: DXGI {}", static_cast<int>(mPanelFormat));
 
-  // Our own spaces (doc 03 "Reference space")
+  // Our own spaces (doc 03 "Reference space"): the panel space starts as
+  // plain LOCAL (ADR-037)
   for (const auto& [type, space]: {
          std::pair {XR_REFERENCE_SPACE_TYPE_LOCAL, &mLocalSpace},
+         std::pair {XR_REFERENCE_SPACE_TYPE_LOCAL, &mRawLocalSpace},
          std::pair {XR_REFERENCE_SPACE_TYPE_VIEW, &mViewSpace},
        }) {
     const XrReferenceSpaceCreateInfo spaceInfo {
@@ -160,11 +162,53 @@ Session::~Session() {
   mHands.reset();
   mHostPanels.reset();
   mTestPanel.reset();
-  for (const auto space: {mLocalSpace, mViewSpace}) {
+  for (const auto space: {mLocalSpace, mRawLocalSpace, mViewSpace}) {
     if (space != XR_NULL_HANDLE) {
       mNext.xrDestroySpace(space);
     }
   }
+}
+
+void Session::RecenterAt(XrTime changeTime) noexcept {
+  // The latest asked for; 1 at least, as 0 means none
+  const int64_t at = std::max<int64_t>(changeTime, 1);
+  int64_t pending = mRecenterAt.load();
+  while ((pending == 0 || at > pending) && !mRecenterAt.compare_exchange_weak(pending, at)) {
+  }
+}
+
+void Session::ApplyRecenter(XrTime displayTime) noexcept {
+  const int64_t due = mRecenterAt.load();
+  if (due == 0 || displayTime < due) {
+    return;
+  }
+  // The head in LOCAL as it is now (after the runtime's change, if any)
+  XrSpaceLocation location {XR_TYPE_SPACE_LOCATION};
+  if (XR_FAILED(mNext.xrLocateSpace(mViewSpace, mRawLocalSpace, displayTime, &location)) || !XrUtil::IsUsable(location)) {
+    if (displayTime - due > 2'000'000'000) {
+      mRecenterAt.store(0);
+      Log::Warning("Recenter: the headset wasn't tracked for 2 s; panels stay where they were");
+    }
+    return;// try again next frame
+  }
+  const auto level = XrUtil::LevelPose(location.pose);
+  const XrReferenceSpaceCreateInfo info {XR_TYPE_REFERENCE_SPACE_CREATE_INFO, nullptr, XR_REFERENCE_SPACE_TYPE_LOCAL, level};
+  XrSpace space {XR_NULL_HANDLE};
+  if (const auto result = mNext.xrCreateReferenceSpace(mSession, &info, &space); XR_FAILED(result)) {
+    mRecenterAt.store(0);
+    Log::Warning("Recenter: couldn't make the new panel space ({}); panels stay where they were", XrUtil::ResultName(result));
+    return;
+  }
+  // Only this thread composes frames: nothing else holds the old space now
+  const XrSpace old = std::exchange(mLocalSpace, space);
+  mNext.xrDestroySpace(old);
+  int64_t expected = due;
+  mRecenterAt.compare_exchange_strong(expected, 0);// a newer request stays due
+  const auto& p = level.position;
+  Log::Info("Recentered ({}): panels are placed from where the head is now, level; it's at ({:.2f}, {:.2f}, {:.2f}) m "
+            "from LOCAL's origin, turned {:.0f} degrees",
+    mRecenterWhy, p.x, p.y, p.z, XrUtil::YawOf(level.orientation) * 180.0f / 3.14159265f);
+  mRecenterWhy = "the runtime's recenter";
 }
 
 void Session::PrepareReport() noexcept {
@@ -208,6 +252,24 @@ XrFrameEndInfo Session::Compose(const XrFrameEndInfo& game) noexcept {
   // XR-6: frames with no game layers pass through untouched
   if (!mPassthrough && !zeroLayers) {
     try {
+      // Recentering (ADR-037): the host's keybind, or the runtime's
+      // recenter once its change time has come
+      if (mHostPanels && mHostPanels->Link().TakeRecenterRequest()) {
+        mRecenterWhy = "the Recenter keybind";
+        RecenterAt(game.displayTime);
+      }
+      ApplyRecenter(game.displayTime);
+      if (!mLoggedStartHead) {
+        // Where LOCAL's origin is, seen from the head (doc 03: on some
+        // runtimes it isn't at eye height)
+        if (XrSpaceLocation startHead {XR_TYPE_SPACE_LOCATION};
+            XR_SUCCEEDED(mNext.xrLocateSpace(mViewSpace, mRawLocalSpace, game.displayTime, &startHead)) && XrUtil::IsUsable(startHead)) {
+          mLoggedStartHead = true;
+          Log::Info("Head at the start: ({:.2f}, {:.2f}, {:.2f}) m from LOCAL's origin, turned {:.0f} degrees",
+            startHead.pose.position.x, startHead.pose.position.y, startHead.pose.position.z,
+            XrUtil::YawOf(startHead.pose.orientation) * 180.0f / 3.14159265f);
+        }
+      }
       std::size_t panelCount = 0;
       std::size_t hostPanelCount = 0;
       std::optional<XrPosef> head;

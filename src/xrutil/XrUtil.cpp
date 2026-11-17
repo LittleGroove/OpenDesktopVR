@@ -73,6 +73,10 @@ float YawOf(const XrQuaternionf& orientation) noexcept {
   return std::atan2(-forward.x, -forward.z);
 }
 
+XrPosef LevelPose(const XrPosef& head) noexcept {
+  return {FromYaw(YawOf(head.orientation)), head.position};
+}
+
 XrPosef PlaceInFront(const XrPosef& head, float forward, float drop) noexcept {
   const float yaw = YawOf(head.orientation);
   const auto orientation = FromYaw(yaw);

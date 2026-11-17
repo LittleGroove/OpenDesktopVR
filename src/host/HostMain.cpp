@@ -33,6 +33,8 @@
 //                    start, as a user would (its device is made by then)
 // --show-keyboard    test instances: the keyboard shows from the start, as
 //                    its keybind would show it (sim-keyboard)
+// --test-recenter-after <s>  test instances: recenter this long after the
+//                    start, as the keybind would (sim-recenter)
 
 #include "KeybindService.hpp"
 #include "PanelManager.hpp"
@@ -61,7 +63,10 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <condition_variable>
 #include <cwchar>
+#include <mutex>
+#include <thread>
 #include <string_view>
 #include <vector>
 
@@ -86,6 +91,7 @@ struct Options {
   bool mSettingsKeybinds {false};
   bool mSettingsHands {false};
   bool mShowKeyboard {false};
+  double mTestRecenterAfterSeconds {0};
   std::wstring mScreenshot;
   bool mScreenshotPicker {false};
 };
@@ -124,6 +130,8 @@ Options ParseOptions() {
       options.mSettingsHands = true;
     } else if (arg == L"--show-keyboard") {
       options.mShowKeyboard = true;
+    } else if (arg == L"--test-recenter-after" && i + 1 < argc) {
+      options.mTestRecenterAfterSeconds = std::clamp(std::wcstod(argv[++i], nullptr), 0.0, 600.0);
     } else if (arg == L"--settings-delay" && i + 1 < argc) {
       options.mSettingsDelayMs = std::clamp(_wtoi(argv[++i]), 0, 10'000);
     } else if ((arg == L"--settings-screenshot" || arg == L"--picker-screenshot") && i + 1 < argc) {
@@ -291,6 +299,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     // Keybinds: the keyboard and game controllers, on their own thread
     Host::KeybindService keybinds {instance, panels};
     keybinds.SetKeyboardToggle([&keyboard] { return keyboard.Toggle(); });
+    keybinds.SetRecenter([&renderer] { renderer.Recenter(); });
+    // Tests: the keybind's recenter, at a known time
+    std::jthread testRecenter;
+    if (options.mTestRecenterAfterSeconds > 0 && options.mTestInstance) {
+      const auto after = std::chrono::duration<double>(options.mTestRecenterAfterSeconds);
+      testRecenter = std::jthread([&renderer, after](std::stop_token stop) {
+        std::mutex mutex;
+        std::condition_variable_any wake;
+        std::unique_lock lock(mutex);
+        if (!wake.wait_for(lock, stop, after, [] { return false; }) && !stop.stop_requested()) {
+          Log::Info("Test: recentering, as the keybind would");
+          renderer.Recenter();
+        }
+      });
+    }
     if (options.mTestKeybind != 0 && options.mTestInstance) {
       Keybinds::Slots slots;
       slots[0] = Keybinds::Binding::From({Keybinds::Button {Keybinds::DeviceKind::Keyboard, {}, options.mTestKeybind}});

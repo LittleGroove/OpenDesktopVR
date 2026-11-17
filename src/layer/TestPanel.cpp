@@ -12,11 +12,11 @@ namespace OpenDesktopVR::Layer {
 TestPanel::TestPanel(
   const NextFunctions& next,
   XrSession session,
-  XrSpace localSpace,
+  const XrSpace& localSpace,
   ID3D11Device* device,
   DXGI_FORMAT format,
   const TestPanelOptions& options)
-  : mOptions(options), mSwapchain(next, session, format) {
+  : mOptions(options), mSpace(localSpace), mSwapchain(next, session, format) {
   const auto info = D3D11Util::DescribeColorFormat(format);
   if (!info) {
     mFailed = true;
@@ -75,6 +75,7 @@ bool TestPanel::Draw(ID3D11DeviceContext* context) noexcept {
 }
 
 const XrCompositionLayerQuad* TestPanel::Quad() noexcept {
+  mQuad.space = mSpace;
   if (mFailed || !mPlaced || !mSwapchain.HasReleasedImage()) {
     return nullptr;
   }

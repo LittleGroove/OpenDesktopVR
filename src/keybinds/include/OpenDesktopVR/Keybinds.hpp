@@ -93,12 +93,13 @@ enum class ActionKind : uint8_t {
   BrightnessDown,
   ToggleTint,
   ToggleKeyboard,// global: show or hide the keyboard (K5, ADR-036)
+  Recenter,      // global: panels where the head is now (PN-7, ADR-037)
 };
-inline constexpr ActionKind LastActionKind = ActionKind::ToggleKeyboard;
+inline constexpr ActionKind LastActionKind = ActionKind::Recenter;
 inline constexpr std::array PanelActions {
   ActionKind::TogglePanel, ActionKind::BrightnessUp, ActionKind::BrightnessDown, ActionKind::ToggleTint};
 // Stored in "keybinds", not with a panel
-inline constexpr std::array GlobalActions {ActionKind::ToggleAllPanels, ActionKind::ToggleKeyboard};
+inline constexpr std::array GlobalActions {ActionKind::ToggleAllPanels, ActionKind::ToggleKeyboard, ActionKind::Recenter};
 constexpr bool IsGlobal(ActionKind kind) noexcept {
   for (const auto global: GlobalActions) {
     if (global == kind) {
