@@ -37,9 +37,20 @@
 //   and land 10-20 px apart, so a mouse's rule missed most of them).
 // - **Logs** name the app: a message that timed out, the app not
 //   responding, and when it answers again (with what was skipped).
+// - **Keys** (M5a, doc 06 "Keyboard injection"): a whole key press goes
+//   through the same worker, after any taps before it. The window is made
+//   active on its own thread first (Firefox needs it); then the key goes to
+//   the focused window on the app's thread, found when it's delivered
+//   (INJ-7), or with none, to the control the last press went to; the
+//   keyboard's modifiers are set on the app's thread; the characters arrive
+//   with the key-down (INJ-9); blocked combinations never go (INJ-8). Keys
+//   never merge; to an app that isn't responding they're skipped, like taps.
+//   Where Windows lets the app take the real foreground when it activates,
+//   the helper gives it back at once and at each injection's end (ADR-035).
 #pragma once
 
 #include <OpenDesktopVR/HandInteraction.hpp>
+#include <OpenDesktopVR/WindowKeyInjection.hpp>
 
 #include <Windows.h>
 
@@ -77,6 +88,9 @@ struct Stats {
   uint64_t mPresses {0};
   uint64_t mDoubleClicks {0};
   uint64_t mSkippedPresses {0};// of mSkippedHung: presses (taps that didn't land)
+  uint64_t mKeys {0};
+  uint64_t mKeysBlocked {0};// INJ-8
+  uint64_t mKeysSkipped {0};// of mSkippedHung: keys to an app not responding
   uint64_t mReleases {0};
   uint64_t mMoves {0};
   uint64_t mMovesMerged {0};
@@ -101,6 +115,11 @@ class Injector {
   // thread). `target` null: the panel takes no input or has gone. Never
   // waits.
   void Pointer(uint64_t panelID, const Target* target, const HandInteraction::CursorUpdate& update);
+
+  // One key press (down, its characters, up; or a repeat) into the target's
+  // window. Never waits. May be called from another thread than Pointer()
+  // (the keyboard's repeat): workers are made under a lock (INJ-7).
+  void Key(const Target& target, const VirtualKeyStroke& stroke);
 
   Stats GetStats() const;
   // A stats line, if anything happened since the last one

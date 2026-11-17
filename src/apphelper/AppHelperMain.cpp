@@ -296,8 +296,14 @@ void HandleSent(HWND window, WPARAM command, LPARAM argument) noexcept {
     case static_cast<WPARAM>(OpenDesktopVR::InjectionHookProtocol::Command::ActivateWindow):
       InputFakes::Activate(reinterpret_cast<HWND>(argument));
       break;
+    case static_cast<WPARAM>(OpenDesktopVR::InjectionHookProtocol::Command::SetKeyboardModifiers):
+      InputFakes::SetKeyboardModifiers(argument);
+      break;
+    case static_cast<WPARAM>(OpenDesktopVR::InjectionHookProtocol::Command::QueueChar):
+      InputFakes::QueueChar(argument);
+      break;
     default:
-      break;// the keyboard's other commands: M5
+      break;// another build's command
   }
 }
 
@@ -309,6 +315,10 @@ extern "C" __declspec(dllexport) LRESULT CALLBACK OdvrAppHelperGetMessageProc(in
   // HK-3: negative codes pass straight through, and only removed messages
   // count (a message only peeked at comes back again)
   if (code == HC_ACTION && wParam == PM_REMOVE && lParam != 0) {
+    // Keys: the thread's own key state back once its injection is over
+    if (InputFakes::KeysReplaced()) {
+      InputFakes::RestoreKeysIfDone();
+    }
     auto* message = reinterpret_cast<MSG*>(lParam);
     if (message->message == CommandMessage() && message->message != 0) {
       const WPARAM command = message->wParam;
@@ -328,9 +338,15 @@ extern "C" __declspec(dllexport) LRESULT CALLBACK OdvrAppHelperGetMessageProc(in
 // case is one comparison; it can't change or stop the message.
 extern "C" __declspec(dllexport) LRESULT CALLBACK OdvrAppHelperCallWndProc(int code, WPARAM wParam, LPARAM lParam) {
   if (code == HC_ACTION && lParam != 0) {
+    if (InputFakes::KeysReplaced()) {
+      InputFakes::RestoreKeysIfDone();
+    }
     const auto* sent = reinterpret_cast<const CWPSTRUCT*>(lParam);
     if (sent->message == CommandMessage() && sent->message != 0) {
       HandleSent(sent->hwnd, sent->wParam, sent->lParam);
+    } else if ((sent->message == WM_KEYDOWN || sent->message == WM_SYSKEYDOWN) && InputFakes::CharsWaiting()) {
+      // INJ-9: the key's characters, queued as it goes down
+      InputFakes::KeyDown(sent->hwnd, sent->lParam);
     }
   }
   return CallNextHookEx(nullptr, code, wParam, lParam);

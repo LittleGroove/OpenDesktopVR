@@ -10,7 +10,10 @@
 // - when its main window gets a click (input mode, M4b), it records where it
 //   thinks the cursor is, what's in the foreground and active, and what its
 //   probe thread sees; then it tries to come to the top and to SendInput, as
-//   apps do.
+//   apps do;
+// - when its main window gets a key-down (M5a), it records the modifiers it
+//   sees and the character already waiting in its queue, and then the
+//   characters it gets.
 // It writes what it sees to the test's shared memory (apphelper-probe.hpp).
 
 #include "apphelper-probe.hpp"
@@ -44,6 +47,7 @@ bool Above(HWND upper, HWND lower) {
 // The probe thread checks the fakes from outside the UI thread on request
 std::atomic<int> gAskOtherThread {0};
 HANDLE gOtherThreadAnswered {nullptr};
+LPARAM gLastKeyLParam {0};
 
 LRESULT CALLBACK MainWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
   if (message == WM_LBUTTONDOWN && window == gMain) {
@@ -80,6 +84,45 @@ LRESULT CALLBACK MainWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM
   if (message == WM_APP + 1 && window == gMain) {
     gProbe->mProbeForeground = GetForegroundWindow() == gMain ? 1 : 0;
     ++gProbe->mProbes;
+    return 0;
+  }
+  // Keys (M5a): what an app reads while handling a key, as Chromium and
+  // Firefox do: the modifiers three ways, and the key's character, which
+  // TranslateMessage would have queued by now
+  if (message == WM_KEYDOWN && window == gMain) {
+    gProbe->mKeyShift = (GetKeyState(VK_SHIFT) & 0x8000) ? 1 : 0;
+    gProbe->mKeyControl = (GetKeyState(VK_CONTROL) & 0x8000) ? 1 : 0;
+    gProbe->mKeyCapsLock = (GetKeyState(VK_CAPITAL) & 0x0001) ? 1 : 0;
+    BYTE keys[256] {};
+    gProbe->mKeyStateShift = (GetKeyboardState(keys) && (keys[VK_SHIFT] & 0x80)) ? 1 : 0;
+    gProbe->mKeyAsyncShift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) ? 1 : 0;
+    MSG waiting {};
+    if (PeekMessageW(&waiting, window, WM_CHAR, WM_CHAR, PM_NOREMOVE)) {
+      gProbe->mKeyCharWaiting = static_cast<uint32_t>(waiting.wParam);
+      gProbe->mKeyCharLParamMatches = waiting.lParam == lParam ? 1 : 0;
+    } else {
+      gProbe->mKeyCharWaiting = 0;
+      gProbe->mKeyCharLParamMatches = -1;
+    }
+    gLastKeyLParam = lParam;
+    ++gProbe->mKeyDowns;
+    return 0;
+  }
+  if (message == WM_CHAR && window == gMain) {
+    const auto index = gProbe->mChars.load();
+    if (index < 32) {
+      gProbe->mCharCodes[index] = static_cast<uint32_t>(wParam);
+    }
+    if (lParam != gLastKeyLParam) {
+      gProbe->mCharsMatchKey = 0;
+    }
+    ++gProbe->mChars;
+    return 0;
+  }
+  if (message == WM_APP + 3 && window == gMain) {
+    gProbe->mProbeShift = (GetKeyState(VK_SHIFT) & 0x8000) ? 1 : 0;
+    gProbe->mProbeCapsLock = (GetKeyState(VK_CAPITAL) & 0x0001) ? 1 : 0;
+    ++gProbe->mKeyProbes;
     return 0;
   }
   return DefWindowProcW(window, message, wParam, lParam);

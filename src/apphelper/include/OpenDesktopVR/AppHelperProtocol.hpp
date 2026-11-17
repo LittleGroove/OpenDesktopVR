@@ -40,7 +40,8 @@ inline constexpr char CallHookProcName[] = "OdvrAppHelperCallWndProc";
 // Hello's reply detail: a host and helper from different builds don't mix
 // 2: input (InputOn, InputOff, the sent commands)
 // 3: SetMouseButtons
-inline constexpr uint16_t Version = 3;
+// 4: the keyboard's commands (SetKeyboardModifiers, QueueChar)
+inline constexpr uint16_t Version = 4;
 
 enum class Command : uint8_t {
   // lParam: the host's reply window. Posted first after each install, so
@@ -67,8 +68,8 @@ enum class Command : uint8_t {
   InputOff = 0x06,
 
   // ---- Sent, around each injected event; never answered ----
-  // 0x10 to 0x12 are the keyboard commands (InjectionHookProtocol.hpp);
-  // ActivateWindow (0x11) is handled from M4b.
+  // 0x10 to 0x12 are the keyboard commands (InjectionHookProtocol.hpp):
+  // ActivateWindow from M4b, SetKeyboardModifiers and QueueChar from M5a.
   //
   // lParam: the event's screen point (PackPoint). Opens an injection window
   // on this thread (HK-5): while an injected message is handled, the app

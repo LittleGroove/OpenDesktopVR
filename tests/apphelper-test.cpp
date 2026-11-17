@@ -18,6 +18,11 @@
 //   foreground and active; another of its threads sees none of it (HK-5);
 //   it can't come to the top or SendInput (HK-8); the fakes end 100 ms
 //   after the end, 2 s after a lost end, and a stray end changes nothing;
+// - keys (M5a): while it handles an injected key-down the app sees the
+//   keyboard's Shift (GetKeyState, GetKeyboardState, GetAsyncKeyState) and
+//   Caps Lock, and the key's characters are already in its queue with the
+//   key's lParam (INJ-9); its own key state comes back after; at most 16
+//   characters wait; one whose key never came isn't typed later;
 // - the service stopping with a window still on unloads it too.
 // The real browsers are in occlusion-test.
 
@@ -29,6 +34,7 @@
 #include <OpenDesktopVR/AppHelperRules.hpp>
 #include <OpenDesktopVR/AppHelperService.hpp>
 #include <OpenDesktopVR/ImportPatch.hpp>
+#include <OpenDesktopVR/InjectionHookProtocol.hpp>
 
 #include <Windows.h>
 
@@ -352,6 +358,112 @@ int main(int argc, char** argv) {
       Check(probe->mMainCameUp == 1, "after: the app can bring its window to the top again (the guard is gone)");
       Check(WaitFor([&] { return injected > 0; }, 1s), "after: its SendInput is real again (the hook here sees it)");
       UnhookWindowsHookEx(mouseHook);
+    });
+
+    Scenario("Keys: the keyboard's modifiers on the app's thread, characters with the key-down (doc 06, INJ-9)", [&] {
+      AppHelperService service;
+      auto lease = service.Input(9, main);
+      const bool on = WaitFor([&] {
+        const auto status = service.InputStatusOf(9);
+        return status && status->mState != AppHelperService::State::Waiting;
+      }, 8s) && service.InputStatusOf(9)->mState == AppHelperService::State::On;
+      Check(on, "input on");
+      if (!on) {
+        return;
+      }
+      namespace Keys = InjectionHookProtocol;
+      namespace Mods = InjectionHookProtocol::KeyboardModifiers;
+      const UINT command = RegisterWindowMessageW(AppHelperProtocol::CommandMessageName);
+      const auto send = [&](UINT message, WPARAM wParam, LPARAM lParam) {
+        DWORD_PTR result = 0;
+        return SendMessageTimeoutW(main, message, wParam, lParam, SMTO_NORMAL | SMTO_ABORTIFHUNG, 2000, &result) != 0;
+      };
+      const auto keyCommand = [&](Keys::Command which, LPARAM argument) {
+        send(command, static_cast<WPARAM>(which), argument);
+      };
+      const auto begin = [&] {
+        send(command, static_cast<WPARAM>(AppHelperProtocol::Command::BeginInjection), AppHelperProtocol::PackPoint(10, 10));
+      };
+      const auto end = [&] { send(command, static_cast<WPARAM>(AppHelperProtocol::Command::EndInjection), 0); };
+      const auto probeKeys = [&] {
+        const auto before = probe->mKeyProbes.load();
+        send(WM_APP + 3, 0, 0);
+        return probe->mKeyProbes.load() > before;
+      };
+      Check(probeKeys() && probe->mProbeShift == 0, "before: Shift isn't held for the app");
+      const int capsBefore = probe->mProbeCapsLock.load();
+
+      // H, as the injector sends it: Shift and Caps Lock (the opposite of
+      // the real one) set, two characters queued, the key down and up
+      const LPARAM keyDown = 0x00230001;// scan 0x23, repeat 1
+      const LPARAM keyUp = keyDown | (LPARAM {1} << 30) | (LPARAM {1} << 31);
+      const auto charsBefore = probe->mChars.load();
+      begin();
+      keyCommand(Keys::Command::SetKeyboardModifiers,
+        static_cast<LPARAM>(Mods::Set | Mods::Shift | (capsBefore == 1 ? 0u : Mods::CapsLock)));
+      keyCommand(Keys::Command::QueueChar, L'H');
+      keyCommand(Keys::Command::QueueChar, L'i');
+      const auto downs = probe->mKeyDowns.load();
+      send(WM_KEYDOWN, 'H', keyDown);
+      send(WM_KEYUP, 'H', keyUp);
+      end();
+      Check(probe->mKeyDowns.load() == downs + 1, "the app handled the key");
+      Check(probe->mKeyShift == 1 && probe->mKeyStateShift == 1 && probe->mKeyAsyncShift == 1,
+        std::format("Shift held for it: GetKeyState {}, GetKeyboardState {}, GetAsyncKeyState {}",
+          probe->mKeyShift.load(), probe->mKeyStateShift.load(), probe->mKeyAsyncShift.load()));
+      Check(probe->mKeyControl == 0, "Ctrl not held");
+      Check(probe->mKeyCapsLock == (capsBefore == 1 ? 0 : 1), "Caps Lock as the keyboard set it");
+      Check(probe->mKeyCharWaiting == L'H' && probe->mKeyCharLParamMatches == 1,
+        std::format("while it handled the key-down, its character was already waiting, with the key's lParam ({})",
+          probe->mKeyCharWaiting.load()));
+      Check(WaitFor([&] { return probe->mChars.load() == charsBefore + 2; }, 2s), "then it got both characters");
+      Check(probe->mCharCodes[charsBefore] == L'H' && probe->mCharCodes[charsBefore + 1] == L'i'
+          && probe->mCharsMatchKey == 1,
+        "in order (\"Hi\"), each with the key's lParam");
+      Check(probeKeys() && probe->mProbeShift == 1, "within 100 ms of the end: Shift still held for it");
+      std::this_thread::sleep_for(150ms);
+      Check(probeKeys() && probe->mProbeShift == 0 && probe->mProbeCapsLock == capsBefore,
+        "after that: its own key state back (Shift up, Caps Lock as it was)");
+
+      // At most 16 characters wait
+      const auto before16 = probe->mChars.load();
+      begin();
+      for (int i = 0; i < 20; ++i) {
+        keyCommand(Keys::Command::QueueChar, L'a' + i);
+      }
+      send(WM_KEYDOWN, 'A', 0x001E0001);
+      end();
+      Check(WaitFor([&] { return probe->mChars.load() >= before16 + 16; }, 2s), "20 queued: characters arrive");
+      Pump(200ms);
+      Check(probe->mChars.load() == before16 + 16, std::format("only 16 of them ({})", probe->mChars.load() - before16));
+
+      // A character whose key never came isn't typed by the next injection's
+      std::this_thread::sleep_for(150ms);
+      const auto beforeStale = probe->mChars.load();
+      begin();
+      keyCommand(Keys::Command::QueueChar, L'x');
+      end();
+      begin();
+      send(WM_KEYDOWN, 'B', 0x00300001);
+      end();
+      Pump(200ms);
+      Check(probe->mChars.load() == beforeStale, "a character whose key never came is dropped, not typed with the next key");
+
+      // 0 puts the app's own key state back at once
+      std::this_thread::sleep_for(150ms);
+      begin();
+      keyCommand(Keys::Command::SetKeyboardModifiers, static_cast<LPARAM>(Mods::Set | Mods::Control));
+      keyCommand(Keys::Command::SetKeyboardModifiers, 0);
+      send(WM_KEYDOWN, 'C', 0x002E0001);
+      end();
+      Check(probe->mKeyControl == 0, "the modifiers set to 0: Ctrl not held for the next key");
+
+      // Outside an injection, a key-down gets no queued characters
+      std::this_thread::sleep_for(150ms);
+      const auto beforeOutside = probe->mChars.load();
+      send(WM_KEYDOWN, 'D', 0x00200001);
+      Pump(200ms);
+      Check(probe->mChars.load() == beforeOutside, "a key-down outside an injection: nothing typed");
     });
 
     Scenario("The service stops with a window still on: the helper unloads", [&] {

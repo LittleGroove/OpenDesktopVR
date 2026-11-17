@@ -5,8 +5,10 @@
 
 #include <OpenDesktopVR/AppHelperProtocol.hpp>
 #include <OpenDesktopVR/ImportPatch.hpp>
+#include <OpenDesktopVR/InjectionHookProtocol.hpp>
 
 #include <array>
+#include <initializer_list>
 #include <optional>
 
 namespace OpenDesktopVR::AppHelper::InputFakes {
@@ -31,10 +33,28 @@ struct Window {
   std::atomic<LONG> mY {0};
   std::atomic<HWND> mTopLevel {nullptr};
   std::atomic<LONG> mButtons {0};// MK_LBUTTON ...
+  // Another process's window that had the real foreground when the
+  // injection began: it gets it back if this app takes it (R1)
+  std::atomic<HWND> mForegroundBefore {nullptr};
+
+  // Keys (M5a). The keyboard's modifiers (InjectionHookProtocol bits, with
+  // Set), read by the GetAsyncKeyState fake
+  std::atomic<LONG> mModifiers {0};
+  // The rest is touched only on the window's own thread: the thread's own
+  // key state while the keyboard's replaces it, and the characters waiting
+  // for the next key-down
+  std::array<BYTE, 256> mOwnKeys {};
+  bool mKeysReplaced {false};
+  std::array<wchar_t, 16> mChars {};
+  int mCharCount {0};
 };
 std::array<Window, MaxThreads> gWindows {};
 // Any window open or in its grace: the fakes' quick way out
 std::atomic<int> gOpen {0};
+// Threads whose key state the keyboard's replaces, and characters waiting:
+// the hooks' quick way out
+std::atomic<int> gKeysReplaced {0};
+std::atomic<int> gCharsWaiting {0};
 
 Window* Find(DWORD thread) noexcept {
   for (auto& window: gWindows) {
@@ -191,11 +211,48 @@ SHORT WINAPI FakeGetKeyState(int key) {
   return gGetKeyState(key);
 }
 
+// The keyboard's modifiers, for a modifier key code; nullopt for other keys
+// or when the keyboard hasn't set them. The right-hand keys are never held:
+// the keyboard's are the left ones.
+std::optional<bool> KeyboardModifier(const Window& window, int key) noexcept {
+  namespace Mods = InjectionHookProtocol::KeyboardModifiers;
+  const auto bits = static_cast<unsigned long>(window.mModifiers.load(std::memory_order_relaxed));
+  if ((bits & Mods::Set) == 0) {
+    return std::nullopt;
+  }
+  switch (key) {
+    case VK_SHIFT:
+    case VK_LSHIFT:
+      return (bits & Mods::Shift) != 0;
+    case VK_CONTROL:
+    case VK_LCONTROL:
+      return (bits & Mods::Control) != 0;
+    case VK_MENU:
+    case VK_LMENU:
+      return (bits & Mods::Alt) != 0;
+    case VK_RSHIFT:
+    case VK_RCONTROL:
+    case VK_RMENU:
+      return false;
+    default:
+      return std::nullopt;
+  }
+}
+
 SHORT WINAPI FakeGetAsyncKeyState(int key) {
   const InFlight inFlight;
-  if (const auto* window = Mine(); window && CursorOpen(*window, GetTickCount64())) {
-    if (const auto held = FingerButton(*window, key)) {
-      return *held ? static_cast<SHORT>(0x8000) : 0;
+  if (const auto* window = Mine()) {
+    const auto now = GetTickCount64();
+    if (CursorOpen(*window, now)) {
+      if (const auto held = FingerButton(*window, key)) {
+        return *held ? static_cast<SHORT>(0x8000) : 0;
+      }
+    }
+    // Through the grace too: the characters are handled after the key
+    if (FocusOpen(*window, now)) {
+      if (const auto held = KeyboardModifier(*window, key)) {
+        return *held ? static_cast<SHORT>(0x8000) : 0;
+      }
     }
   }
   return gGetAsyncKeyState(key);
@@ -305,13 +362,67 @@ std::size_t Apply(HMODULE skip) noexcept {
   return slots;
 }
 
+namespace {
+
+// On the window's own thread
+void RestoreKeys(Window& window) noexcept {
+  if (window.mKeysReplaced) {
+    SetKeyboardState(window.mOwnKeys.data());
+    window.mKeysReplaced = false;
+    gKeysReplaced.fetch_sub(1, std::memory_order_acq_rel);
+  }
+  window.mModifiers.store(0, std::memory_order_relaxed);
+}
+
+void DropChars(Window& window) noexcept {
+  if (window.mCharCount > 0) {
+    gCharsWaiting.fetch_sub(window.mCharCount, std::memory_order_acq_rel);
+    window.mCharCount = 0;
+  }
+}
+
+bool OwnedHere(HWND window) noexcept {
+  DWORD process = 0;
+  return window && GetWindowThreadProcessId(window, &process) != 0 && process == GetCurrentProcessId();
+}
+
+// R1. Windows lets some apps take the real foreground by themselves (one
+// started by the foreground process, say) when they activate, and an app
+// activates on its own thread when it handles a click (an EDIT's SetFocus)
+// or when the helper makes its window active for keys. If this app has the
+// foreground now and another process's window had it when the injection
+// began, that window gets it back. The helper's own calls, never faked.
+void GiveBackForeground(const Window& window) noexcept {
+  const HWND before = window.mForegroundBefore.load(std::memory_order_relaxed);
+  if (!before || !IsWindow(before)) {
+    return;
+  }
+  const HWND now = GetForegroundWindow();
+  if (now != before && OwnedHere(now)) {
+    SetForegroundWindow(before);
+  }
+}
+
+}// namespace
+
 void Restore() noexcept {
+  // This thread's own key state back; another thread's can only be set on
+  // that thread, and comes back with its next real key
+  if (auto* mine = Find(GetCurrentThreadId())) {
+    RestoreKeys(*mine);
+  }
   for (auto& window: gWindows) {
     window.mNesting = 0;
     window.mGraceUntil = 0;
     window.mButtons = 0;
+    window.mModifiers = 0;
+    window.mKeysReplaced = false;
+    window.mCharCount = 0;
+    window.mForegroundBefore = nullptr;
   }
   gOpen = 0;
+  gKeysReplaced = 0;
+  gCharsWaiting = 0;
   for (auto& fake: gFakes) {
     fake.mPatch.Restore();
   }
@@ -334,6 +445,13 @@ void Begin(HWND target, LPARAM packedPoint) noexcept {
   // A begin after a window that expired (its end lost) starts fresh
   if (now >= window->mExpireAt.load() && window->mNesting.load() > 0) {
     window->mNesting = 0;
+  }
+  // A new injection: no characters left from one whose key never came; who
+  // has the foreground now
+  if (window->mNesting.load() == 0) {
+    DropChars(*window);
+    const HWND foreground = GetForegroundWindow();
+    window->mForegroundBefore = OwnedHere(foreground) ? nullptr : foreground;
   }
   const auto point = Protocol::UnpackPoint(packedPoint);
   window->mX = point.x;
@@ -362,6 +480,7 @@ void End() noexcept {
   }
   if (nesting <= 1) {
     window->mGraceUntil = GetTickCount64() + GraceMs;
+    GiveBackForeground(*window);
   }
 }
 
@@ -371,14 +490,89 @@ void Activate(HWND target) noexcept {
     return;
   }
   // Meant for this thread only. But Windows lets the app take the real
-  // foreground when it may (it was started by the foreground process, or
-  // nobody has touched the keyboard or mouse for a while): if it did, it's
-  // given straight back (R1). These calls are the helper's own, never faked.
+  // foreground when it may (it was started by the foreground process, for
+  // one): if it did, it's given straight back (R1), not at the injection's
+  // end. These calls are the helper's own, never faked.
   const HWND foreground = GetForegroundWindow();
   SetActiveWindow(topLevel);
-  if (foreground && foreground != topLevel && GetForegroundWindow() == topLevel) {
+  if (foreground && !OwnedHere(foreground) && OwnedHere(GetForegroundWindow())) {
     SetForegroundWindow(foreground);
   }
+}
+
+void SetKeyboardModifiers(LPARAM bits) noexcept {
+  namespace Mods = InjectionHookProtocol::KeyboardModifiers;
+  auto* window = FindOrClaim(GetCurrentThreadId());
+  if (!window) {
+    return;
+  }
+  const auto value = static_cast<unsigned long>(bits);
+  if ((value & Mods::Set) == 0) {
+    RestoreKeys(*window);
+    return;
+  }
+  if (!window->mKeysReplaced) {
+    if (!GetKeyboardState(window->mOwnKeys.data())) {
+      return;
+    }
+    window->mKeysReplaced = true;
+    gKeysReplaced.fetch_add(1, std::memory_order_acq_rel);
+  }
+  auto keys = window->mOwnKeys;
+  const auto held = [&](std::initializer_list<int> codes, bool on) {
+    for (const int code: codes) {
+      keys[code] = static_cast<BYTE>(on ? (keys[code] | 0x80) : (keys[code] & ~0x80));
+    }
+  };
+  const auto toggled = [&](int code, bool on) {
+    keys[code] = static_cast<BYTE>(on ? (keys[code] | 0x01) : (keys[code] & ~0x01));
+  };
+  held({VK_SHIFT, VK_LSHIFT}, (value & Mods::Shift) != 0);
+  held({VK_CONTROL, VK_LCONTROL}, (value & Mods::Control) != 0);
+  held({VK_MENU, VK_LMENU}, (value & Mods::Alt) != 0);
+  held({VK_RSHIFT, VK_RCONTROL, VK_RMENU}, false);
+  toggled(VK_CAPITAL, (value & Mods::CapsLock) != 0);
+  toggled(VK_NUMLOCK, (value & Mods::NumLock) != 0);
+  SetKeyboardState(keys.data());
+  window->mModifiers.store(static_cast<LONG>(value), std::memory_order_relaxed);
+}
+
+void QueueChar(LPARAM character) noexcept {
+  auto* window = FindOrClaim(GetCurrentThreadId());
+  if (!window || window->mCharCount >= static_cast<int>(window->mChars.size())) {
+    return;// at most 16 waiting (doc 06)
+  }
+  window->mChars[static_cast<std::size_t>(window->mCharCount++)] = static_cast<wchar_t>(character);
+  gCharsWaiting.fetch_add(1, std::memory_order_acq_rel);
+}
+
+void KeyDown(HWND target, LPARAM keyLParam) noexcept {
+  auto* window = Find(GetCurrentThreadId());
+  if (!window || window->mCharCount == 0 || !CursorOpen(*window, GetTickCount64())) {
+    return;// only a key the injector sent, inside its injection
+  }
+  for (int i = 0; i < window->mCharCount; ++i) {
+    PostMessageW(target, WM_CHAR, static_cast<WPARAM>(window->mChars[static_cast<std::size_t>(i)]), keyLParam);
+  }
+  DropChars(*window);
+}
+
+void RestoreKeysIfDone() noexcept {
+  if (gKeysReplaced.load(std::memory_order_acquire) == 0) {
+    return;
+  }
+  auto* window = Find(GetCurrentThreadId());
+  if (window && window->mKeysReplaced && !FocusOpen(*window, GetTickCount64())) {
+    RestoreKeys(*window);
+  }
+}
+
+bool CharsWaiting() noexcept {
+  return gCharsWaiting.load(std::memory_order_acquire) > 0;
+}
+
+bool KeysReplaced() noexcept {
+  return gKeysReplaced.load(std::memory_order_acquire) > 0;
 }
 
 bool CursorFaked() noexcept {

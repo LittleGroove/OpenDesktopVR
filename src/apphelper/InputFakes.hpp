@@ -20,7 +20,13 @@
 //   nowhere (it would reach the game): these last until 100 ms after the
 //   end (HK-8);
 // - an end that never comes closes the window after 2 s; the nesting count
-//   never goes below zero; a begin after an expired window starts fresh.
+//   never goes below zero; a begin after an expired window starts fresh;
+// - if the app took the real foreground meanwhile (Windows lets some apps
+//   do so when they activate on a click), the end gives it back to the
+//   window that had it when the injection began (R1).
+//
+// For keys (M5a), the keyboard's modifiers on the app's thread and the
+// characters queued with each key-down: see "Keys" below.
 //
 // The fakes are import-table redirections (ImportPatch), set up by InputOn
 // at capture start (HK-1) and put back by Unload. They read atomics only,
@@ -59,6 +65,29 @@ void SetMouseButtons(LPARAM buttons) noexcept;
 // Makes `window` the active window on this thread only, if it isn't; if
 // that took the real foreground, gives it back
 void Activate(HWND window) noexcept;
+
+// ---- Keys (M5a; the keyboard commands of InjectionHookProtocol) ----------
+// Doc 06: the app's thread sees Shift, Ctrl, Alt and the Caps and Num Lock
+// toggles as the virtual keyboard says. The thread's own key state is kept
+// and replaced (SetKeyboardState, so GetKeyState and GetKeyboardState see
+// it); GetAsyncKeyState is faked for the modifiers. The thread's own state
+// comes back on its first message after the injection window closes (or at
+// once for 0).
+void SetKeyboardModifiers(LPARAM bits) noexcept;
+// A character to type with the next key that goes down in this injection
+// (at most 16 waiting; a new injection starts with none)
+void QueueChar(LPARAM character) noexcept;
+// An injected key-down sent to `window` on this thread, before the app
+// handles it: the waiting characters are posted to it (WM_CHAR, with the
+// key's lParam), so they're in the queue while the app handles the key, as
+// TranslateMessage would have put them (INJ-9)
+void KeyDown(HWND window, LPARAM keyLParam) noexcept;
+// On every message the thread handles: its own key state back, once its
+// injection window has closed. One load when nothing is waiting.
+void RestoreKeysIfDone() noexcept;
+// Quick checks for the hooks: one load each
+bool CharsWaiting() noexcept;
+bool KeysReplaced() noexcept;
 
 // For the helper's tests: whether this thread is inside an injected
 // message, and inside the focus window

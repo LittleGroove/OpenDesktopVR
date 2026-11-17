@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Robert McGough. All rights reserved.
 
 #include <OpenDesktopVR/AppHelperProtocol.hpp>
+#include <OpenDesktopVR/InjectionHookProtocol.hpp>
 #include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/PointerInjector.hpp>
 #include <OpenDesktopVR/ProcessUtil.hpp>
@@ -89,7 +90,7 @@ POINT ClientPoint(const Target& target, float u, float v, LONG clientWidth, LONG
 
 namespace {
 
-enum class Kind { Move, Down, Up, Wheel, Leave };
+enum class Kind { Move, Down, Up, Wheel, Leave, Key };
 
 struct Event {
   Kind mKind {Kind::Move};
@@ -103,6 +104,7 @@ struct Event {
   uint64_t mPress {0};
   uint64_t mDoubleOf {0};
   TimeUtil::TimePoint mQueued {};
+  VirtualKeyStroke mStroke {};// Key
 };
 
 // The app that owns a window, for log lines; never sends it anything
@@ -260,6 +262,7 @@ class Worker {
     if (!mNotRespondingSince) {
       mNotRespondingSince = since;
       mSkippedPresses = 0;
+      mSkippedKeys = 0;
       mSkippedOther = 0;
     }
   }
@@ -280,8 +283,11 @@ class Worker {
       StoppedResponding(TimeUtil::Now());
     } else if (mNotRespondingSince) {
       // Checked at the next event, so "within"
-      Log::Info("Input: {} is answering again, within {:.0f} ms of stopping; skipped meanwhile: {} taps, {} moves or wheel",
-        mAppName, TimeUtil::ToMilliseconds(TimeUtil::Now() - *mNotRespondingSince), mSkippedPresses, mSkippedOther);
+      Log::Info(
+        "Input: {} is answering again, within {:.0f} ms of stopping; skipped meanwhile: {} taps, {} keys, {} moves or "
+        "wheel",
+        mAppName, TimeUtil::ToMilliseconds(TimeUtil::Now() - *mNotRespondingSince), mSkippedPresses, mSkippedKeys,
+        mSkippedOther);
       mNotRespondingSince.reset();
     }
     return responding;
@@ -297,6 +303,56 @@ class Worker {
   bool IsDoubleTap(const Event& event, HWND window) const {
     return event.mDoubleOf != 0 && event.mDoubleOf == mLastPress && mLastDownWindow == window
       && (GetClassLongPtrW(window, GCL_STYLE) & CS_DBLCLKS) != 0;
+  }
+
+  // The thread's focus window, if it's in `top`. With none, the control the
+  // last press went to: the app may have lost its focus when the game got
+  // the foreground back (R1, ADR-035), and that's where the user tapped.
+  HWND KeyTarget(HWND top) const {
+    const HWND focus = WindowKeyInjection::GetKeyTarget(top);
+    if (focus == top && mLastDownWindow && mLastDownWindow != top && IsWindow(mLastDownWindow)
+        && GetAncestor(mLastDownWindow, GA_ROOT) == top) {
+      return mLastDownWindow;
+    }
+    return focus;
+  }
+
+  // A key press (doc 06 "Keyboard injection")
+  void DeliverKey(HWND top, const VirtualKeyStroke& stroke) {
+    const auto messages = WindowKeyInjection::GetMessages(stroke, mShared.mCommandMessage);
+    if (messages.empty()) {
+      // INJ-8: Alt+F4, Alt+Tab, a lone Alt, the Windows key...
+      mShared.Count([](auto& stats) { ++stats.mKeysBlocked; });
+      const auto now = TimeUtil::Now();
+      if (now >= mNextBlockedLog) {
+        mNextBlockedLog = now + 10s;
+        Log::Info("Input: a key combination that would close or leave {} wasn't sent", mAppName);
+      }
+      return;
+    }
+    POINT cursor {};
+    if (mLastScreen) {
+      cursor = *mLastScreen;
+    } else {
+      RECT bounds {};
+      GetWindowRect(top, &bounds);
+      cursor = {(bounds.left + bounds.right) / 2, (bounds.top + bounds.bottom) / 2};
+    }
+    Command(Protocol::Command::BeginInjection, Protocol::PackPoint(cursor.x, cursor.y));
+    // Firefox ignores keys in a window it doesn't think is active; the
+    // helper does it on the app's own thread, only if it isn't already
+    Send(mWindow, mShared.mCommandMessage, static_cast<WPARAM>(InjectionHookProtocol::Command::ActivateWindow),
+      reinterpret_cast<LPARAM>(mWindow));
+    // INJ-7: where keys go is decided now, after the taps before it landed
+    // and the activation (an app may move its focus then)
+    const HWND keyTarget = KeyTarget(top);
+    Send(mWindow, mShared.mCommandMessage, static_cast<WPARAM>(InjectionHookProtocol::Command::SetKeyboardModifiers),
+      WindowKeyInjection::GetModifierBits(stroke));
+    for (const auto& message: messages) {
+      Send(keyTarget, message.mMessage, message.mWParam, message.mLParam);
+    }
+    Command(Protocol::Command::EndInjection, 0);
+    mShared.Count([](auto& stats) { ++stats.mKeys; });
   }
 
   void LetGo(HWND target, POINT local) {
@@ -338,10 +394,12 @@ class Worker {
       PostMessageW(top, mShared.mCommandMessage, static_cast<WPARAM>(Protocol::Command::EndInjection), 0);
       if (event.mKind != Kind::Up && event.mKind != Kind::Leave) {
         const bool press = event.mKind == Kind::Down;
-        (press ? mSkippedPresses : mSkippedOther) += 1;
-        mShared.Count([press](auto& stats) {
+        const bool key = event.mKind == Kind::Key;
+        (press ? mSkippedPresses : key ? mSkippedKeys : mSkippedOther) += 1;
+        mShared.Count([press, key](auto& stats) {
           ++stats.mSkippedHung;
           stats.mSkippedPresses += press ? 1 : 0;
+          stats.mKeysSkipped += key ? 1 : 0;
         });
         const auto now = TimeUtil::Now();
         if (now >= mNextHungLog) {
@@ -349,6 +407,10 @@ class Worker {
           Log::Warning("Input: {} isn't responding; taps on it are skipped until it answers again", mAppName);
         }
       }
+      return;
+    }
+    if (event.mKind == Kind::Key) {
+      DeliverKey(top, event.mStroke);
       return;
     }
 
@@ -371,6 +433,7 @@ class Worker {
       }
       local = screen;
       ScreenToClient(child, &local);
+      mLastScreen = screen;
     }
 
     Command(Protocol::Command::BeginInjection, Protocol::PackPoint(screen.x, screen.y));
@@ -463,9 +526,13 @@ class Worker {
   std::string mAppName {"an app"};
   std::optional<TimeUtil::TimePoint> mNotRespondingSince;
   uint64_t mSkippedPresses {0};// while not responding, for its log line
+  uint64_t mSkippedKeys {0};
   uint64_t mSkippedOther {0};
+  // The last pointer event's screen point: where the cursor is for a key
+  std::optional<POINT> mLastScreen;
   TimeUtil::TimePoint mNextTimeoutLog {};
   TimeUtil::TimePoint mNextHungLog {};
+  TimeUtil::TimePoint mNextBlockedLog {};
 };
 
 }// namespace
@@ -502,16 +569,21 @@ struct Injector::Impl {
   };
   std::optional<Tap> mLastTap;
 
-  Worker& WorkerFor(HWND window) {
+  // INJ-7: keys may come from another thread (the keyboard's repeat), so
+  // workers are made, fed and pruned under this lock. Feeding never waits.
+  std::mutex mWorkersMutex;
+
+  void Enqueue(HWND window, Event event) {
+    std::scoped_lock lock(mWorkersMutex);
     auto& worker = mWorkers[window];
     if (!worker) {
       worker = std::make_unique<Worker>(mShared, window);
     }
-    return *worker;
+    worker->Enqueue(std::move(event));
   }
 
   void Queue(Kind kind, const Target& target, float u, float v, int32_t wheel = 0, bool drag = false) {
-    WorkerFor(target.mWindow).Enqueue({kind, target, u, v, wheel, drag, 0, 0, {}});
+    Enqueue(target.mWindow, {kind, target, u, v, wheel, drag, 0, 0, {}});
   }
 
   // Two points on the panel close enough for a double tap: within the
@@ -543,7 +615,7 @@ struct Injector::Impl {
     mPressU = u;
     mPressV = v;
     mPressIsSecond = doubleOf != 0;
-    WorkerFor(target.mWindow).Enqueue({Kind::Down, target, u, v, 0, false, mPress, doubleOf, {}});
+    Enqueue(target.mWindow, {Kind::Down, target, u, v, 0, false, mPress, doubleOf, {}});
   }
 
   void Lift(uint64_t panelID, const Target& target, float u, float v) {
@@ -563,6 +635,7 @@ struct Injector::Impl {
       return;
     }
     mNextPrune = now + 5s;
+    std::scoped_lock lock(mWorkersMutex);
     for (auto it = mWorkers.begin(); it != mWorkers.end();) {
       if (!IsWindow(it->first) && !(mOnPanel && mTarget.mWindow == it->first)) {
         it = mWorkers.erase(it);
@@ -624,6 +697,15 @@ void Injector::Pointer(uint64_t panelID, const Target* target, const CursorUpdat
   }
 }
 
+void Injector::Key(const Target& target, const VirtualKeyStroke& stroke) {
+  if (!target.mWindow) {
+    return;
+  }
+  Event event {Kind::Key, target};
+  event.mStroke = stroke;
+  mImpl->Enqueue(target.mWindow, std::move(event));
+}
+
 Stats Injector::GetStats() const {
   std::scoped_lock lock(mImpl->mShared.mStatsMutex);
   return mImpl->mShared.mStats;
@@ -633,12 +715,14 @@ void Injector::LogStats(const char* title) {
   const auto now = GetStats();
   auto& last = mImpl->mLogged;
   if (now.mPresses == last.mPresses && now.mMoves == last.mMoves && now.mWheelMessages == last.mWheelMessages
-      && now.mTimeouts == last.mTimeouts && now.mSkippedHung == last.mSkippedHung) {
+      && now.mTimeouts == last.mTimeouts && now.mSkippedHung == last.mSkippedHung && now.mKeys == last.mKeys
+      && now.mKeysBlocked == last.mKeysBlocked) {
     return;
   }
   Log::Info(
-    "{}: {} presses ({} double), {} releases, {} moves ({} merged), {} wheel messages; {} timed out, {} skipped (not "
-    "responding; {} of them taps), {} releases posted; longest wait for a press so far {:.1f} ms",
+    "{}: {} presses ({} double), {} releases, {} moves ({} merged), {} wheel messages, {} keys ({} blocked); {} timed "
+    "out, {} skipped (not responding; {} of them taps, {} keys), {} releases posted; longest wait for a press so far "
+    "{:.1f} ms",
     title,
     now.mPresses - last.mPresses,
     now.mDoubleClicks - last.mDoubleClicks,
@@ -646,9 +730,12 @@ void Injector::LogStats(const char* title) {
     now.mMoves - last.mMoves,
     now.mMovesMerged - last.mMovesMerged,
     now.mWheelMessages - last.mWheelMessages,
+    now.mKeys - last.mKeys,
+    now.mKeysBlocked - last.mKeysBlocked,
     now.mTimeouts - last.mTimeouts,
     now.mSkippedHung - last.mSkippedHung,
     now.mSkippedPresses - last.mSkippedPresses,
+    now.mKeysSkipped - last.mKeysSkipped,
     now.mPostedReleases - last.mPostedReleases,
     now.mLongestWaitMs);
   last = now;

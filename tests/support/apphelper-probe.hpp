@@ -52,6 +52,28 @@ struct AppHelperProbe {
   // to the top (1 if it came above the second)
   std::atomic<int32_t> mSecondOnTop {-1};
   std::atomic<int32_t> mMainCameUp {-1};
+
+  // Keys (M5a): what the app saw while handling a WM_KEYDOWN the test sent
+  std::atomic<uint32_t> mKeyDowns {0};
+  std::atomic<int32_t> mKeyShift {-1};     // GetKeyState(VK_SHIFT) held
+  std::atomic<int32_t> mKeyControl {-1};   // GetKeyState(VK_CONTROL) held
+  std::atomic<int32_t> mKeyCapsLock {-1};  // GetKeyState(VK_CAPITAL) toggled
+  std::atomic<int32_t> mKeyStateShift {-1};// GetKeyboardState()'s Shift held
+  std::atomic<int32_t> mKeyAsyncShift {-1};// GetAsyncKeyState(VK_SHIFT) held
+  // The WM_CHAR already waiting in its queue then (0: none), and whether it
+  // carries the key's lParam
+  std::atomic<uint32_t> mKeyCharWaiting {0};
+  std::atomic<int32_t> mKeyCharLParamMatches {-1};
+  // The WM_CHARs it handled, in order, and whether each carried the lParam
+  // of the key-down before it
+  std::atomic<uint32_t> mChars {0};
+  std::atomic<uint32_t> mCharCodes[32] {};
+  std::atomic<int32_t> mCharsMatchKey {1};
+  // On WM_APP + 3 (sent): GetKeyState for Shift (held) and Caps Lock
+  // (toggled)
+  std::atomic<uint32_t> mKeyProbes {0};
+  std::atomic<int32_t> mProbeShift {-1};
+  std::atomic<int32_t> mProbeCapsLock {-1};
 };
 
 inline constexpr wchar_t AppHelperProbeName[] = L"Local\\OdvrAppHelperTestProbe";
