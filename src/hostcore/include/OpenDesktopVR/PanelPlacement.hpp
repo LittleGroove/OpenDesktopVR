@@ -52,6 +52,15 @@ void Write(JsonUtil::Json& section, const PanelPlacement& placement);
 void ApplyTo(const PanelPlacement& placement, PanelDefinition& panel) noexcept;
 PanelPlacement From(const PanelDefinition& panel) noexcept;
 
+// A step of the quick menu's Position page or a "nudge" command
+enum class Nudge : uint8_t { Across, Up, Away, Turn, Tilt };
+// Moves it by `amount` (metres; degrees for Turn and Tilt), within the
+// limits. Turning or tilting something that faces you starts from the way
+// it faces now, then keeps those angles. Positions snap to a tenth of a
+// millimetre and angles to a hundredth of a degree, so steps there and back
+// end where they started (test round 20 logged "-0.0 cm").
+void NudgeBy(PanelPlacement& placement, Nudge what, float amount) noexcept;
+
 // From the older settings: this far from the eyes and this far below them
 // (centimetres), turned round from straight ahead (positive to the left)
 // and tilted back

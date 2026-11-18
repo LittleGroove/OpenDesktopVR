@@ -406,6 +406,42 @@ bool PanelManager::TogglePanel(uint64_t panelID) {
   return panel && Visibility::IsShowing(*panel, mHidden);
 }
 
+bool PanelManager::SetPanelShown(uint64_t panelID, bool shown) {
+  const auto panel = Find(panelID);
+  if (!panel || !panel->mEnabled || mHidden.contains(panelID) != shown) {
+    return false;// gone, off, or already so
+  }
+  if (shown) {
+    mHidden.erase(panelID);
+  } else {
+    mHidden.insert(panelID);
+  }
+  Push();
+  if (!AnyShowing()) {
+    mAllHidden.Emit();// hiding all dismisses the keyboard (doc 09)
+  }
+  return true;
+}
+
+bool PanelManager::SetAllShown(bool shown) {
+  bool changed = false;
+  if (shown) {
+    changed = !mHidden.empty();
+    mHidden.clear();
+  } else {
+    for (const auto& panel: mPanels) {
+      changed |= panel.mEnabled && mHidden.insert(panel.mID).second;
+    }
+  }
+  if (changed) {
+    Push();
+    if (!shown) {
+      mAllHidden.Emit();
+    }
+  }
+  return changed;
+}
+
 std::optional<float> PanelManager::ChangeBrightness(uint64_t panelID, float step) {
   auto panel = Find(panelID);
   if (!panel) {

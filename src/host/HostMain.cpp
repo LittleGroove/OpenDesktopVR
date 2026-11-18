@@ -44,6 +44,7 @@
 // --save-debug-info <zip>  tests: save the debug bundle there once
 //                    started, as "Save debug info" would (M6c)
 
+#include "AutomationService.hpp"
 #include "KeybindService.hpp"
 #include "PanelManager.hpp"
 #include "QuickMenuController.hpp"
@@ -109,6 +110,7 @@ struct Options {
   bool mSettingsCycleTabs {false};
   bool mSettingsGeneral {false};
   bool mSettingsDiagnostics {false};
+  bool mSettingsCommands {false};
   std::wstring mDebugInfoZip;
   bool mShowKeyboard {false};
   bool mShowQuickMenu {false};
@@ -157,6 +159,8 @@ Options ParseOptions() {
       options.mSettingsCycleTabs = true;
     } else if (arg == L"--settings-diagnostics") {
       options.mSettingsDiagnostics = true;
+    } else if (arg == L"--settings-commands") {
+      options.mSettingsCommands = true;
     } else if (arg == L"--save-debug-info" && i + 1 < argc) {
       options.mDebugInfoZip = argv[++i];
     } else if (arg == L"--show-keyboard") {
@@ -200,6 +204,20 @@ void RegisterLayer() {
 }// namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+  // A command for the running host (UI-9: "OpenDesktopVR.exe toggle
+  // Discord"): sent, and this process ends. It never becomes a host.
+  {
+    int argc = 0;
+    wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    std::vector<std::wstring> words;
+    for (int i = 1; argv && i < argc; ++i) {
+      words.emplace_back(argv[i]);
+    }
+    LocalFree(argv);
+    if (Automation::IsCommand(words)) {
+      return Host::SendCommand(words);
+    }
+  }
   // First, so a crash anywhere after leaves a report (TH-10)
   if (const auto dumps = Product::CrashDumpsFolder(); !dumps.empty()) {
     CrashHandler::Install(dumps, L"OpenDesktopVR");
@@ -398,7 +416,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       slots[0] = Keybinds::Binding::From({Keybinds::Button {Keybinds::DeviceKind::Keyboard, {}, options.mTestKeybind}});
       panels.SetGlobalKeybinds(Keybinds::ActionKind::ToggleAllPanels, slots);// in memory: a test instance saves nothing
     }
+    // Commands from Stream Deck, VoiceAttack and the like (UI-9)
+    Host::AutomationService automation {instance, panels, renderer, keyboard, quickMenu};
     Host::SettingsWindow settings {instance, renderer, panels, keybinds, appHelper, logRing};
+    settings.SetCommandRunner([&automation](std::span<const std::wstring> words) { return automation.Try(words); });
     settings.SetQuickMenuOpener([&quickMenu] { quickMenu.Open("the settings window"); });
     Host::TrayIcon tray {instance, renderer, panels, settings};
     if (options.mExitAfterSeconds > 0) {
@@ -427,6 +448,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       }
       if (options.mSettingsDiagnostics) {
         settings.ShowDiagnosticsTab();
+      }
+      if (options.mSettingsCommands) {
+        settings.ShowCommandBuilder();
       }
       settings.Show();
     }

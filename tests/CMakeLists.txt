@@ -163,6 +163,15 @@ odvr_test(keyboard-render-test NO_CTEST SOURCES keyboard-render-test.cpp DEPS od
 odvr_test(quickmenu-test SOURCES quickmenu-test.cpp DEPS odvr::hostcore)
 # Draws the quick menu's pages to PNGs for looking at (needs a GPU or WARP)
 odvr_test(quickmenu-render-test NO_CTEST SOURCES quickmenu-render-test.cpp DEPS odvr::hostcore windowscodecs)
+# Automation (M6e, UI-9): commands parsed, refused with reasons, packed for
+# the host; fuzzed (TH-9); nudges snap
+odvr_test(automation-test SOURCES automation-test.cpp DEPS odvr::automation odvr::hostcore)
+# The real host and the real program run as commands: done, refused, busy,
+# logged and saved
+odvr_test(automation-host-test NO_CTEST SOURCES automation-host-test.cpp DEPS odvr::automation odvr::xrshared odvr::settings odvr::core)
+add_dependencies(automation-host-test OpenDesktopVR)
+add_test(NAME automation-host-test COMMAND automation-host-test $<TARGET_FILE:OpenDesktopVR>)
+set_tests_properties(automation-host-test PROPERTIES TIMEOUT 180)
 
 # M2 end to end: the real host (child processes) and the real layer DLL
 odvr_executable(host-layer-test SOURCES host-layer-test.cpp DEPS odvr::xrshared odvr::core odvr::openxr_headers odvr::cppwinrt d3d11 winmm)

@@ -254,15 +254,17 @@ void QuickMenuController::RunPosition(const QuickMenu::Command& command) {
   const float metres = (mState.mSmallSteps ? SmallStepMeters : StepMeters) * static_cast<float>(command.mStep);
   const float degrees = (mState.mSmallSteps ? SmallStepDegrees : StepDegrees) * static_cast<float>(command.mStep);
   const auto move = [&](PanelPlacement& p) -> std::string {
+    using PanelPlacementConfig::Nudge;
+    using PanelPlacementConfig::NudgeBy;
     switch (command.mKind) {
       case CommandKind::MoveAcross:
-        p.mPosition[0] = std::clamp(p.mPosition[0] + metres, -MaxAcrossMeters, MaxAcrossMeters);
+        NudgeBy(p, Nudge::Across, metres);
         return std::format("{:.1f} cm left or right", p.mPosition[0] * 100);
       case CommandKind::MoveUp:
-        p.mPosition[1] = std::clamp(p.mPosition[1] + metres, -MaxUpDownMeters, MaxUpDownMeters);
+        NudgeBy(p, Nudge::Up, metres);
         return std::format("{:.1f} cm down or up", p.mPosition[1] * 100);
       case CommandKind::MoveAway:
-        p.mPosition[2] = -std::clamp(-p.mPosition[2] + metres, MinAwayMeters, MaxAwayMeters);
+        NudgeBy(p, Nudge::Away, metres);
         return std::format("{:.1f} cm away", -p.mPosition[2] * 100);
       case CommandKind::ToggleFaceMe:
         if (p.mFaceOrigin) {
@@ -274,14 +276,11 @@ void QuickMenuController::RunPosition(const QuickMenu::Command& command) {
         }
         p.mFaceOrigin = !p.mFaceOrigin;
         return p.mFaceOrigin ? "facing you" : "set by hand";
-      case CommandKind::Turn: {
-        float yaw = p.mYawDegrees + degrees;
-        yaw -= 360.0f * std::round(yaw / 360.0f);// wraps round, as the field does
-        p.mYawDegrees = std::clamp(yaw, -MaxTurnDegrees, MaxTurnDegrees);
+      case CommandKind::Turn:
+        NudgeBy(p, Nudge::Turn, degrees);
         return std::format("turned {:.0f} degrees", p.mYawDegrees);
-      }
       case CommandKind::Tilt:
-        p.mPitchDegrees = std::clamp(p.mPitchDegrees + degrees, -MaxTiltDegrees, MaxTiltDegrees);
+        NudgeBy(p, Nudge::Tilt, degrees);
         return std::format("tilted {:.0f} degrees", p.mPitchDegrees);
       default:
         return {};

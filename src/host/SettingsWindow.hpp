@@ -41,6 +41,7 @@
 #include <winrt/base.h>
 
 #include <functional>
+#include <span>
 #include <array>
 #include <filesystem>
 #include <map>
@@ -92,12 +93,22 @@ class SettingsWindow {
   void ShowKeybindsTab() noexcept {
     mSelectKeybinds = true;
   }
+  // Tests: the Keybinds tab with its command builder open
+  void ShowCommandBuilder() noexcept {
+    mSelectKeybinds = true;
+    mOpenCommandBuilder = true;
+  }
   void ShowDiagnosticsTab() noexcept {
     mSelectDiagnostics = true;
   }
   // The Hands tab's "Open it now" for the quick menu (ADR-041)
   void SetQuickMenuOpener(std::function<void()> open) {
     mOpenQuickMenu = std::move(open);
+  }
+  // The command builder's "Try it" (UI-9, ADR-042): runs a command's words
+  // and says what happened
+  void SetCommandRunner(std::function<std::string(std::span<const std::wstring>)> run) {
+    mRunCommand = std::move(run);
   }
 
  private:
@@ -294,6 +305,17 @@ class SettingsWindow {
   // The Diagnostics tab
   bool mSelectDiagnostics {false};
   std::function<void()> mOpenQuickMenu;
+  // The Keybinds tab's command builder (UI-9)
+  void CommandBuilder(const std::vector<PanelDefinition>& panels);
+  std::function<std::string(std::span<const std::wstring>)> mRunCommand;
+  int mCommandKind {0};
+  int mCommandTarget {0};
+  int mCommandDirection {0};
+  float mCommandAmount {1};
+  std::array<char, 16> mCommandLevel {"+10"};
+  std::array<char, 128> mCommandTitle {};
+  std::string mCommandResult;
+  bool mOpenCommandBuilder {false};
   bool mDiagnosticsDrawn {false};// this frame
   bool mDiagnosticsWasDrawn {false};// the frame before: the checks run again each time the tab comes into view
   bool mDiagnosticsTimer {false};

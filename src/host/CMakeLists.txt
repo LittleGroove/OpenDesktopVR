@@ -14,6 +14,7 @@ odvr_executable(
   KeybindService.cpp
   Support.cpp
   QuickMenuController.cpp
+  AutomationService.cpp
   DEPS
   odvr::hostcore
   odvr::hostlink
@@ -24,6 +25,7 @@ odvr_executable(
   odvr::settings
   odvr::registration
   odvr::diagnostics
+  odvr::automation
   odvr::ui
   odvr::imgui
   odvr::gfx

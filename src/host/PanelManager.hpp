@@ -86,6 +86,10 @@ class PanelManager {
   bool ToggleAll();
   // True if the panel is now showing
   bool TogglePanel(uint64_t panelID);
+  // Shows or hides one panel, or every panel, outright (automation); true
+  // if anything changed. A panel turned off in the settings stays off.
+  bool SetPanelShown(uint64_t panelID, bool shown);
+  bool SetAllShown(bool shown);
 
   // Keybind actions on one panel's look (stored); the new value
   std::optional<float> ChangeBrightness(uint64_t panelID, float step);

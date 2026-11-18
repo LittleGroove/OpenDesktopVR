@@ -3,6 +3,7 @@
 
 #include "SettingsWindow.hpp"
 
+#include <OpenDesktopVR/Automation.hpp>
 #include <OpenDesktopVR/Autostart.hpp>
 #include <OpenDesktopVR/CrashHandler.hpp>
 #include <OpenDesktopVR/ImageFile.hpp>
@@ -2285,6 +2286,159 @@ void SettingsWindow::QuickMenuSettingsUi(bool handsEnabled) {
   }
 }
 
+// Commands for Stream Deck, VoiceAttack and other tools (UI-9, ADR-042):
+// pick one, copy its command line into the tool's "run a program" action
+void SettingsWindow::CommandBuilder(const std::vector<PanelDefinition>& panels) {
+  if (std::exchange(mOpenCommandBuilder, false)) {
+    ImGui::SetNextItemOpen(true);
+  }
+  if (!ImGui::CollapsingHeader("Stream Deck, VoiceAttack and other tools")) {
+    return;
+  }
+  ImGui::TextWrapped(
+    "Tools that can run a program can run these commands, and they work while the game has focus. Pick one, then copy "
+    "the command line into the tool's action for running a program (where the program and its words go in separate "
+    "boxes, the words after the program are its parameters). Windows' Run box (Win+R) runs them too.");
+  struct Kind {
+    const char* mLabel;
+    const wchar_t* mVerb;
+    bool mPanel;    // takes a panel
+    bool mAll;      // ... or all
+    bool mKeyboard; // ... or the keyboard
+    const wchar_t* mTail;// fixed words after it
+  };
+  static constexpr Kind Kinds[] {
+    {"Show or hide a panel", L"toggle", true, true, false, nullptr},
+    {"Show a panel", L"show", true, true, false, nullptr},
+    {"Hide a panel", L"hide", true, true, false, nullptr},
+    {"Opacity", L"opacity", true, true, false, nullptr},
+    {"Brightness", L"brightness", true, true, false, nullptr},
+    {"Tint on or off", L"tint", true, true, false, L"toggle"},
+    {"Nudge (move, size, turn, tilt)", L"nudge", true, true, true, nullptr},
+    {"Change a panel's window", L"window", true, false, false, nullptr},
+    {"Recenter", L"recenter", false, false, false, nullptr},
+    {"Next profile", L"profile", false, false, false, L"next"},
+    {"Previous profile", L"profile", false, false, false, L"previous"},
+    {"Show or hide the keyboard", L"keyboard", false, false, false, L"toggle"},
+    {"Open or close the quick menu", L"menu", false, false, false, L"toggle"},
+  };
+  static constexpr const wchar_t* Directions[] {L"left", L"right", L"up", L"down", L"closer", L"farther", L"bigger",
+    L"smaller", L"turn-left", L"turn-right", L"tilt-back", L"tilt-forward"};
+  static constexpr const char* DirectionLabels[] {"Left (cm)", "Right (cm)", "Up (cm)", "Down (cm)", "Closer (cm)",
+    "Farther (cm)", "Bigger (%)", "Smaller (%)", "Turn left (degrees)", "Turn right (degrees)", "Tilt back (degrees)",
+    "Tilt forward (degrees)"};
+
+  ImGui::PushItemWidth(ImGui::GetFontSize() * 16);
+  mCommandKind = std::clamp(mCommandKind, 0, static_cast<int>(std::size(Kinds)) - 1);
+  if (ImGui::BeginCombo("Command", Kinds[mCommandKind].mLabel)) {
+    for (int i = 0; i < static_cast<int>(std::size(Kinds)); ++i) {
+      if (ImGui::Selectable(Kinds[i].mLabel, i == mCommandKind)) {
+        mCommandKind = i;
+        mCommandResult.clear();
+      }
+    }
+    ImGui::EndCombo();
+  }
+  const auto& kind = Kinds[mCommandKind];
+  // The targets: all, the keyboard, then each panel by its name (or its
+  // place in the list, if another panel has the same name)
+  struct Choice {
+    std::string mLabel;
+    std::wstring mWord;
+  };
+  std::vector<Choice> targets;
+  if (kind.mAll) {
+    targets.push_back({"All panels", L"all"});
+  }
+  if (kind.mKeyboard) {
+    targets.push_back({"The keyboard", L"keyboard"});
+  }
+  for (std::size_t i = 0; i < panels.size(); ++i) {
+    const auto& name = panels[i].mName;
+    const bool unique = !name.empty()
+      && std::ranges::count_if(panels, [&](const auto& other) { return StringUtil::EqualsIgnoreCase(other.mName, name); }) == 1
+      && !StringUtil::EqualsIgnoreCase(name, L"all") && !StringUtil::EqualsIgnoreCase(name, L"keyboard");
+    targets.push_back({Utf8(name.empty() ? L"(no name)" : name), unique ? name : std::format(L"#{}", i + 1)});
+  }
+  std::vector<std::wstring> words {kind.mVerb};
+  if (kind.mPanel) {
+    if (targets.empty()) {
+      ImGui::TextDisabled("No panels yet.");
+      ImGui::PopItemWidth();
+      return;
+    }
+    mCommandTarget = std::clamp(mCommandTarget, 0, static_cast<int>(targets.size()) - 1);
+    if (ImGui::BeginCombo("Panel##command", targets[static_cast<std::size_t>(mCommandTarget)].mLabel.c_str())) {
+      for (int i = 0; i < static_cast<int>(targets.size()); ++i) {
+        if (ImGui::Selectable(targets[static_cast<std::size_t>(i)].mLabel.c_str(), i == mCommandTarget)) {
+          mCommandTarget = i;
+        }
+      }
+      ImGui::EndCombo();
+    }
+    words.push_back(targets[static_cast<std::size_t>(mCommandTarget)].mWord);
+  }
+  if (std::wstring_view {kind.mVerb} == L"opacity" || std::wstring_view {kind.mVerb} == L"brightness") {
+    ImGui::InputText("Percent##command", mCommandLevel.data(), mCommandLevel.size());
+    Help("50 sets it to 50%. +10 or -10 changes it by that much: one command for each way of a rotary dial.");
+    words.push_back(StringUtil::Widen(mCommandLevel.data()));
+  } else if (std::wstring_view {kind.mVerb} == L"nudge") {
+    mCommandDirection = std::clamp(mCommandDirection, 0, static_cast<int>(std::size(Directions)) - 1);
+    ImGui::Combo("Which way", &mCommandDirection, DirectionLabels, static_cast<int>(std::size(DirectionLabels)));
+    ImGui::DragFloat("How far", &mCommandAmount, 0.1f, 0.1f, 90.0f, "%.1f", Clamp);
+    words.push_back(Directions[mCommandDirection]);
+    words.push_back(std::format(L"{:g}", std::round(mCommandAmount * 10.0f) / 10.0f));
+  } else if (std::wstring_view {kind.mVerb} == L"window") {
+    ImGui::InputTextWithHint("Title has##command", "Text in the window's title", mCommandTitle.data(), mCommandTitle.size());
+    words.push_back(StringUtil::Widen(mCommandTitle.data()));
+  }
+  if (kind.mTail) {
+    words.push_back(kind.mTail);
+  }
+  ImGui::PopItemWidth();
+
+  // The command line, as Windows splits it again: quotes round any word
+  // with a space (or none at all), quotes inside escaped
+  const auto quoted = [](const std::wstring& word) {
+    if (!word.empty() && word.find_first_of(L" \t\"") == std::wstring::npos) {
+      return word;
+    }
+    std::wstring text = L"\"";
+    for (const wchar_t c: word) {
+      text += c == L'"' ? std::wstring {L"\\\""} : std::wstring(1, c);
+    }
+    return text + L"\"";
+  };
+  std::wstring line = quoted(ProcessUtil::ExecutablePath().wstring());
+  for (const auto& word: words) {
+    line += L" " + quoted(word);
+  }
+  const auto lineUtf8 = Utf8(line);
+  ImGui::Spacing();
+  ImGui::TextDisabled("Command line:");
+  ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_Text));
+  ImGui::TextWrapped("%s", lineUtf8.c_str());
+  ImGui::PopStyleColor();
+  if (ImGui::Button("Copy")) {
+    ImGui::SetClipboardText(lineUtf8.c_str());
+    mCommandResult = "Copied.";
+  }
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!mRunCommand);
+  if (ImGui::Button("Try it") && mRunCommand) {
+    mCommandResult = mRunCommand(words);
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button("All commands")) {
+    mCommandResult = Utf8(Automation::Usage());
+  }
+  if (!mCommandResult.empty()) {
+    ImGui::TextWrapped("%s", mCommandResult.c_str());
+  }
+  ImGui::Spacing();
+}
+
 void SettingsWindow::KeybindsPage(const std::vector<PanelDefinition>& panels) {
   if (!ImGui::BeginChild("keybinds", {0, 0}, ImGuiChildFlags_Borders)) {
     ImGui::EndChild();
@@ -2300,6 +2454,7 @@ void SettingsWindow::KeybindsPage(const std::vector<PanelDefinition>& panels) {
   ImGui::TextDisabled("Game controllers: %s", names.empty() ? "none connected." : names.c_str());
   ImGui::TextDisabled("Keybinds work while the game has focus. F13 to F24 make good keys for Stream Deck and similar tools.");
   ImGui::Spacing();
+  CommandBuilder(panels);
 
   constexpr auto tableFlags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY;
   if (ImGui::BeginTable("bindings", 3, tableFlags)) {

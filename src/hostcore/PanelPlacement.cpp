@@ -104,6 +104,46 @@ PanelPlacement From(const PanelDefinition& panel) noexcept {
   return p;
 }
 
+void NudgeBy(PanelPlacement& p, Nudge what, float amount) noexcept {
+  using namespace QuickMenu;
+  if (!std::isfinite(amount)) {
+    return;
+  }
+  const auto snap = [](float value, float grid) {
+    const float snapped = std::round(value / grid) * grid;
+    return snapped == 0.0f ? 0.0f : snapped;// never -0
+  };
+  constexpr float Tenth = 0.0001f;// metres
+  constexpr float Hundredth = 0.01f;// degrees
+  switch (what) {
+    case Nudge::Across:
+      p.mPosition[0] = snap(std::clamp(p.mPosition[0] + amount, -MaxAcrossMeters, MaxAcrossMeters), Tenth);
+      return;
+    case Nudge::Up:
+      p.mPosition[1] = snap(std::clamp(p.mPosition[1] + amount, -MaxUpDownMeters, MaxUpDownMeters), Tenth);
+      return;
+    case Nudge::Away:
+      p.mPosition[2] = -snap(std::clamp(-p.mPosition[2] + amount, MinAwayMeters, MaxAwayMeters), Tenth);
+      return;
+    case Nudge::Turn:
+    case Nudge::Tilt:
+      if (p.mFaceOrigin) {
+        const auto facing = FacingOrigin(p.mPosition.data());
+        p.mYawDegrees = facing.mYawDegrees;
+        p.mPitchDegrees = facing.mPitchDegrees;
+        p.mFaceOrigin = false;
+      }
+      if (what == Nudge::Turn) {
+        float yaw = p.mYawDegrees + amount;
+        yaw -= 360.0f * std::round(yaw / 360.0f);// wraps round, as the field does
+        p.mYawDegrees = snap(std::clamp(yaw, -MaxTurnDegrees, MaxTurnDegrees), Hundredth);
+      } else {
+        p.mPitchDegrees = snap(std::clamp(p.mPitchDegrees + amount, -MaxTiltDegrees, MaxTiltDegrees), Hundredth);
+      }
+      return;
+  }
+}
+
 PanelPlacement FromDistance(float distanceCm, float belowCm, float turnDegrees, float tiltDegrees) noexcept {
   PanelPlacement p;
   const float distance = std::max(distanceCm, 1.0f) / 100.0f;

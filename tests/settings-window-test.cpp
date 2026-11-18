@@ -177,6 +177,14 @@ int wmain(int argc, wchar_t** argv) {
     Check(CountNear(*image, Theme::Text, 10) > 300, "text is drawn");
   });
 
+  Scenario("The Keybinds tab's command builder (M6e, UI-9): open, its command line drawn, then idle", [&] {
+    const auto image = Screenshot(L"--settings-screenshot", folder.Path() + L"\\commands.png", 0, L"--settings-commands");
+    if (!image) {
+      return;
+    }
+    Check(CountNear(*image, Theme::Text, 10) > 600, "the builder's text and its command line are drawn");
+  });
+
   Scenario("Save debug info writes a bundle (M6c: LG-4), here from a private data folder", [&] {
     const auto data = folder.Path() + L"\\data";
     const auto zip = folder.Path() + L"\\debug.zip";
