@@ -44,3 +44,32 @@ odvr_executable(
   SOURCES mirror/odvr-mirror.cpp
   DEPS odvr::hostlink odvr::render odvr::gfx odvr::core shell32
 )
+
+# The setup program (M7a, ADR-043), built without its files: odvr-pack adds
+# them, from cmake --install's "product" component, to make
+# bin/<config>/OpenDesktopVR-Setup.exe
+odvr_executable(
+  odvr-setup-stub
+  WIN32
+  SOURCES setup/SetupMain.cpp setup/setup.manifest
+  DEPS odvr::install odvr::registration odvr::core comctl32 shell32
+)
+odvr_executable(
+  odvr-pack
+  SOURCES setup/odvr-pack.cpp
+  DEPS odvr::install odvr::core
+)
+set(ODVR_SETUP_STAGE "${CMAKE_BINARY_DIR}/setup-stage/$<CONFIG>")
+set(ODVR_SETUP_EXE "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/OpenDesktopVR-Setup.exe")
+add_custom_command(
+  OUTPUT "${ODVR_SETUP_EXE}"
+  COMMAND "${CMAKE_COMMAND}" -E rm -rf "${ODVR_SETUP_STAGE}"
+  COMMAND "${CMAKE_COMMAND}" --install "${CMAKE_BINARY_DIR}" --config $<CONFIG> --component product
+    --prefix "${ODVR_SETUP_STAGE}"
+  COMMAND odvr-pack $<TARGET_FILE:odvr-setup-stub> "${ODVR_SETUP_STAGE}" "${ODVR_SETUP_EXE}" --version "${ODVR_VERSION}"
+  DEPENDS odvr-setup-stub odvr-pack OpenDesktopVR odvr-layer odvr-mirror ${ODVR_LAYER_FILE_STEM}
+    ${ODVR_APP_HELPER_FILE_STEM} "${PROJECT_SOURCE_DIR}/LICENSE" "${PROJECT_SOURCE_DIR}/THIRD_PARTY_NOTICES"
+  COMMENT "Making OpenDesktopVR-Setup.exe"
+  VERBATIM
+)
+add_custom_target(odvr-setup ALL DEPENDS "${ODVR_SETUP_EXE}")

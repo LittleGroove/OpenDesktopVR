@@ -26,6 +26,7 @@ odvr_executable(
   odvr::registration
   odvr::diagnostics
   odvr::automation
+  odvr::install
   odvr::ui
   odvr::imgui
   odvr::gfx

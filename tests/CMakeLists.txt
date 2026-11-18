@@ -149,6 +149,18 @@ odvr_test(hand-service-test SOURCES hand-service-test.cpp DEPS odvr::hostcore)
 odvr_test(keybinds-test SOURCES keybinds-test.cpp DEPS odvr::keybinds)
 # Profiles (M6a): files, unreadable ones, export and import, games, migration
 odvr_test(profiles-test SOURCES profiles-test.cpp DEPS odvr::hostcore)
+# The installer's parts (M7a, ADR-043): versions, the payload, files, the
+# shortcut, Apps and Features, Store apps' access, in a private folder and key
+odvr_test(install-test SOURCES install-test.cpp DEPS odvr::install odvr::core ole32)
+# Two real DLLs from the output folder, one loaded while the other replaces it
+add_dependencies(install-test ${ODVR_LAYER_FILE_STEM} ${ODVR_APP_HELPER_FILE_STEM})
+# The real OpenDesktopVR-Setup.exe, silent, in a private folder and key:
+# install, update over a running host and a held layer, uninstall (M7a)
+odvr_test(setup-test NO_CTEST SOURCES setup-test.cpp DEPS odvr::install odvr::xrshared odvr::core)
+add_dependencies(setup-test odvr-setup)
+add_test(NAME setup-test COMMAND setup-test "$<TARGET_FILE_DIR:OpenDesktopVR>/OpenDesktopVR-Setup.exe"
+  $<TARGET_FILE:odvr-setup-stub>)
+set_tests_properties(setup-test PROPERTIES TIMEOUT 300)
 # The real host moving version 1's panels into a profile, in a private folder;
 # a fresh install's first start after the installer's layer settings (round 22)
 odvr_test(settings-migration-test NO_CTEST SOURCES settings-migration-test.cpp DEPS odvr::settings odvr::core)

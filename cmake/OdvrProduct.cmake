@@ -12,8 +12,16 @@ set(ODVR_LAYER_FILE_STEM "OpenDesktopVR-Layer")
 # The helper loaded into captured apps (doc 06): <stem>.dll
 set(ODVR_APP_HELPER_FILE_STEM "OpenDesktopVR-AppHelper")
 
+# The version (ADR-043): the project's, plus a pre-release suffix for the
+# beta channel ("beta.1" makes "0.7.1-beta.1"); empty for a release
+set(ODVR_PRERELEASE "" CACHE STRING "Pre-release suffix, for example beta.1; empty for a release")
+set(ODVR_VERSION "${PROJECT_VERSION}")
+if(ODVR_PRERELEASE)
+  set(ODVR_VERSION "${PROJECT_VERSION}-${ODVR_PRERELEASE}")
+endif()
+
 add_compile_definitions(
-  ODVR_VERSION="${PROJECT_VERSION}"
+  ODVR_VERSION="${ODVR_VERSION}"
   ODVR_LAYER_NAME="${ODVR_LAYER_NAME}"
   ODVR_LAYER_DISABLE_ENV="${ODVR_LAYER_DISABLE_ENV}"
   ODVR_LAYER_FILE_STEM="${ODVR_LAYER_FILE_STEM}"

@@ -262,8 +262,19 @@ LRESULT TrayIcon::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
       }
       break;
+    case WM_QUERYENDSESSION:
+      // Windows signing out or shutting down, or the setup program closing
+      // it through the Restart Manager (M7a): nothing to ask, so yes
+      return TRUE;
     case WM_ENDSESSION:
-      PostQuitMessage(0);
+      // wParam false: another program cancelled the sign-out, so it stays
+      if (wParam) {
+        Log::Info("Closing: {}", (lParam & ENDSESSION_CLOSEAPP) ? "the setup program asked (the Restart Manager)"
+                                                                  : "Windows is signing out or shutting down");
+        // Saved now: the process may be ended before the message loop runs again
+        mPanels.FlushSettings();
+        PostQuitMessage(0);
+      }
       return 0;
   }
   return DefWindowProcW(mWindow, message, wParam, lParam);

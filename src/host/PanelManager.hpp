@@ -67,6 +67,9 @@ class PanelManager {
   }
   // Re-reads the file (other writers), keeping panels in memory if it fails
   void Refresh();
+  // Writes pending (debounced) settings and profiles now: before Windows
+  // ends the process (sign-out, the setup program closing it)
+  void FlushSettings();
 
   const std::vector<PanelDefinition>& Panels() const noexcept {
     return mPanels;

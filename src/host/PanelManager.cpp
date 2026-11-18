@@ -86,6 +86,10 @@ void PanelManager::Load() {
   Push();
 }
 
+void PanelManager::FlushSettings() {
+  mStore.Flush();
+}
+
 void PanelManager::Refresh() {
   if (!mPersistent) {
     return;

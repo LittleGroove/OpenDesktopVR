@@ -56,6 +56,7 @@
 #include <OpenDesktopVR/ClickSound.hpp>
 #include <OpenDesktopVR/CrashHandler.hpp>
 #include <OpenDesktopVR/InjectingSink.hpp>
+#include <OpenDesktopVR/Installer.hpp>
 #include <OpenDesktopVR/KeyboardService.hpp>
 #include <OpenDesktopVR/KeyboardSource.hpp>
 #include <OpenDesktopVR/LayerRegistration.hpp>
@@ -185,6 +186,10 @@ Options ParseOptions() {
   if (const auto instance = ProcessUtil::GetEnvironment("OPENDESKTOPVR_INSTANCE"); instance && !instance->empty()) {
     options.mRegister = false;
     options.mTestInstance = true;// built-in test panels; the user's settings untouched
+    // A host the setup program starts, in setup-test, gets no options
+    if (ProcessUtil::GetEnvironment("OPENDESKTOPVR_ALLOW_WARP") == "1") {
+      options.mAllowWarp = true;
+    }
   }
   return options;
 }
@@ -272,6 +277,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   ThreadUtil::CatchAll("host main", [&] {
     if (options.mRegister) {
       RegisterLayer();
+    }
+    // Files an update set aside because a game or an app had them loaded
+    // (M7a, ADR-043): gone once nothing holds them
+    if (const auto left = Install::CleanAside(ProcessUtil::ExecutablePath().parent_path()); left > 0) {
+      Log::Info("Update: {} old files are still loaded by a game or an app; they're deleted on a later start", left);
     }
 
     Host::RenderLoopOptions loopOptions;
