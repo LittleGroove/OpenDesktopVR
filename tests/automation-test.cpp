@@ -86,6 +86,8 @@ int main() {
     Check(c && c->mSwitch == Switch::Off, "keyboard hide");
     c = P({L"menu", L"open"}).mCommand;
     Check(c && c->mVerb == Verb::Menu && c->mSwitch == Switch::On, "menu open");
+    c = P({L"settings"}).mCommand;
+    Check(c && c->mVerb == Verb::Settings && Refused({L"settings", L"now"}), "settings (what starting it again sends)");
     c = P({L"help"}).mCommand;
     Check(c && c->mVerb == Verb::Help, "help");
   });

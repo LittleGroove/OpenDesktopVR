@@ -363,6 +363,40 @@ int main(int argc, char** argv) {
     source.SetActive(true);
   });
 
+  Scenario("Capture started on a window with no size yet recovers once it has one (doc 11, robustness)", [&] {
+    Target late {L" --appear-after 2000"};
+    HWND lateWindow = nullptr;
+    WaitFor([&] {
+      for (const auto& candidate: WindowUtil::ListCaptureCandidates()) {
+        if (candidate.mProcessID == late.mInfo.dwProcessId) {
+          lateWindow = candidate.mWindow;
+        }
+      }
+      return lateWindow != nullptr;
+    }, 5s);
+    RECT client {};
+    GetClientRect(lateWindow, &client);
+    Check(lateWindow && client.right == 0 && client.bottom == 0,
+      std::format("the late window is open, with no size at all ({}x{})", client.right, client.bottom));
+    Capture::WindowCaptureOptions lateOptions {{L"", L"OpenDesktopVR.ClickTarget", L"Click Target (late)", WindowMatch::TitleMode::Contains},
+      L"Late window"};
+    Capture::WindowCaptureSource lateSource {*gpu, std::move(lateOptions), [] {}};
+    // Asked for while it has no size, as a panel set up early would be
+    for (int i = 0; i < 10; ++i) {
+      lateSource.Maintain(TimeUtil::Now());
+      std::this_thread::sleep_for(100ms);
+    }
+    const bool recovered = WaitFor([&] {
+      if (lateSource.Prepare() == Render::Readiness::Ready || lateSource.FramesArrived() > 0) {
+        const auto size = lateSource.Size();
+        return size.mWidth == 800 && size.mHeight == 600;
+      }
+      return false;
+    }, 10s, [&] { lateSource.Maintain(TimeUtil::Now()); });
+    const auto size = lateSource.Size();
+    Check(recovered, std::format("once it had its size, it was captured at it: {}x{} (800x600)", size.mWidth, size.mHeight));
+  });
+
   Scenario("The window closes, then comes back: found again (CP-7)", [&] {
     target.Kill();
     Check(WaitFor([&] { return !source.IsCapturing(); }, 5s, [&] { source.Maintain(TimeUtil::Now()); }), "capture stops when the window closes");

@@ -44,6 +44,7 @@ enum class Verb : uint8_t {
   Profile,
   Keyboard,
   Menu,
+  Settings,// open the settings window (also what starting the program again does)
   Help,
 };
 

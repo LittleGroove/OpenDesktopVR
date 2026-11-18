@@ -59,6 +59,11 @@ class PanelManager {
   PanelManager& operator=(const PanelManager&) = delete;
 
   void Load();
+  // This start found no settings and no profiles: a fresh install (M6f:
+  // the settings window opens by itself, with a welcome)
+  bool IsFirstRun() const noexcept {
+    return mFirstRun;
+  }
   // Re-reads the file (other writers), keeping panels in memory if it fails
   void Refresh();
 
@@ -186,6 +191,7 @@ class PanelManager {
   RenderLoop& mRenderer;
   const bool mPersistent;
   Settings::Store mStore;
+  bool mFirstRun {false};
   JsonUtil::Json mDocument;// the whole settings file, as last read
   ProfileLibrary mProfiles;
   std::string mActiveProfile;

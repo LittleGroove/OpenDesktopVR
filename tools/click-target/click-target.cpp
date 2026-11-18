@@ -13,6 +13,11 @@
 // Added in the port (M4b): "DOUBLE x y t" for a double-click (the window
 // asks for them), "LEAVE t" when the mouse leaves it; '--hang-once <ms>'
 // stops responding for that long on the first click, like a hung app.
+// Added in M6f: '--appear-after <ms>' opens it with no size at all (0 x 0,
+// visible), titled "Click Target (late)", and gives it its size (800 x 600)
+// that much later, like an app that shows its window before laying it out.
+// It's a popup then: a captioned window can't be made smaller than its
+// frame.
 //
 // 'slow ms' makes every mouse move take that long to handle, like a busy app.
 // 'animate fps' repaints that many times a second with a moving bar, like a
@@ -78,8 +83,29 @@ void Log(const std::string& line) {
   std::printf("%s\n", line.c_str());
 }
 
+// --appear-after: no size until then
+int gAppearAfterMilliseconds = 0;
+bool gAppeared = true;
+constexpr UINT_PTR AppearTimer = 77;
+
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
   switch (msg) {
+    case WM_GETMINMAXINFO:
+      if (!gAppeared) {
+        reinterpret_cast<MINMAXINFO*>(lParam)->ptMinTrackSize = {0, 0};
+        return 0;
+      }
+      break;
+    case WM_TIMER:
+      if (wParam == AppearTimer) {
+        KillTimer(hwnd, AppearTimer);
+        gAppeared = true;
+        SetWindowPos(hwnd, nullptr, 0, 0, 800, 600, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        InvalidateRect(hwnd, nullptr, TRUE);
+        Log("APPEARED");
+        return 0;
+      }
+      break;
     case WM_MOUSEMOVE:
       ++gMoves;
       if (gSlowMilliseconds > 0) {
@@ -189,6 +215,9 @@ int main(int argc, char** argv) {
   for (int i = 0; i < argc; ++i) {
     if (std::string_view {argv[i]} == "--hang-once" && i + 1 < argc) {
       gHangOnceMilliseconds = std::max(0, std::atoi(argv[++i]));
+    } else if (std::string_view {argv[i]} == "--appear-after" && i + 1 < argc) {
+      gAppearAfterMilliseconds = std::max(1, std::atoi(argv[++i]));
+      gAppeared = false;
     } else {
       positional.push_back(argv[i]);
     }
@@ -219,12 +248,12 @@ int main(int argc, char** argv) {
   const auto hwnd = CreateWindowExW(
     0,
     windowClass.lpszClassName,
-    gAnimateFps == 0 ? L"Click Target" : gSame ? L"Click Target (repainting)" : L"Click Target (animated)",
-    WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+    !gAppeared ? L"Click Target (late)" : gAnimateFps == 0 ? L"Click Target" : gSame ? L"Click Target (repainting)" : L"Click Target (animated)",
+    gAppeared ? WS_OVERLAPPEDWINDOW | WS_VISIBLE : WS_POPUP | WS_VISIBLE,
     100,
     100,
-    rect.right - rect.left,
-    rect.bottom - rect.top,
+    gAppeared ? rect.right - rect.left : 0,
+    gAppeared ? rect.bottom - rect.top : 0,
     nullptr,
     nullptr,
     instance,
@@ -232,6 +261,9 @@ int main(int argc, char** argv) {
   if (!hwnd) {
     std::printf("Failed to create window\n");
     return 1;
+  }
+  if (!gAppeared) {
+    SetTimer(hwnd, AppearTimer, static_cast<UINT>(gAppearAfterMilliseconds), nullptr);// then its size
   }
   Log("READY");
   if (gAnimateFps > 0) {

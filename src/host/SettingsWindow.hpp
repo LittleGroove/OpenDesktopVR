@@ -93,6 +93,10 @@ class SettingsWindow {
   void ShowKeybindsTab() noexcept {
     mSelectKeybinds = true;
   }
+  // A first start (M6f): a welcome above the panel list until it's closed
+  void ShowWelcome() noexcept {
+    mWelcome = true;
+  }
   // Tests: the Keybinds tab with its command builder open
   void ShowCommandBuilder() noexcept {
     mSelectKeybinds = true;
@@ -316,6 +320,7 @@ class SettingsWindow {
   std::array<char, 128> mCommandTitle {};
   std::string mCommandResult;
   bool mOpenCommandBuilder {false};
+  bool mWelcome {false};
   bool mDiagnosticsDrawn {false};// this frame
   bool mDiagnosticsWasDrawn {false};// the frame before: the checks run again each time the tab comes into view
   bool mDiagnosticsTimer {false};

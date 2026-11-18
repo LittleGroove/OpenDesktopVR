@@ -278,6 +278,13 @@ Parsed ParseWords(std::span<const std::wstring> words) {
     }
     return {command, {}};
   }
+  if (Is(verb, L"settings")) {
+    command.mVerb = Verb::Settings;
+    if (tooMany(0)) {
+      return Error("settings takes nothing after it");
+    }
+    return {command, {}};
+  }
   if (Is(verb, L"help") || verb == L"/?") {
     command.mVerb = Verb::Help;
     return {command, {}};
@@ -377,6 +384,7 @@ std::wstring Usage() {
   OpenDesktopVR.exe profile <name>        (or next, previous)
   OpenDesktopVR.exe keyboard toggle       (or show, hide)
   OpenDesktopVR.exe menu toggle           (or open, close)
+  OpenDesktopVR.exe settings              (opens the settings window)
 
 A panel is its name ("Discord"; quotes if it has spaces), its place in the
 list ("#2"), or all. nudge also moves the keyboard. Add --repeat 3 to do it
@@ -441,6 +449,9 @@ std::string Describe(const Command& command) {
       break;
     case Verb::Menu:
       text = std::format("menu {}", onOff("open", "close"));
+      break;
+    case Verb::Settings:
+      text = "settings";
       break;
     case Verb::Help:
       text = "help";

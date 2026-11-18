@@ -31,6 +31,7 @@
 #include "check.hpp"
 #include "fake-openxr.hpp"
 
+#include <OpenDesktopVR/Automation.hpp>
 #include <OpenDesktopVR/FileUtil.hpp>
 #include <OpenDesktopVR/Product.hpp>
 #include <OpenDesktopVR/Seqlock.hpp>
@@ -40,7 +41,9 @@
 
 #include <timeapi.h>
 
+#include <atomic>
 #include <chrono>
+#include <cmath>
 #include <format>
 #include <functional>
 #include <set>
@@ -258,6 +261,63 @@ int main(int argc, char** argv) {
     Check(CountInLayerLog("connected to the host app") == connects, "no reconnect to the exited host");
     Check(CountInLayerLog("couldn't open panel") == failedOpens, "no failed texture opens");
     Check(run.mMaxEndFrameMs < 5, std::format("no stall (max {:.2f} ms)", run.mMaxEndFrameMs));
+  });
+
+  Scenario("600 changes to one panel, as a slider makes them: the other keeps its image (doc 11, RN-10)", [&] {
+    RunFrames(game, 3s, [] { return Quads() == 0; });
+    HostProcess host {L"--static-panels"};
+    RunFrames(game, 10s, [] { return Quads() == 2; });
+    RunFrames(game, 1s);// first copies done
+    // The first panel in the list is on the left; the other on the right
+    uint64_t left = 0;
+    uint64_t right = 0;
+    float leftX = 0;
+    for (const auto& quad: gRT.mLastQuads) {
+      const auto id = reinterpret_cast<uint64_t>(quad.subImage.swapchain);
+      if (quad.pose.position.x < 0) {
+        left = id;
+        leftX = quad.pose.position.x;
+      } else {
+        right = id;
+      }
+    }
+    const auto before = gRT.mReleasesBySwapchain;
+    const auto created = gRT.mSwapchainsCreated;
+    // 600 nudges of 1 mm to the first panel, through the command window
+    // (M6e), while the game keeps rendering
+    auto className = SharedObjectName(L"Automation", SharedAbi::AbiVersion);
+    className.erase(0, className.find(L'\\') + 1);
+    HWND commands = nullptr;
+    RunFrames(game, 5s, [&] { return (commands = FindWindowExW(HWND_MESSAGE, nullptr, className.c_str(), nullptr)) != nullptr; });
+    std::atomic<int> done {0};
+    std::atomic<int> answered {0};
+    std::thread sender([&] {
+      const auto words = Automation::Pack(std::vector<std::wstring> {L"nudge", L"#1", L"right", L"0.1"});
+      for (int i = 0; i < 600 && commands; ++i) {
+        COPYDATASTRUCT copy {Automation::WireTag, static_cast<DWORD>(words.size() * sizeof(wchar_t)), const_cast<wchar_t*>(words.data())};
+        DWORD_PTR result = 0;
+        SendMessageTimeoutW(commands, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy), SMTO_ABORTIFHUNG, 3000, &result);
+        done += result == 100 ? 1 : 0;
+        ++answered;
+      }
+    });
+    const auto run = RunFrames(game, 30s, [&] { return answered.load() >= 600 || !commands; });
+    sender.join();
+    RunFrames(game, 1500ms);// the last ones run and are shown
+    Check(commands != nullptr && done >= 500, std::format("{} of 600 changes taken", done.load()));
+    float movedTo = leftX;
+    for (const auto& quad: gRT.mLastQuads) {
+      if (reinterpret_cast<uint64_t>(quad.subImage.swapchain) == left) {
+        movedTo = quad.pose.position.x;
+      }
+    }
+    Check(Quads() == 2, "both panels still showing");
+    Check(std::abs((movedTo - leftX) - (done * 0.001f)) < 0.003f,
+      std::format("the first panel moved by every change: {:.1f} cm ({:.1f} expected)", (movedTo - leftX) * 100, done * 0.1));
+    const auto copied = [&](uint64_t id) { return gRT.mReleasesBySwapchain[id] - (before.contains(id) ? before.at(id) : 0); };
+    Check(right != 0 && copied(right) == 0, std::format("the other panel: not copied again, its image kept ({} copies)", copied(right)));
+    Check(gRT.mSwapchainsCreated == created, "no swapchain made again for either");
+    Check(run.mMaxEndFrameMs < 5, std::format("xrEndFrame never stalled meanwhile (max {:.2f} ms)", run.mMaxEndFrameMs));
   });
 
   Scenario("Panels resized every frame keep their swapchains (RN-7)", [&] {

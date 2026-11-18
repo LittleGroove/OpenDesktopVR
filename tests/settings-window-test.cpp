@@ -185,6 +185,14 @@ int wmain(int argc, wchar_t** argv) {
     Check(CountNear(*image, Theme::Text, 10) > 600, "the builder's text and its command line are drawn");
   });
 
+  Scenario("A first start's welcome (M6f): drawn above the panel list, then idle", [&] {
+    const auto image = Screenshot(L"--settings-screenshot", folder.Path() + L"\\welcome.png", 0, L"--settings-welcome");
+    if (!image) {
+      return;
+    }
+    Check(CountNear(*image, Theme::Text, 10) > 800, "the welcome's text is drawn with the panel list");
+  });
+
   Scenario("Save debug info writes a bundle (M6c: LG-4), here from a private data folder", [&] {
     const auto data = folder.Path() + L"\\data";
     const auto zip = folder.Path() + L"\\debug.zip";

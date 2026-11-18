@@ -111,6 +111,7 @@ struct Options {
   bool mSettingsGeneral {false};
   bool mSettingsDiagnostics {false};
   bool mSettingsCommands {false};
+  bool mSettingsWelcome {false};
   std::wstring mDebugInfoZip;
   bool mShowKeyboard {false};
   bool mShowQuickMenu {false};
@@ -161,6 +162,8 @@ Options ParseOptions() {
       options.mSettingsDiagnostics = true;
     } else if (arg == L"--settings-commands") {
       options.mSettingsCommands = true;
+    } else if (arg == L"--settings-welcome") {
+      options.mSettingsWelcome = true;
     } else if (arg == L"--save-debug-info" && i + 1 < argc) {
       options.mDebugInfoZip = argv[++i];
     } else if (arg == L"--show-keyboard") {
@@ -230,7 +233,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   const auto mutexName = SharedObjectName(L"Host", SharedAbi::AbiVersion);
   HANDLE single = CreateMutexW(nullptr, TRUE, mutexName.c_str());
   if (!single || GetLastError() == ERROR_ALREADY_EXISTS) {
-    return 0;// already running: its tray icon is the way in
+    // Already running: started again from the Start menu or a shortcut, so
+    // the running one shows its settings window (its tray icon may be out
+    // of sight in the overflow). A test instance just stops, as before.
+    if (!options.mTestInstance) {
+      const std::vector<std::wstring> settingsCommand {L"settings"};
+      Host::SendCommand(settingsCommand);
+    }
+    return 0;
   }
 
   // The Diagnostics tab's log viewer (LG-3): from the first line on
@@ -420,6 +430,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     Host::AutomationService automation {instance, panels, renderer, keyboard, quickMenu};
     Host::SettingsWindow settings {instance, renderer, panels, keybinds, appHelper, logRing};
     settings.SetCommandRunner([&automation](std::span<const std::wstring> words) { return automation.Try(words); });
+    automation.SetSettingsOpener([&settings] { settings.Show(); });
+    if (panels.IsFirstRun() && !options.mTestInstance) {
+      // A fresh install: the way in, open, with a welcome (M6f)
+      Log::Info("First start: the settings window opens by itself");
+      settings.ShowWelcome();
+      settings.Show();
+    }
     settings.SetQuickMenuOpener([&quickMenu] { quickMenu.Open("the settings window"); });
     Host::TrayIcon tray {instance, renderer, panels, settings};
     if (options.mExitAfterSeconds > 0) {
@@ -451,6 +468,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       }
       if (options.mSettingsCommands) {
         settings.ShowCommandBuilder();
+      }
+      if (options.mSettingsWelcome) {
+        settings.ShowWelcome();
       }
       settings.Show();
     }

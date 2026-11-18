@@ -860,6 +860,26 @@ void SettingsWindow::BuildUi() {
         KeepPainting(2);
       }
       if (ImGui::BeginTabItem("Panels", nullptr, cycle(0))) {
+        if (mWelcome) {
+          // A first start (M6f): what to do first, until it's closed
+          if (ImGui::BeginChild("welcome", {0, 0}, ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY)) {
+            ImGui::PushFont(mFonts.mHeading);
+            ImGui::TextUnformatted("Welcome to Open Desktop VR");
+            ImGui::PopFont();
+            ImGui::TextWrapped(
+              "Start your VR game: the two test patterns below show where panels appear. To see one of your own "
+              "windows in VR, click \"Add a window...\" and pick it, then set where it goes on the right. Untick or "
+              "remove the test patterns when you're done with them.");
+            ImGui::TextWrapped(
+              "This window lives in the tray (the arrow by the clock, if its icon is hidden). Starting Open Desktop VR "
+              "again also opens it. In VR, tap the small round button to open the quick menu.");
+            if (ImGui::Button("Got it")) {
+              mWelcome = false;
+            }
+          }
+          ImGui::EndChild();
+          ImGui::Spacing();
+        }
         PanelList(panels);
         ImGui::SameLine();
         const auto current = std::ranges::find(panels, mSelected, &PanelDefinition::mID);
@@ -2321,6 +2341,7 @@ void SettingsWindow::CommandBuilder(const std::vector<PanelDefinition>& panels) 
     {"Previous profile", L"profile", false, false, false, L"previous"},
     {"Show or hide the keyboard", L"keyboard", false, false, false, L"toggle"},
     {"Open or close the quick menu", L"menu", false, false, false, L"toggle"},
+    {"Open the settings window", L"settings", false, false, false, nullptr},
   };
   static constexpr const wchar_t* Directions[] {L"left", L"right", L"up", L"down", L"closer", L"farther", L"bigger",
     L"smaller", L"turn-left", L"turn-right", L"tilt-back", L"tilt-forward"};

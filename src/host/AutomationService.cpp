@@ -327,6 +327,11 @@ std::string AutomationService::RunOnce(const Ready& ready) {
         mQuickMenu.Toggle("a command");
       }
       return mQuickMenu.IsOpen() ? "open" : "closed";
+    case Verb::Settings:
+      if (mOpenSettings) {
+        mOpenSettings();
+      }
+      return {};
     case Verb::Help:
       return {};
   }

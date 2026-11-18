@@ -251,6 +251,58 @@ int main(int argc, char** argv) {
     });
   }
 
+  Scenario("A 32-bit app: a clear message, no helper, no crash (IN-6, doc 11)", [&] {
+    // Windows' own 32-bit Character Map
+    wchar_t windows[MAX_PATH] {};
+    GetWindowsDirectoryW(windows, MAX_PATH);
+    const auto exe = std::filesystem::path {windows} / L"SysWOW64" / L"charmap.exe";
+    if (!std::filesystem::exists(exe)) {
+      std::printf("  (skipped: no 32-bit Character Map here)\n");
+      return;
+    }
+    std::wstring line = L"\"" + exe.wstring() + L"\"";
+    STARTUPINFOW startup {sizeof(startup)};
+    PROCESS_INFORMATION info {};
+    if (!Check(CreateProcessW(exe.c_str(), line.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &info) != 0,
+          "Character Map (32-bit) starts")) {
+      return;
+    }
+    WaitForInputIdle(info.hProcess, 5000);
+    struct Find {
+      DWORD mProcess;
+      HWND mWindow;
+    } find {info.dwProcessId, nullptr};
+    WaitFor([&] {
+      EnumWindows([](HWND window, LPARAM data) {
+        auto& wanted = *reinterpret_cast<Find*>(data);
+        DWORD process = 0;
+        GetWindowThreadProcessId(window, &process);
+        if (process == wanted.mProcess && IsWindowVisible(window)) {
+          wanted.mWindow = window;
+          return FALSE;
+        }
+        return TRUE;
+      }, reinterpret_cast<LPARAM>(&find));
+      return find.mWindow != nullptr;
+    }, 5s);
+    if (Check(find.mWindow != nullptr, "its window is open")) {
+      AppHelperService service;
+      auto lease = service.Input(20, find.mWindow);
+      std::string text;
+      const bool unavailable = WaitFor([&] {
+        const auto status = service.InputStatusOf(20);
+        text = status ? status->mText : "";
+        return status && status->mState == AppHelperService::State::Unavailable;
+      }, 3s);
+      Check(unavailable && text.find("32-bit") != std::string::npos, "its input status says why: " + text);
+      Check(service.Installs() == 0, "no helper loaded into it");
+    }
+    TerminateProcess(info.hProcess, 0);
+    WaitForSingleObject(info.hProcess, 5000);
+    CloseHandle(info.hThread);
+    CloseHandle(info.hProcess);
+  });
+
   if (ready) {
     Scenario("Input mode: the app sees an injected click as real, only inside it (HK-1, HK-5, HK-8)", [&] {
       AppHelperService service;

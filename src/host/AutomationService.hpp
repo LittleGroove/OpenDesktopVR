@@ -30,6 +30,7 @@
 
 #include <chrono>
 #include <deque>
+#include <functional>
 #include <span>
 #include <string>
 #include <vector>
@@ -57,6 +58,10 @@ class AutomationService {
   // The settings window's "Try it": the words run now, on the UI thread;
   // what happened, in a sentence
   std::string Try(std::span<const std::wstring> words);
+  // "settings": opens the settings window
+  void SetSettingsOpener(std::function<void()> open) {
+    mOpenSettings = std::move(open);
+  }
 
  private:
   struct Ready {
@@ -83,6 +88,7 @@ class AutomationService {
   RenderLoop& mRenderer;
   KeyboardService& mKeyboard;
   QuickMenuController& mQuickMenu;
+  std::function<void()> mOpenSettings;
   std::wstring mClass;
   HWND mWindow {nullptr};
   std::deque<Ready> mQueue;

@@ -172,9 +172,16 @@ odvr_test(automation-host-test NO_CTEST SOURCES automation-host-test.cpp DEPS od
 add_dependencies(automation-host-test OpenDesktopVR)
 add_test(NAME automation-host-test COMMAND automation-host-test $<TARGET_FILE:OpenDesktopVR>)
 set_tests_properties(automation-host-test PROPERTIES TIMEOUT 180)
+# M6f, doc 11's robustness tests with the real host: unreadable settings and
+# profiles, profile switches with the settings window open, the shared
+# memory's name held by another program (an elevated game)
+odvr_test(robustness-host-test NO_CTEST SOURCES robustness-host-test.cpp DEPS odvr::xrshared odvr::settings odvr::core advapi32)
+add_dependencies(robustness-host-test OpenDesktopVR)
+add_test(NAME robustness-host-test COMMAND robustness-host-test $<TARGET_FILE:OpenDesktopVR>)
+set_tests_properties(robustness-host-test PROPERTIES TIMEOUT 180)
 
 # M2 end to end: the real host (child processes) and the real layer DLL
-odvr_executable(host-layer-test SOURCES host-layer-test.cpp DEPS odvr::xrshared odvr::core odvr::openxr_headers odvr::cppwinrt d3d11 winmm)
+odvr_executable(host-layer-test SOURCES host-layer-test.cpp DEPS odvr::xrshared odvr::automation odvr::core odvr::openxr_headers odvr::cppwinrt d3d11 winmm)
 target_include_directories(host-layer-test PRIVATE "${PROJECT_SOURCE_DIR}/tests/support")
 set_target_properties(host-layer-test PROPERTIES FOLDER "tests")
 add_dependencies(host-layer-test ${ODVR_LAYER_FILE_STEM} OpenDesktopVR)

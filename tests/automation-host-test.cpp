@@ -127,6 +127,7 @@ int wmain(int argc, wchar_t** argv) {
       {L"menu", L"open"},
       {L"show", L"all"},
       {L"recenter"},
+      {L"settings"},// what starting the program again sends (M6f)
     };
     for (const auto& words: commands) {
       std::wstring text;

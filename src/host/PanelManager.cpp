@@ -43,9 +43,11 @@ void PanelManager::Load() {
     return;
   }
   auto loaded = mStore.Load(Spec());
+  const bool noSettings = loaded.mStatus == Settings::LoadStatus::Missing;
   mDocument = std::move(loaded.mDocument);
   ReadGlobals();
   const auto unreadable = mProfiles.Load();
+  mFirstRun = noSettings && mProfiles.All().empty() && unreadable == 0;
   // Version 1's panel list becomes the profile "Default" (ADR-038; the
   // store backed the old file up when it migrated it)
   std::size_t skipped = 0;
