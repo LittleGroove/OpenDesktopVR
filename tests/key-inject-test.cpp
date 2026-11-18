@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Robert McGough
 //
 // The injection matrix's keyboard rows (doc 11, M5a) on Firefox and Edge (a

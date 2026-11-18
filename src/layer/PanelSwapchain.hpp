@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Robert McGough
 //
 // One panel's OpenXR swapchain on D3D11 (ADR-016: one swapchain per panel).

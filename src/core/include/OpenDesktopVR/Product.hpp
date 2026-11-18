@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Robert McGough
 //
 // The product's identity in one place: names, the layer name, kernel object
@@ -35,10 +35,10 @@ inline constexpr std::wstring_view AppHelperDllName = L"" ODVR_APP_HELPER_FILE_S
 
 inline constexpr std::string_view Version = ODVR_VERSION;
 
-// The GitHub repository, "owner/name": the source code (GPL-3.0-or-later,
+// The GitHub repository, "owner/name": the source code (GPL-3.0-only,
 // ADR-044) and the releases updates come from (ADR-045)
 inline constexpr std::string_view Repository = ODVR_REPOSITORY;
-inline constexpr std::string_view LicenseName = "GNU GPL, version 3 or later";
+inline constexpr std::string_view LicenseName = "GNU GPL, version 3";
 
 // Kernel object names live in the session-local namespace (doc 02,
 // "Shared state"): Local\OpenDesktopVR.v<abi>.<object>

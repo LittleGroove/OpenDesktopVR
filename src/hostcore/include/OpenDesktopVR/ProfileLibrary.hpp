@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Robert McGough
 //
 // Profiles (doc 09 "Profiles"; ADR-038): one file per profile in a folder,

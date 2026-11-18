@@ -7,7 +7,7 @@ games: Discord, a browser, Spotify, a game's companion app. With hand
 tracking you tap, scroll, drag and type on them without taking the headset
 off, and the game keeps the focus.
 
-It's free software under the GNU GPL, version 3 or later.
+It's free software under the GNU GPL, version 3.
 
 ## What it does
 
@@ -75,9 +75,9 @@ tests drive real windows and need an unlocked desktop to themselves.
 ## Licence
 
 Open Desktop VR is free software: you can redistribute it and modify it
-under the terms of the GNU General Public License as published by the Free
-Software Foundation, either version 3 of the License, or (at your option)
-any later version. It comes with no warranty. See [LICENSE](LICENSE).
+under the terms of the GNU General Public License, version 3, as published
+by the Free Software Foundation. It comes with no warranty. See
+[LICENSE](LICENSE).
 
 The third-party components it includes, all under GPL-compatible licences,
 are listed in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).

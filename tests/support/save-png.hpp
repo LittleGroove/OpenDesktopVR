@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Robert McGough
 // Provenance: the author's own prototype code, imported at handover v2 (2026-11-15).
 #pragma once

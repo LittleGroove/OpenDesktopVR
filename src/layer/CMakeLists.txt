@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Robert McGough
 #
 # The OpenXR API layer (doc 03): composition only; thin, bounded, never

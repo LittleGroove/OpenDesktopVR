@@ -1,5 +1,5 @@
 @echo off
-rem SPDX-License-Identifier: GPL-3.0-or-later
+rem SPDX-License-Identifier: GPL-3.0-only
 rem Copyright (c) 2026 Robert McGough
 rem
 rem Installs this test build for the current Windows user, with no admin

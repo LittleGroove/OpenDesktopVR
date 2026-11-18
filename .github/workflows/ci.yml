@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Robert McGough
 #
 # Build every target and run the tests (doc 11 "CI"). No binaries are
@@ -36,8 +36,11 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.config }} -- /m /v:minimal
 
-      - name: Unit tests
-        run: ctest --preset ${{ matrix.config }}
+      # The tests labelled "desktop" need a real PC's desktop (input, the
+      # foreground, browsers, capture, speed budgets); they run locally and
+      # before every release (tests/CMakeLists.txt)
+      - name: Tests
+        run: ctest --preset ${{ matrix.config }} -LE desktop
 
       - name: Hand render test (hardware or WARP)
         if: matrix.config == 'release'

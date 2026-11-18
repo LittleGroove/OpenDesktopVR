@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Robert McGough
 //
 // A tiny HTTP/1.1 server on 127.0.0.1 for tests (ADR-045): a fake GitHub

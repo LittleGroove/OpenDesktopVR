@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Robert McGough
 #
 # User interface pieces shared by the desktop settings window and (later)

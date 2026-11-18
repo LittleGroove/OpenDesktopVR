@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Robert McGough
 #
 # The shared-memory ABI between the host and the layer (doc 02): layout,

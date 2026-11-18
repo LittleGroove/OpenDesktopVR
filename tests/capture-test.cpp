@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Robert McGough
 //
 // Window capture (doc 04; CP-1, CP-3, CP-5, CP-6, CP-7, CP-10): match rules,

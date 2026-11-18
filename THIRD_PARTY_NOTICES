@@ -2,8 +2,7 @@ Open Desktop VR: third-party notices
 ====================================
 
 Open Desktop VR is free software under the GNU General Public License,
-version 3 or (at your option) any later version (see LICENSE). It includes or
-is built with the components below, each under its own license, all of them
+version 3 (see LICENSE). It includes or is built with the components below, each under its own license, all of them
 compatible with the GPL version 3. Every dependency is pinned by version and
 SHA-256 in cmake/OdvrThirdParty.cmake.
 

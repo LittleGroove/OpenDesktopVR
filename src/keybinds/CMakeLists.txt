@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Robert McGough
 #
 # Keybinds (doc 09, KY-1 to KY-4): bindings, when they fire, bind capture,

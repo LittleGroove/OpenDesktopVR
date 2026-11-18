@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Robert McGough
 #
 # Unit tests run in CI; render tests need a GPU (or WARP) and are not
@@ -259,3 +259,13 @@ odvr_test(settings-window-test NO_CTEST SOURCES settings-window-test.cpp DEPS od
 add_dependencies(settings-window-test OpenDesktopVR)
 add_test(NAME settings-window-test COMMAND settings-window-test $<TARGET_FILE:OpenDesktopVR>)
 set_tests_properties(settings-window-test PROPERTIES TIMEOUT 150)
+
+# Tests that need a real PC's desktop: they inject input into real windows,
+# need the foreground, open browsers, capture windows, or hold the program
+# to its speed budgets. CI (shared machines, software rendering) skips them
+# with "ctest -LE desktop"; they run locally, and before every release.
+set_tests_properties(
+  apphelper-test pointer-inject-test browser-input-test key-inject-test occlusion-test capture-test
+  settings-window-test host-layer-test sim-click sim-click-stage sim-gestures sim-keyboard sim-bench-test-panel
+  PROPERTIES LABELS desktop
+)

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Robert McGough
 
 #include "SettingsWindow.hpp"
@@ -1620,8 +1620,8 @@ void SettingsWindow::GeneralPage() {
   ImGui::SeparatorText("About");
   ImGui::TextUnformatted(std::format("{} {}", Utf8(Product::DisplayName), Product::Version).c_str());
   ImGui::TextDisabled("%s", Product::BuildDescription().c_str());
-  ImGui::TextWrapped("Free software: you may share and change it under the GNU General Public License, version 3 or "
-                     "later. It comes with no warranty.");
+  ImGui::TextWrapped("Free software: you may share and change it under the GNU General Public License, version 3. It "
+                     "comes with no warranty.");
   if (ImGui::Button("Source code and releases")) {
     const auto site = StringUtil::Widen(std::format("https://github.com/{}", Product::Repository));
     ShellExecuteW(mWindow, L"open", site.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
