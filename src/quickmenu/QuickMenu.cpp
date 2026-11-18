@@ -62,6 +62,24 @@ std::wstring Centimetres(float meters) {
   return std::format(L"{} cm", std::lround(meters * 100.0f));
 }
 
+// To a tenth, without ".0": "12 cm", "12.5 cm", "-3 cm" (the settings
+// window's fields can leave tenths)
+std::wstring Tenths(float value, const wchar_t* unit) {
+  const float tenths = std::round(value * 10.0f) / 10.0f;
+  if (std::abs(tenths - std::round(tenths)) < 0.05f) {
+    return std::format(L"{}{}", std::lround(tenths), unit);
+  }
+  return std::format(L"{:.1f}{}", tenths, unit);
+}
+
+std::wstring Length(float meters) {
+  return Tenths(meters * 100.0f, L" cm");
+}
+
+std::wstring Angle(float degrees) {
+  return Tenths(degrees, L"°");
+}
+
 std::size_t ClampFirst(std::size_t first, std::size_t count) noexcept {
   return count > RowsPerPage ? std::min(first, count - RowsPerPage) : 0;
 }
@@ -166,11 +184,45 @@ Layout PanelPage(const MenuState& state, const MenuData& data) {
   ToggleRow(b, L"Tint", panel->mTint, {CommandKind::ToggleTint, id});
   StepRow(b, L"Size", Centimetres(panel->mWidthMeters) + L" wide", {CommandKind::Size, id},
     panel->mWidthMeters > MinWidthMeters + Epsilon, panel->mWidthMeters < MaxWidthMeters - Epsilon);
-  StepRow(b, L"Distance", Centimetres(panel->mDistanceMeters), {CommandKind::Distance, id},
-    panel->mDistanceMeters > MinDistanceMeters + Epsilon, panel->mDistanceMeters < MaxDistanceMeters - Epsilon);
+  b.Add(ItemKind::Row, b.NextRow(), L"Position", {CommandKind::ShowPosition, id});
   if (panel->mWindow) {
     b.Add(ItemKind::Row, b.NextRow(), L"Change window", {CommandKind::ShowWindows, id});
   }
+  return std::move(b).Finish();
+}
+
+// Test round 19: the settings window's placement, a step a tap
+Layout PositionPage(const MenuState& state, const MenuData& data) {
+  Builder b;
+  const bool keyboard = state.mPanel == KeyboardID;
+  const PanelInfo* target = nullptr;
+  if (keyboard) {
+    target = data.mKeyboard ? &data.mKeyboardPlacement : nullptr;
+  } else if (const auto panel = std::ranges::find(data.mPanels, state.mPanel, &PanelInfo::mID); panel != data.mPanels.end()) {
+    target = &*panel;
+  }
+  if (!target) {
+    Header(b, L"Position", true);
+    b.Add(ItemKind::Note, b.NextRow(), keyboard ? L"The virtual keyboard is off" : L"This panel isn't in the profile any more");
+    return std::move(b).Finish();
+  }
+  const uint64_t id = target->mID;
+  Header(b, keyboard ? std::wstring {L"Keyboard position"} : NameOf(*target) + L": position", true);
+  const auto& at = target->mPosition;
+  StepRow(b, L"Left / right", Length(at[0]), {CommandKind::MoveAcross, id}, at[0] > -MaxAcrossMeters + Epsilon,
+    at[0] < MaxAcrossMeters - Epsilon);
+  StepRow(b, L"Down / up", Length(at[1]), {CommandKind::MoveUp, id}, at[1] > -MaxUpDownMeters + Epsilon,
+    at[1] < MaxUpDownMeters - Epsilon);
+  const float away = -at[2];
+  StepRow(b, L"Distance", Length(away), {CommandKind::MoveAway, id}, away > MinAwayMeters + Epsilon,
+    away < MaxAwayMeters - Epsilon);
+  ToggleRow(b, L"Face me", target->mFaceOrigin, {CommandKind::ToggleFaceMe, id});
+  if (!target->mFaceOrigin) {
+    StepRow(b, L"Turn", Angle(target->mYawDegrees), {CommandKind::Turn, id}, true, true);// it wraps round
+    StepRow(b, L"Tilt", Angle(target->mPitchDegrees), {CommandKind::Tilt, id},
+      target->mPitchDegrees > -MaxTiltDegrees + Epsilon, target->mPitchDegrees < MaxTiltDegrees - Epsilon);
+  }
+  ToggleRow(b, L"Small steps (1 cm, 1°)", state.mSmallSteps, {CommandKind::ToggleSmallSteps});
   return std::move(b).Finish();
 }
 
@@ -211,6 +263,7 @@ Layout SettingsPage(const MenuData& data) {
   Builder b;
   Header(b, L"Settings", true);
   ToggleRow(b, L"Virtual keyboard", data.mKeyboard, {CommandKind::ToggleKeyboard});
+  b.Add(ItemKind::Row, b.NextRow(), L"Keyboard position", {CommandKind::ShowPosition, KeyboardID}, {}, false, data.mKeyboard);
   StepRow(b, L"Panel updates", std::format(L"{} a second", data.mUpdateRate), {CommandKind::UpdateRate}, data.mSlowerRate,
     data.mFasterRate);
   ToggleRow(b, L"Hand while pointing", data.mHandWhilePointing, {CommandKind::ToggleHandWhilePointing});
@@ -243,6 +296,9 @@ std::string Describe(const Command& command) {
       break;
     case CommandKind::ShowWindows:
       name = "windows";
+      break;
+    case CommandKind::ShowPosition:
+      name = "position";
       break;
     case CommandKind::ShowProfiles:
       name = "profiles";
@@ -286,8 +342,26 @@ std::string Describe(const Command& command) {
     case CommandKind::Size:
       name = "size";
       break;
-    case CommandKind::Distance:
+    case CommandKind::MoveAcross:
+      name = "left or right";
+      break;
+    case CommandKind::MoveUp:
+      name = "down or up";
+      break;
+    case CommandKind::MoveAway:
       name = "distance";
+      break;
+    case CommandKind::ToggleFaceMe:
+      name = "face me";
+      break;
+    case CommandKind::Turn:
+      name = "turn";
+      break;
+    case CommandKind::Tilt:
+      name = "tilt";
+      break;
+    case CommandKind::ToggleSmallSteps:
+      name = "small steps";
       break;
     case CommandKind::ToggleKeyboard:
       name = "keyboard";
@@ -320,6 +394,8 @@ Layout BuildLayout(const MenuState& state, const MenuData& data) {
       return ProfilesPage(state, data);
     case Page::Settings:
       return SettingsPage(data);
+    case Page::Position:
+      return PositionPage(state, data);
   }
   return Home(state, data);
 }
@@ -344,6 +420,7 @@ std::size_t ListLength(const MenuState& state, const MenuData& data) noexcept {
       return data.mProfiles.size();
     case Page::Panel:
     case Page::Settings:
+    case Page::Position:
       return 0;
   }
   return 0;
@@ -357,8 +434,20 @@ MenuState Navigate(MenuState state, const Command& command, const MenuData& data
       state.mOpen = false;
       return state;
     case CommandKind::Back:
-      state.mPage = state.mPage == Page::Windows ? Page::Panel : Page::Home;
+      if (state.mPage == Page::Position) {
+        state.mPage = state.mPanel == KeyboardID ? Page::Settings : Page::Panel;
+      } else {
+        state.mPage = state.mPage == Page::Windows ? Page::Panel : Page::Home;
+      }
       state.mFirst = 0;
+      return state;
+    case CommandKind::ShowPosition:
+      state.mPage = Page::Position;
+      state.mPanel = command.mArg;
+      state.mFirst = 0;
+      return state;
+    case CommandKind::ToggleSmallSteps:
+      state.mSmallSteps = !state.mSmallSteps;
       return state;
     case CommandKind::ShowPanelPage:
       state.mPage = Page::Panel;

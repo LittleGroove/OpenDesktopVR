@@ -3,6 +3,9 @@
 
 #include "QuickMenuController.hpp"
 
+#include <OpenDesktopVR/KeyboardConfig.hpp>
+#include <OpenDesktopVR/PanelPlacement.hpp>
+
 #include <OpenDesktopVR/CrashHandler.hpp>
 #include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/StringUtil.hpp>
@@ -25,12 +28,10 @@ constexpr UINT ListingCheckMs = 100;
 
 using QuickMenu::CommandKind;
 
+static_assert(QuickMenu::KeyboardID == KeyboardPanelID, "the Position page's keyboard is the keyboard panel");
+
 std::string Utf8(const std::wstring& text) {
   return StringUtil::Narrow(text);
-}
-
-float Length(const float position[3]) noexcept {
-  return std::sqrt((position[0] * position[0]) + (position[1] * position[1]) + (position[2] * position[2]));
 }
 
 std::wstring AppName(const WindowUtil::WindowInfo& window) {
@@ -166,8 +167,15 @@ void QuickMenuController::Run(const QuickMenu::Command& command) {
     case CommandKind::Brightness:
     case CommandKind::ToggleTint:
     case CommandKind::Size:
-    case CommandKind::Distance:
       RunOnPanel(command);
+      break;
+    case CommandKind::MoveAcross:
+    case CommandKind::MoveUp:
+    case CommandKind::MoveAway:
+    case CommandKind::ToggleFaceMe:
+    case CommandKind::Turn:
+    case CommandKind::Tilt:
+      RunPosition(command);
       break;
     case CommandKind::ToggleKeyboard:
     case CommandKind::UpdateRate:
@@ -180,6 +188,8 @@ void QuickMenuController::Run(const QuickMenu::Command& command) {
     case CommandKind::ShowPanelPage:
     case CommandKind::ShowProfiles:
     case CommandKind::ShowSettings:
+    case CommandKind::ShowPosition:
+    case CommandKind::ToggleSmallSteps:
     case CommandKind::PreviousRows:
     case CommandKind::NextRows:
     case CommandKind::Scroll:
@@ -232,22 +242,82 @@ void QuickMenuController::RunOnPanel(const QuickMenu::Command& command) {
       Log::Info("Quick menu: '{}' {:.0f} cm wide", name, width * 100);
       return;
     }
-    case CommandKind::Distance: {
-      const float distance = Length(panel->mPosition);
-      if (distance < 0.01f) {
-        return;
-      }
-      const float wanted = std::clamp(
-        distance + (QuickMenu::DistanceStepMeters * step), QuickMenu::MinDistanceMeters, QuickMenu::MaxDistanceMeters);
-      for (auto& axis: panel->mPosition) {
-        axis *= wanted / distance;// along the line from the eyes: same direction, same facing
-      }
-      mPanels.Update(*panel);
-      Log::Info("Quick menu: '{}' {:.0f} cm away", name, wanted * 100);
-      return;
-    }
     default:
       return;
+  }
+}
+
+// The Position page: a panel's, or the keyboard's, placement a step at a
+// time, as its fields in the settings window would change it
+void QuickMenuController::RunPosition(const QuickMenu::Command& command) {
+  using namespace QuickMenu;
+  const float metres = (mState.mSmallSteps ? SmallStepMeters : StepMeters) * static_cast<float>(command.mStep);
+  const float degrees = (mState.mSmallSteps ? SmallStepDegrees : StepDegrees) * static_cast<float>(command.mStep);
+  const auto move = [&](PanelPlacement& p) -> std::string {
+    switch (command.mKind) {
+      case CommandKind::MoveAcross:
+        p.mPosition[0] = std::clamp(p.mPosition[0] + metres, -MaxAcrossMeters, MaxAcrossMeters);
+        return std::format("{:.1f} cm left or right", p.mPosition[0] * 100);
+      case CommandKind::MoveUp:
+        p.mPosition[1] = std::clamp(p.mPosition[1] + metres, -MaxUpDownMeters, MaxUpDownMeters);
+        return std::format("{:.1f} cm down or up", p.mPosition[1] * 100);
+      case CommandKind::MoveAway:
+        p.mPosition[2] = -std::clamp(-p.mPosition[2] + metres, MinAwayMeters, MaxAwayMeters);
+        return std::format("{:.1f} cm away", -p.mPosition[2] * 100);
+      case CommandKind::ToggleFaceMe:
+        if (p.mFaceOrigin) {
+          // Start from the way it faces now, so it doesn't jump (as the
+          // settings window does)
+          const auto facing = FacingOrigin(p.mPosition.data());
+          p.mYawDegrees = facing.mYawDegrees;
+          p.mPitchDegrees = facing.mPitchDegrees;
+        }
+        p.mFaceOrigin = !p.mFaceOrigin;
+        return p.mFaceOrigin ? "facing you" : "set by hand";
+      case CommandKind::Turn: {
+        float yaw = p.mYawDegrees + degrees;
+        yaw -= 360.0f * std::round(yaw / 360.0f);// wraps round, as the field does
+        p.mYawDegrees = std::clamp(yaw, -MaxTurnDegrees, MaxTurnDegrees);
+        return std::format("turned {:.0f} degrees", p.mYawDegrees);
+      }
+      case CommandKind::Tilt:
+        p.mPitchDegrees = std::clamp(p.mPitchDegrees + degrees, -MaxTiltDegrees, MaxTiltDegrees);
+        return std::format("tilted {:.0f} degrees", p.mPitchDegrees);
+      default:
+        return {};
+    }
+  };
+  if (command.mArg == KeyboardPanelID) {
+    auto keyboard = mPanels.Keyboard();
+    const auto what = move(keyboard.mPlacement);
+    mPanels.SetKeyboard(keyboard);
+    Log::Info("Quick menu: the keyboard {}", what);
+    return;
+  }
+  auto panel = mPanels.Find(command.mArg);
+  if (!panel) {
+    return;// DU-2: gone
+  }
+  auto placement = PanelPlacementConfig::From(*panel);
+  const auto what = move(placement);
+  PanelPlacementConfig::ApplyTo(placement, *panel);
+  mPanels.Update(*panel);
+  Log::Info("Quick menu: '{}' {}", Utf8(panel->mName), what);
+}
+
+// The keyboard shows while its Position page is open, and goes when that
+// closes if the page was what showed it
+void QuickMenuController::PreviewKeyboard() {
+  const bool wanted = mState.mOpen && mState.mPage == QuickMenu::Page::Position && mState.mPanel == KeyboardPanelID
+    && mPanels.Keyboard().mEnabled;
+  if (wanted == mPreviewing || !mKeyboardPreview) {
+    return;
+  }
+  mPreviewing = wanted;
+  if (wanted) {
+    mPreviewShowed = mKeyboardPreview(true);
+  } else if (std::exchange(mPreviewShowed, false)) {
+    mKeyboardPreview(false);
   }
 }
 
@@ -312,9 +382,17 @@ QuickMenu::MenuData QuickMenuController::Gather() const {
       .mBrightness = panel.mBrightness,
       .mTint = panel.mTintEnabled,
       .mWidthMeters = panel.mWidthMeters,
-      .mDistanceMeters = Length(panel.mPosition),
+      .mPosition = {panel.mPosition[0], panel.mPosition[1], panel.mPosition[2]},
+      .mFaceOrigin = panel.mFaceOrigin,
+      .mYawDegrees = panel.mYawDegrees,
+      .mPitchDegrees = panel.mPitchDegrees,
     });
   }
+  const auto& keyboard = mPanels.Keyboard().mPlacement;
+  data.mKeyboardPlacement.mPosition = keyboard.mPosition;
+  data.mKeyboardPlacement.mFaceOrigin = keyboard.mFaceOrigin;
+  data.mKeyboardPlacement.mYawDegrees = keyboard.mYawDegrees;
+  data.mKeyboardPlacement.mPitchDegrees = keyboard.mPitchDegrees;
   for (const auto& profile: mPanels.Profiles()) {
     const bool active = profile.mID == mPanels.ActiveProfile();
     data.mProfiles.push_back({profile.mID, profile.mName, active});
@@ -354,6 +432,7 @@ void QuickMenuController::Rebuild() {
   }
   const bool hidden = !mState.mOpen && !mPanels.QuickMenu().mButton;
   mModel->SetLayout(std::make_shared<const QuickMenu::Layout>(QuickMenu::BuildLayout(mState, mData)), hidden);
+  PreviewKeyboard();
   mRebuilding = false;
 }
 

@@ -24,11 +24,8 @@ float CleanFloat(float value, float fallback, float low, float high) noexcept {
 
 QuickMenuSettings Clean(QuickMenuSettings menu) noexcept {
   const QuickMenuSettings defaults;
-  using S = QuickMenuSettings;
-  menu.mDistanceCentimeters = CleanFloat(menu.mDistanceCentimeters, defaults.mDistanceCentimeters, S::MinDistance, S::MaxDistance);
-  menu.mHeightCentimeters = CleanFloat(menu.mHeightCentimeters, defaults.mHeightCentimeters, S::MinHeight, S::MaxHeight);
-  menu.mTurnDegrees = CleanFloat(menu.mTurnDegrees, defaults.mTurnDegrees, -S::MaxTurn, S::MaxTurn);
-  menu.mTiltDegrees = CleanFloat(menu.mTiltDegrees, defaults.mTiltDegrees, S::MinTilt, S::MaxTilt);
+  menu.mPlacement = PanelPlacementConfig::Clean(menu.mPlacement, defaults.mPlacement);
+  menu.mWidthMeters = CleanFloat(menu.mWidthMeters, defaults.mWidthMeters, QuickMenuSettings::MinWidth, QuickMenuSettings::MaxWidth);
   return menu;
 }
 
@@ -37,10 +34,18 @@ QuickMenuSettings Read(const Json& settings) noexcept {
   try {
     const auto section = JsonUtil::GetOr<Json>(settings, "quickMenu", Json {});
     menu.mButton = JsonUtil::GetOr<bool>(section, "button", menu.mButton);
-    menu.mDistanceCentimeters = JsonUtil::GetOr<float>(section, "distanceCentimeters", menu.mDistanceCentimeters);
-    menu.mHeightCentimeters = JsonUtil::GetOr<float>(section, "heightCentimeters", menu.mHeightCentimeters);
-    menu.mTurnDegrees = JsonUtil::GetOr<float>(section, "turnDegrees", menu.mTurnDegrees);
-    menu.mTiltDegrees = JsonUtil::GetOr<float>(section, "tiltDegrees", menu.mTiltDegrees);
+    menu.mWidthMeters = JsonUtil::GetOr<float>(section, "widthMeters", menu.mWidthMeters);
+    if (const auto placement = PanelPlacementConfig::Read(section, menu.mPlacement)) {
+      menu.mPlacement = *placement;
+    } else if (section.is_object() && section.contains("distanceCentimeters")) {
+      // Test round 19's (within the limits it had then)
+      const auto old = [&](const char* key, float fallback, float low, float high) {
+        const float value = JsonUtil::GetOr<float>(section, key, fallback);
+        return std::isfinite(value) ? std::clamp(value, low, high) : fallback;
+      };
+      menu.mPlacement = PanelPlacementConfig::FromDistance(old("distanceCentimeters", 45, 30, 80),
+        old("heightCentimeters", 25, -20, 60), old("turnDegrees", -35, -90, 90), old("tiltDegrees", 35, 0, 80));
+    }
   } catch (...) {
     return {};
   }
@@ -53,10 +58,11 @@ void Write(Json& settings, const QuickMenuSettings& menu) {
     section = Json::object();
   }
   section["button"] = menu.mButton;
-  section["distanceCentimeters"] = menu.mDistanceCentimeters;
-  section["heightCentimeters"] = menu.mHeightCentimeters;
-  section["turnDegrees"] = menu.mTurnDegrees;
-  section["tiltDegrees"] = menu.mTiltDegrees;
+  section["widthMeters"] = menu.mWidthMeters;
+  PanelPlacementConfig::Write(section, menu.mPlacement);
+  for (const char* old: {"distanceCentimeters", "heightCentimeters", "turnDegrees", "tiltDegrees"}) {
+    section.erase(old);// replaced by the placement (test round 19)
+  }
   settings["quickMenu"] = std::move(section);
 }
 
@@ -69,20 +75,11 @@ PanelDefinition QuickMenuPanel(const QuickMenuSettings& settings) {
   panel.mName = L"Quick menu";
   panel.mKind = PanelKind::QuickMenu;
   panel.mAnimated = false;
-  // `distance` from the eyes, `height` below them, turned round from
-  // straight ahead (positive to the left) and facing back toward the eyes
-  const float distance = menu.mDistanceCentimeters / 100.0f;
-  const float height = std::clamp(menu.mHeightCentimeters / 100.0f, -distance * 0.95f, distance * 0.95f);
-  const float across = std::sqrt(std::max((distance * distance) - (height * height), 0.0001f));
-  const float turn = menu.mTurnDegrees * std::numbers::pi_v<float> / 180.0f;
-  panel.mPosition[0] = -across * std::sin(turn);
-  panel.mPosition[1] = -height;
-  panel.mPosition[2] = -across * std::cos(turn);
-  panel.mFaceOrigin = false;
-  panel.mYawDegrees = menu.mTurnDegrees;
-  panel.mPitchDegrees = menu.mTiltDegrees;// its top tilted away: it faces up
-  panel.mMetersPerPixel = QuickMenu::MetersPerPixel;
-  panel.mWidthMeters = static_cast<float>(QuickMenu::Width) * QuickMenu::MetersPerPixel;
+  PanelPlacementConfig::ApplyTo(menu.mPlacement, panel);
+  // Its size follows its pixels (the button and the open menu), scaled up
+  // from 2.5 a millimetre by a wider setting, never down (DU-6)
+  panel.mWidthMeters = menu.mWidthMeters;
+  panel.mMetersPerPixel = menu.mWidthMeters / static_cast<float>(QuickMenu::Width);
   panel.mMaxUpdatesPerSecond = 30;
   panel.mKeepUpdatingWhenCovered = false;
   panel.mTouch = true;

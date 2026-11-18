@@ -35,12 +35,7 @@ KeyboardSettings Clean(KeyboardSettings keyboard) noexcept {
   keyboard.mPrimaryLayout = CleanLayout(std::move(keyboard.mPrimaryLayout));
   keyboard.mSecondaryLayout = CleanLayout(std::move(keyboard.mSecondaryLayout));
   keyboard.mClickVolume = CleanFloat(keyboard.mClickVolume, defaults.mClickVolume, 0, 1);
-  keyboard.mDistanceCentimeters = CleanFloat(
-    keyboard.mDistanceCentimeters, defaults.mDistanceCentimeters, KeyboardSettings::MinDistance, KeyboardSettings::MaxDistance);
-  keyboard.mHeightCentimeters = CleanFloat(
-    keyboard.mHeightCentimeters, defaults.mHeightCentimeters, KeyboardSettings::MinHeight, KeyboardSettings::MaxHeight);
-  keyboard.mTiltDegrees
-    = CleanFloat(keyboard.mTiltDegrees, defaults.mTiltDegrees, KeyboardSettings::MinTilt, KeyboardSettings::MaxTilt);
+  keyboard.mPlacement = PanelPlacementConfig::Clean(keyboard.mPlacement, defaults.mPlacement);
   keyboard.mKeyMillimeters
     = CleanFloat(keyboard.mKeyMillimeters, defaults.mKeyMillimeters, KeyboardSettings::MinKey, KeyboardSettings::MaxKey);
   keyboard.mTypingOpacity
@@ -59,9 +54,18 @@ KeyboardSettings Read(const Json& settings) noexcept {
     keyboard.mFunctionRow = JsonUtil::GetOr<bool>(section, "functionRow", keyboard.mFunctionRow);
     keyboard.mClickVolume = JsonUtil::GetOr<float>(section, "clickVolume", keyboard.mClickVolume);
     keyboard.mHideAfterEnter = JsonUtil::GetOr<bool>(section, "hideAfterEnter", keyboard.mHideAfterEnter);
-    keyboard.mDistanceCentimeters = JsonUtil::GetOr<float>(section, "distanceCentimeters", keyboard.mDistanceCentimeters);
-    keyboard.mHeightCentimeters = JsonUtil::GetOr<float>(section, "heightCentimeters", keyboard.mHeightCentimeters);
-    keyboard.mTiltDegrees = JsonUtil::GetOr<float>(section, "tiltDegrees", keyboard.mTiltDegrees);
+    if (const auto placement = PanelPlacementConfig::Read(section, keyboard.mPlacement)) {
+      keyboard.mPlacement = *placement;
+    } else {
+      // Before test round 19: straight ahead, this far away and below,
+      // tilted (within the limits it had then)
+      const auto old = [&](const char* key, float fallback, float low, float high) {
+        const float value = JsonUtil::GetOr<float>(section, key, fallback);
+        return std::isfinite(value) ? std::clamp(value, low, high) : fallback;
+      };
+      keyboard.mPlacement = PanelPlacementConfig::FromDistance(old("distanceCentimeters", 50, 30, 80),
+        old("heightCentimeters", 30, 0, 60), 0, old("tiltDegrees", 45, 0, 80));
+    }
     keyboard.mKeyMillimeters = JsonUtil::GetOr<float>(section, "keyMillimeters", keyboard.mKeyMillimeters);
     keyboard.mTypingOpacity = JsonUtil::GetOr<float>(section, "typingOpacity", keyboard.mTypingOpacity);
     keyboard.mIdleOpacity = JsonUtil::GetOr<float>(section, "idleOpacity", keyboard.mIdleOpacity);
@@ -82,9 +86,10 @@ void Write(Json& settings, const KeyboardSettings& keyboard) {
   section["functionRow"] = keyboard.mFunctionRow;
   section["clickVolume"] = keyboard.mClickVolume;
   section["hideAfterEnter"] = keyboard.mHideAfterEnter;
-  section["distanceCentimeters"] = keyboard.mDistanceCentimeters;
-  section["heightCentimeters"] = keyboard.mHeightCentimeters;
-  section["tiltDegrees"] = keyboard.mTiltDegrees;
+  PanelPlacementConfig::Write(section, keyboard.mPlacement);
+  for (const char* old: {"distanceCentimeters", "heightCentimeters", "tiltDegrees"}) {
+    section.erase(old);// replaced by the placement (test round 19)
+  }
   section["keyMillimeters"] = keyboard.mKeyMillimeters;
   section["typingOpacity"] = keyboard.mTypingOpacity;
   section["idleOpacity"] = keyboard.mIdleOpacity;
@@ -100,23 +105,32 @@ PanelDefinition KeyboardPanel(const KeyboardSettings& settings) {
   panel.mName = L"Keyboard";
   panel.mKind = PanelKind::Keyboard;
   panel.mAnimated = false;
-  // Straight ahead and below the eyes, `distance` from them
-  const float distance = keyboard.mDistanceCentimeters / 100.0f;
-  const float height = std::min(keyboard.mHeightCentimeters / 100.0f, distance * 0.95f);
-  panel.mPosition[0] = 0;
-  panel.mPosition[1] = -height;
-  panel.mPosition[2] = -std::sqrt(std::max((distance * distance) - (height * height), 0.0001f));
-  panel.mFaceOrigin = false;
-  panel.mYawDegrees = 0;
-  panel.mPitchDegrees = keyboard.mTiltDegrees;// its top tilted away: it faces up
-  static const float widthUnits = VirtualKeyboard::BuildGeometry({}).mWidth;
-  panel.mWidthMeters = widthUnits * keyboard.mKeyMillimeters / 1000.0f;
+  PanelPlacementConfig::ApplyTo(keyboard.mPlacement, panel);
+  // Its opacity is K9's, drawn by the keyboard itself
+  panel.mOpacity = 1.0f;
+  panel.mFocusedOpacity = 1.0f;
+  panel.mWidthMeters = KeyboardWidthMeters(keyboard.mKeyMillimeters);
   panel.mMaxUpdatesPerSecond = 30;// with its preview strip (doc 08)
   panel.mKeepUpdatingWhenCovered = false;
   // Typed on (ADR-036), never pointed at
   panel.mTouch = false;
   panel.mScroll = false;
   return panel;
+}
+
+namespace {
+float WidthUnits() noexcept {
+  static const float units = VirtualKeyboard::BuildGeometry({}).mWidth;
+  return units;
+}
+}// namespace
+
+float KeyboardWidthMeters(float keyMillimeters) noexcept {
+  return WidthUnits() * keyMillimeters / 1000.0f;
+}
+
+float KeyMillimetersFor(float widthMeters) noexcept {
+  return widthMeters * 1000.0f / WidthUnits();
 }
 
 std::vector<PanelDefinition> PanelsForRenderer(

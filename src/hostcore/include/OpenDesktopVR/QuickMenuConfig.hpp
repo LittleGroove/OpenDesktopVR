@@ -4,8 +4,14 @@
 // The quick menu's settings ("quickMenu" in settings.json; doc 09 "In-VR
 // UI"; ADR-041) and its panel:
 //
-//   "quickMenu": {"button": true, "distanceCentimeters": 45,
-//     "heightCentimeters": 25, "turnDegrees": -35, "tiltDegrees": 35}
+//   "quickMenu": {"button": true, "widthMeters": 0.256,
+//     "position": [0.21, -0.25, -0.31], "faceOrigin": false, "yawDegrees": -35,
+//     "pitchDegrees": 35, "opacity": 1, ...}
+//
+// Where it sits and how it looks are a panel's settings (PanelPlacement,
+// test round 19), set at the desk only: moving the menu you're tapping
+// would be awkward. Round 19's "distanceCentimeters", "heightCentimeters",
+// "turnDegrees" and "tiltDegrees" are read once and replaced.
 //
 // Like the keyboard's (K10), its panel isn't in the "panels" list: the
 // settings window's list never shows it and hiding all panels never hides
@@ -17,27 +23,27 @@
 
 #include <OpenDesktopVR/HostPanel.hpp>
 #include <OpenDesktopVR/JsonUtil.hpp>
+#include <OpenDesktopVR/PanelPlacement.hpp>
 
 namespace OpenDesktopVR::Host {
 
 struct QuickMenuSettings {
   // The button while the menu is closed
   bool mButton {true};
-  // Where it sits: this far from the eyes, this far below them, turned
-  // round from straight ahead (positive to the left; the default is low
-  // on the right, clear of the keyboard), tilted up to face you
-  float mDistanceCentimeters {45};
-  float mHeightCentimeters {25};
-  float mTurnDegrees {-35};
-  float mTiltDegrees {35};
+  // Where it sits and how it looks: by default 45 cm from the eyes, 25 cm
+  // below them, 35 degrees round to the right (clear of the keyboard),
+  // tilted up 35 degrees to face you
+  PanelPlacement mPlacement {DefaultPlacement()};
+  // The open menu's width; never narrower than its own pixels at 2.5 a
+  // millimetre, so its targets stay at least 20 mm (DU-6)
+  float mWidthMeters {MinWidth};
 
-  static constexpr float MinDistance = 30;
-  static constexpr float MaxDistance = 80;
-  static constexpr float MinHeight = -20;// above the eyes
-  static constexpr float MaxHeight = 60;
-  static constexpr float MaxTurn = 90;
-  static constexpr float MinTilt = 0;
-  static constexpr float MaxTilt = 80;
+  static constexpr float MinWidth = 0.256f;
+  static constexpr float MaxWidth = 0.6f;
+
+  static PanelPlacement DefaultPlacement() noexcept {
+    return PanelPlacementConfig::FromDistance(45, 25, -35, 35);
+  }
 
   bool operator==(const QuickMenuSettings&) const = default;
 };

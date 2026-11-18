@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace OpenDesktopVR::Diagnostics {
@@ -45,6 +46,12 @@ struct EnvironmentCheck {
   std::vector<std::string> mProblems;// logged as Warning: explained, never blocking
 };
 EnvironmentCheck CheckEnvironment() noexcept;
+
+// The compatibility modes someone chose (the program's Compatibility tab)
+// in a __COMPAT_LAYER value: Windows' own "Detectors..." shims (round 18
+// and 19's DetectorsAppHealth, applied by Windows to programs started from
+// Explorer) and the "~" marker left out. Empty if none were chosen.
+std::string ChosenCompatibilityModes(std::string_view compatLayer);
 
 // All of the above as text, one fact a line
 std::string DescribeSystem() noexcept;

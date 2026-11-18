@@ -358,6 +358,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       keyboard.Toggle();
     }
     Host::QuickMenuController quickMenu {instance, panels, renderer, quickMenuModel, quickMenuHands};
+    quickMenu.SetKeyboardPreview([&keyboard](bool show) {
+      if (!show) {
+        keyboard.Dismiss("its position page closed");
+        return true;
+      }
+      if (keyboard.IsShown()) {
+        return false;// already up: left up afterwards
+      }
+      keyboard.Toggle();
+      return true;
+    });
     if (options.mShowQuickMenu && options.mTestInstance) {
       quickMenu.Open("--show-quick-menu");
     }

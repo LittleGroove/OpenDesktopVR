@@ -41,7 +41,10 @@ MenuData Data() {
     panel.mOpacity = 0.8f;
     panel.mBrightness = 1.0f;
     panel.mWidthMeters = 0.42f;
-    panel.mDistanceMeters = 0.65f;
+    panel.mPosition = {-0.22f, -0.12f, -0.65f};
+    panel.mFaceOrigin = panel.mID % 2 == 0;
+    panel.mYawDegrees = 12.5f;
+    panel.mPitchDegrees = -5.0f;
     data.mPanels.push_back(panel);
   }
   data.mProfiles = {{"a", L"Default", false}, {"b", L"Elite Dangerous", true}, {"c", L"Desktop", false}};
@@ -133,6 +136,13 @@ int main(int argc, char** argv) {
   draw("home-more", 0.97);
   show({.mOpen = true, .mPage = Page::Panel, .mPanel = 100}, data);
   draw("panel", 0.97);
+  show({.mOpen = true, .mPage = Page::Position, .mPanel = 101}, data);
+  draw("position", 0.97);
+  data.mKeyboardPlacement.mPosition = {0, -0.3f, -0.4f};
+  data.mKeyboardPlacement.mFaceOrigin = false;
+  data.mKeyboardPlacement.mPitchDegrees = 45;
+  show({.mOpen = true, .mPage = Page::Position, .mPanel = KeyboardID, .mSmallSteps = true}, data);
+  draw("position-keyboard", 0.97);
   show({.mOpen = true, .mPage = Page::Windows, .mPanel = 100}, data);
   draw("windows", 0.97);
   auto finding = data;

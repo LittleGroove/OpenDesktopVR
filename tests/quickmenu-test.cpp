@@ -22,6 +22,7 @@
 
 #include <OpenDesktopVR/HostPanel.hpp>
 #include <OpenDesktopVR/KeyboardConfig.hpp>
+#include <OpenDesktopVR/PanelPlacement.hpp>
 #include <OpenDesktopVR/QuickMenu.hpp>
 #include <OpenDesktopVR/QuickMenuConfig.hpp>
 #include <OpenDesktopVR/QuickMenuHands.hpp>
@@ -48,6 +49,8 @@ MenuData MakeData(std::size_t panels, std::size_t profiles, std::optional<std::s
                          : std::format(L"Panel {}", i + 1);
     panel.mWindow = i % 2 == 0;
     panel.mShowing = i != 2;
+    panel.mFaceOrigin = i != 1;
+    panel.mYawDegrees = 12.5f;
     data.mPanels.push_back(panel);
   }
   for (std::size_t i = 0; i < profiles; ++i) {
@@ -148,6 +151,14 @@ int main() {
     CheckLayout("panel page (a window)", BuildLayout({.mOpen = true, .mPage = Page::Panel, .mPanel = 100}, data));
     CheckLayout("panel page (not a window)", BuildLayout({.mOpen = true, .mPage = Page::Panel, .mPanel = 101}, data));
     CheckLayout("panel page (gone)", BuildLayout({.mOpen = true, .mPage = Page::Panel, .mPanel = 999}, data));
+    CheckLayout("position (facing me)", BuildLayout({.mOpen = true, .mPage = Page::Position, .mPanel = 100}, data));
+    CheckLayout("position (turned by hand)", BuildLayout({.mOpen = true, .mPage = Page::Position, .mPanel = 101}, data));
+    CheckLayout("position (gone)", BuildLayout({.mOpen = true, .mPage = Page::Position, .mPanel = 999}, data));
+    CheckLayout("keyboard position", BuildLayout({.mOpen = true, .mPage = Page::Position, .mPanel = KeyboardID}, data));
+    auto noKeyboard = data;
+    noKeyboard.mKeyboard = false;
+    CheckLayout("keyboard position (keyboard off)",
+      BuildLayout({.mOpen = true, .mPage = Page::Position, .mPanel = KeyboardID}, noKeyboard));
     CheckLayout("windows, 12", BuildLayout({.mOpen = true, .mPage = Page::Windows, .mPanel = 100}, data));
     CheckLayout("windows, finding", BuildLayout({.mOpen = true, .mPage = Page::Windows}, MakeData(1, 1, std::nullopt)));
     CheckLayout("windows, none", BuildLayout({.mOpen = true, .mPage = Page::Windows}, MakeData(1, 1, 0)));
@@ -183,6 +194,29 @@ int main() {
     Check(FindTarget(limits, CommandKind::ShowWindows, 100) >= 0
         && FindTarget(BuildLayout({.mOpen = true, .mPage = Page::Panel, .mPanel = 101}, top), CommandKind::ShowWindows, 101) < 0,
       "Change window only for a window panel");
+    const int position = FindTarget(limits, CommandKind::ShowPosition, 100);
+    Check(position >= 0 && position < FindTarget(limits, CommandKind::ShowWindows, 100),
+      "a panel's page: Position, above Change window (test round 19)");
+
+    auto placed = MakeData(2, 1, std::nullopt);
+    placed.mPanels[0].mPosition = {MaxAcrossMeters, -0.2f, -MinAwayMeters};
+    const auto facing = BuildLayout({.mOpen = true, .mPage = Page::Position, .mPanel = 100}, placed);
+    Check(FindTarget(facing, CommandKind::MoveAcross, 100, -1) >= 0 && FindTarget(facing, CommandKind::MoveAcross, 100, 1) < 0
+        && FindTarget(facing, CommandKind::MoveAway, 100, -1) < 0 && FindTarget(facing, CommandKind::MoveAway, 100, 1) >= 0
+        && FindTarget(facing, CommandKind::MoveUp, 100, 1) >= 0,
+      "at the right-hand limit no further right; at the nearest no nearer");
+    Check(FindTarget(facing, CommandKind::ToggleFaceMe, 100) >= 0 && FindTarget(facing, CommandKind::Turn, 100, 1) < 0,
+      "facing you: Face me, no Turn or Tilt (as the settings window)");
+    const auto byHand = BuildLayout({.mOpen = true, .mPage = Page::Position, .mPanel = 101}, placed);
+    Check(FindTarget(byHand, CommandKind::Turn, 101, 1) >= 0 && FindTarget(byHand, CommandKind::Tilt, 101, -1) >= 0,
+      "set by hand: Turn and Tilt");
+    const auto settingsPage = BuildLayout({.mOpen = true, .mPage = Page::Settings}, placed);
+    Check(FindTarget(settingsPage, CommandKind::ShowPosition, KeyboardID) >= 0,
+      "Settings: Keyboard position");
+    auto keyboardOff = placed;
+    keyboardOff.mKeyboard = false;
+    Check(FindTarget(BuildLayout({.mOpen = true, .mPage = Page::Settings}, keyboardOff), CommandKind::ShowPosition, KeyboardID) < 0,
+      "with the keyboard off, Keyboard position is greyed out");
   });
 
   Scenario("Where commands take the menu", [] {
@@ -210,6 +244,13 @@ int main() {
     Check(state.mFirst == 3, "scrolling down 3 rows");
     state = Navigate(state, {CommandKind::PickWindow, 4}, data);
     Check(state.mPage == Page::Panel && state.mPanel == 103, "picking a window: back to its panel");
+    state = Navigate(state, {CommandKind::ShowPosition, 103}, data);
+    Check(state.mPage == Page::Position && state.mPanel == 103, "Position: that panel's");
+    state = Navigate(state, {CommandKind::ToggleSmallSteps}, data);
+    state = Navigate(state, {CommandKind::MoveAcross, 103, 1}, data);
+    Check(state.mPage == Page::Position && state.mSmallSteps, "small steps on; a move stays on the page");
+    state = Navigate(state, {CommandKind::Back}, data);
+    Check(state.mPage == Page::Panel && state.mPanel == 103, "Back from a panel's position: its page");
     state = Navigate(state, {CommandKind::ShowWindows, 103}, data);
     state = Navigate(state, {CommandKind::Back}, data);
     Check(state.mPage == Page::Panel, "Back from the windows: the panel");
@@ -219,6 +260,10 @@ int main() {
     state = Navigate(state, {CommandKind::SwitchProfile, 1}, data);
     Check(state.mPage == Page::Home, "switching profile: back to the start");
     state = Navigate(state, {CommandKind::ShowSettings}, data);
+    state = Navigate(state, {CommandKind::ShowPosition, KeyboardID}, data);
+    Check(state.mPage == Page::Position && state.mPanel == KeyboardID, "Keyboard position: the keyboard's");
+    state = Navigate(state, {CommandKind::Back}, data);
+    Check(state.mPage == Page::Settings, "Back from the keyboard's position: Settings");
     state = Navigate(state, {CommandKind::Close}, data);
     Check(!state.mOpen, "Close");
     state = Navigate(state, {CommandKind::Open}, data);
@@ -351,24 +396,34 @@ int main() {
   Scenario("\"quickMenu\" in settings.json", [] {
     using Host::QuickMenuSettings;
     const auto defaults = Host::QuickMenuConfig::Read(JsonUtil::Json::object());
-    Check(defaults == QuickMenuSettings {}, "missing: the defaults (button on, 45 cm, 25 cm below, 35 degrees right, tilted 35)");
-    auto odd = JsonUtil::Json::parse(R"({"quickMenu": {"button": false, "distanceCentimeters": 500, "heightCentimeters": -99,
-      "turnDegrees": "left", "tiltDegrees": 30, "future": 1}})");
+    Check(defaults == QuickMenuSettings {} && defaults.mWidthMeters == QuickMenuSettings::MinWidth,
+      "missing: the defaults (button on, 45 cm away, 25 cm below, 35 degrees right, tilted 35, 256 mm wide)");
+    auto odd = JsonUtil::Json::parse(R"({"quickMenu": {"button": false, "widthMeters": 0.1, "position": [0, -9, -0.3],
+      "pitchDegrees": "up", "brightness": 7, "tintColor": "#00FF00", "future": 1}})");
     const auto read = Host::QuickMenuConfig::Read(odd);
-    Check(!read.mButton && read.mDistanceCentimeters == QuickMenuSettings::MaxDistance
-        && read.mHeightCentimeters == QuickMenuSettings::MinHeight && read.mTurnDegrees == QuickMenuSettings {}.mTurnDegrees
-        && read.mTiltDegrees == 30,
-      "out of range: the nearest limit; not a number: the default");
+    Check(!read.mButton && read.mWidthMeters == QuickMenuSettings::MinWidth && read.mPlacement.mPosition[1] == -MaxUpDownMeters
+        && read.mPlacement.mPitchDegrees == QuickMenuSettings::DefaultPlacement().mPitchDegrees
+        && read.mPlacement.mBrightness == 1.0f && read.mPlacement.mTintColor == 0x00FF00,
+      "a panel's settings: out of range the nearest limit, not a number the default, never narrower than 256 mm (DU-6)");
     Check(Host::QuickMenuConfig::Read(JsonUtil::Json::parse(R"({"quickMenu": 7})")) == QuickMenuSettings {},
       "not an object: the defaults");
     auto changed = read;
-    changed.mTurnDegrees = 20;
+    changed.mPlacement.mYawDegrees = 20;
+    changed.mWidthMeters = 0.3f;
     Host::QuickMenuConfig::Write(odd, changed);
     Check(Host::QuickMenuConfig::Read(odd) == changed && odd["quickMenu"].contains("future"),
       "written and read back; a key this version doesn't know is kept");
+    auto round19 = JsonUtil::Json::parse(R"({"quickMenu": {"button": true, "distanceCentimeters": 60, "heightCentimeters": 10,
+      "turnDegrees": 20, "tiltDegrees": 10}})");
+    const auto migrated = Host::QuickMenuConfig::Read(round19);
+    Check(migrated.mPlacement == Host::PanelPlacementConfig::FromDistance(60, 10, 20, 10),
+      "test round 19's distance, height, turn and tilt: the same place");
+    Host::QuickMenuConfig::Write(round19, migrated);
+    Check(!round19["quickMenu"].contains("turnDegrees") && round19["quickMenu"].contains("position"), "saved as a panel's settings");
     QuickMenuSettings bad;
-    bad.mDistanceCentimeters = std::numeric_limits<float>::quiet_NaN();
-    Check(Host::QuickMenuConfig::Clean(bad).mDistanceCentimeters == QuickMenuSettings {}.mDistanceCentimeters, "NaN: the default");
+    bad.mPlacement.mPosition[0] = std::numeric_limits<float>::quiet_NaN();
+    Check(Host::QuickMenuConfig::Clean(bad).mPlacement.mPosition[0] == QuickMenuSettings::DefaultPlacement().mPosition[0],
+      "NaN: the default");
   });
 
   Scenario("Its panel: low on the right, sized by its pixels, after the keyboard", [] {
@@ -386,6 +441,12 @@ int main() {
     Check(std::abs(open.mWidth - 0.256f) < 0.0001f && std::abs(open.mHeight - 0.224f) < 0.0001f
         && std::abs(closed.mWidth - 0.04f) < 0.0001f,
       "sized by its pixels: 640 x 560 is 256 x 224 mm; the button 40 mm");
+    Host::QuickMenuSettings wider;
+    wider.mWidthMeters = 0.384f;
+    const auto bigger = Host::QuickMenuPanel(wider);
+    Check(std::abs(Host::PanelSizeFor(bigger, Width, 560).mHeight - 0.336f) < 0.0001f
+        && std::abs(Host::PanelSizeFor(bigger, ButtonSize, ButtonSize).mWidth - 0.06f) < 0.0001f,
+      "50% wider: the menu and its button grow alike (targets 30 mm)");
     Host::PanelDefinition plain;
     plain.mWidthMeters = 0.5f;
     Check(std::abs(Host::PanelSizeFor(plain, 1000, 500).mHeight - 0.25f) < 0.0001f, "other panels: still their width");

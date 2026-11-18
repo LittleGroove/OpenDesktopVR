@@ -8,6 +8,8 @@
 #include <OpenDesktopVR/ImageFile.hpp>
 #include <OpenDesktopVR/ProcessUtil.hpp>
 #include <OpenDesktopVR/Log.hpp>
+#include <OpenDesktopVR/PanelPlacement.hpp>
+#include <OpenDesktopVR/QuickMenu.hpp>
 #include <OpenDesktopVR/Product.hpp>
 #include <OpenDesktopVR/StringUtil.hpp>
 #include <OpenDesktopVR/Theme.hpp>
@@ -25,6 +27,7 @@
 #include <cmath>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <numbers>
 #include <utility>
 
@@ -158,6 +161,94 @@ bool DragPixels(const char* label, uint32_t* pixels, uint32_t maximum) {
   }
   *pixels = static_cast<uint32_t>(std::max(value, 0));
   return true;
+}
+
+// "Where it is" and "How it looks": a panel's, and the same controls for
+// the keyboard and the quick menu (test round 19: they're in VR too, so
+// they're placed and styled the same way)
+struct PlacementOptions {
+  const char* mHeading {"Where it is"};
+  float mMinWidthCm {5.0f};
+  float mMaxWidthCm {500.0f};
+  const char* mWidthHelp {"Its height follows the window's shape."};
+  bool mLimitHeight {true};// PN-14's box: for windows that might get tall
+};
+
+bool PlacementControls(PanelDefinition& panel, const PlacementOptions& options) {
+  using namespace QuickMenu;
+  bool changed = false;
+  ImGui::SeparatorText(options.mHeading);
+  ImGui::TextDisabled("From where your head was when you last recentered.");
+  ImGui::TextDisabled("Drag a number left or right. Shift: faster. Alt: finer. Double-click: type.");
+  changed |= DragCentimetres("Left / right", &panel.mPosition[0], -MaxAcrossMeters * 100, MaxAcrossMeters * 100);
+  changed |= DragCentimetres("Down / up", &panel.mPosition[1], -MaxUpDownMeters * 100, MaxUpDownMeters * 100);
+  float distance = -panel.mPosition[2];
+  if (DragCentimetres("Distance", &distance, MinAwayMeters * 100, MaxAwayMeters * 100)) {
+    panel.mPosition[2] = -distance;
+    changed = true;
+  }
+  changed |= DragCentimetres("Width", &panel.mWidthMeters, options.mMinWidthCm, options.mMaxWidthCm);
+  Help(options.mWidthHelp);
+  if (options.mLimitHeight) {
+    bool limitHeight = panel.mMaxHeightMeters > 0;
+    if (ImGui::Checkbox("Limit its height", &limitHeight)) {
+      panel.mMaxHeightMeters = limitHeight ? std::max(0.05f, panel.mWidthMeters * 0.75f) : 0.0f;
+      changed = true;
+    }
+    Help("For a window that might get tall: the panel shrinks to fit this height, keeping its shape.");
+    if (limitHeight) {
+      changed |= DragCentimetres("Height at most", &panel.mMaxHeightMeters, 5.0f, 500.0f);
+    }
+  }
+  bool faceMe = panel.mFaceOrigin;
+  if (ImGui::Checkbox("Face me", &faceMe)) {
+    if (!faceMe) {
+      // Start from the way it faces now, so it doesn't jump
+      const auto facing = FacingOrigin(panel.mPosition);
+      panel.mYawDegrees = facing.mYawDegrees;
+      panel.mPitchDegrees = facing.mPitchDegrees;
+    }
+    panel.mFaceOrigin = faceMe;
+    changed = true;
+  }
+  Help("Turns and tilts it toward your head wherever you put it. Untick it to set the angles yourself.");
+  if (!panel.mFaceOrigin) {
+    changed |= DragDegrees("Turn", &panel.mYawDegrees, -MaxTurnDegrees, MaxTurnDegrees, Clamp | ImGuiSliderFlags_WrapAround);
+    Help("Positive turns it to its left.");
+    changed |= DragDegrees("Tilt", &panel.mPitchDegrees, -MaxTiltDegrees, MaxTiltDegrees);
+    Help("Positive tilts its top away from you, so it faces up: for something below your eyes.");
+  }
+  return changed;
+}
+
+struct LookOptions {
+  const char* mHeading {"How it looks"};
+  // Its own opacity controls instead of a panel's two (the keyboard's, K9)
+  std::function<bool()> mOpacity;
+};
+
+bool LookControls(PanelDefinition& panel, const LookOptions& options) {
+  bool changed = false;
+  ImGui::SeparatorText(options.mHeading);
+  if (options.mOpacity) {
+    changed |= options.mOpacity();
+  } else {
+    changed |= DragPercent("Opacity", &panel.mOpacity);
+    changed |= DragPercent("When you look at it", &panel.mFocusedOpacity);
+    Help("Its opacity while your head points at it. Set Opacity lower and this higher to see through it until you look.");
+  }
+  changed |= DragPercent("Brightness", &panel.mBrightness);
+  changed |= ImGui::Checkbox("Tint", &panel.mTintEnabled);
+  ImGui::SameLine();
+  float tint[3] {static_cast<float>((panel.mTintColor >> 16) & 0xFF) / 255.0f,
+    static_cast<float>((panel.mTintColor >> 8) & 0xFF) / 255.0f, static_cast<float>(panel.mTintColor & 0xFF) / 255.0f};
+  if (ImGui::ColorEdit3("Tint colour", tint, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
+    const auto byte = [](float v) { return static_cast<uint32_t>(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)); };
+    panel.mTintColor = (byte(tint[0]) << 16) | (byte(tint[1]) << 8) | byte(tint[2]);
+    changed = true;
+  }
+  Help("A colour over it, for night flying. Click the colour to change it.");
+  return changed;
 }
 
 }// namespace
@@ -933,46 +1024,7 @@ void SettingsWindow::PanelDetails(PanelDefinition panel) {
     changed |= ImGui::Checkbox("Animated", &panel.mAnimated);
   }
 
-  ImGui::SeparatorText("Where it is");
-  ImGui::TextDisabled("From where your head was when you last recentered.");
-  ImGui::TextDisabled("Drag a number left or right. Shift: faster. Alt: finer. Double-click: type.");
-  changed |= DragCentimetres("Left / right", &panel.mPosition[0], -500.0f, 500.0f);
-  changed |= DragCentimetres("Down / up", &panel.mPosition[1], -300.0f, 300.0f);
-  float distance = -panel.mPosition[2];
-  if (DragCentimetres("Distance", &distance, 10.0f, 1000.0f)) {
-    panel.mPosition[2] = -distance;
-    changed = true;
-  }
-  changed |= DragCentimetres("Width", &panel.mWidthMeters, 5.0f, 500.0f);
-  Help("Its height follows the window's shape.");
-  // PN-14: a box, the content keeping its shape inside it
-  bool limitHeight = panel.mMaxHeightMeters > 0;
-  if (ImGui::Checkbox("Limit its height", &limitHeight)) {
-    panel.mMaxHeightMeters = limitHeight ? std::max(0.05f, panel.mWidthMeters * 0.75f) : 0.0f;
-    changed = true;
-  }
-  Help("For a window that might get tall: the panel shrinks to fit this height, keeping its shape.");
-  if (limitHeight) {
-    changed |= DragCentimetres("Height at most", &panel.mMaxHeightMeters, 5.0f, 500.0f);
-  }
-  bool faceMe = panel.mFaceOrigin;
-  if (ImGui::Checkbox("Face me", &faceMe)) {
-    if (!faceMe) {
-      // Start from the way it faces now, so it doesn't jump
-      const auto facing = FacingOrigin(panel.mPosition);
-      panel.mYawDegrees = facing.mYawDegrees;
-      panel.mPitchDegrees = facing.mPitchDegrees;
-    }
-    panel.mFaceOrigin = faceMe;
-    changed = true;
-  }
-  Help("Turns and tilts the panel toward your head wherever you put it. Untick it to set the angles yourself.");
-  if (!panel.mFaceOrigin) {
-    changed |= DragDegrees("Turn", &panel.mYawDegrees, -180.0f, 180.0f, Clamp | ImGuiSliderFlags_WrapAround);
-    Help("Positive turns it to its left.");
-    changed |= DragDegrees("Tilt", &panel.mPitchDegrees, -90.0f, 90.0f);
-    Help("Positive tilts its top away from you, so it faces up: for a panel below your eyes.");
-  }
+  changed |= PlacementControls(panel, {});
 
   if (isWindow) {
     ImGui::SeparatorText("Trim the edges");
@@ -1006,21 +1058,7 @@ void SettingsWindow::PanelDetails(PanelDefinition panel) {
     ImGui::EndDisabled();
   }
 
-  ImGui::SeparatorText("How it looks");
-  changed |= DragPercent("Opacity", &panel.mOpacity);
-  changed |= DragPercent("When you look at it", &panel.mFocusedOpacity);
-  Help("Its opacity while your head points at it. Set Opacity lower and this higher to see through it until you look.");
-  changed |= DragPercent("Brightness", &panel.mBrightness);
-  changed |= ImGui::Checkbox("Tint", &panel.mTintEnabled);
-  ImGui::SameLine();
-  float tint[3] {static_cast<float>((panel.mTintColor >> 16) & 0xFF) / 255.0f,
-    static_cast<float>((panel.mTintColor >> 8) & 0xFF) / 255.0f, static_cast<float>(panel.mTintColor & 0xFF) / 255.0f};
-  if (ImGui::ColorEdit3("Tint colour", tint, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
-    const auto byte = [](float v) { return static_cast<uint32_t>(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)); };
-    panel.mTintColor = (byte(tint[0]) << 16) | (byte(tint[1]) << 8) | byte(tint[2]);
-    changed = true;
-  }
-  Help("A colour over the panel, for night flying. Click the colour to change it.");
+  changed |= LookControls(panel, {});
   ImGui::TextDisabled("Keybinds for this panel (show or hide, brighter, dimmer, tint) are on the Keybinds tab.");
 
   // Doc 05, doc 09 "Interaction"
@@ -2169,27 +2207,40 @@ void SettingsWindow::KeyboardSettingsUi(bool handsEnabled) {
   }
   ImGui::Checkbox("Hide after Enter", &keyboard.mHideAfterEnter);
   Help("Off by default: in chat apps Enter sends a message, and you usually carry on typing.");
-  ImGui::SliderFloat("Distance from your eyes", &keyboard.mDistanceCentimeters, KeyboardSettings::MinDistance,
-    KeyboardSettings::MaxDistance, "%.0f cm", Clamp);
-  Help("Too close is hard to focus on. Far enough to rest your eyes, near enough to reach: about 45 to 55 cm.");
-  ImGui::SliderFloat("Below your eyes", &keyboard.mHeightCentimeters, KeyboardSettings::MinHeight,
-    KeyboardSettings::MaxHeight, "%.0f cm", Clamp);
-  ImGui::SliderFloat("Tilt", &keyboard.mTiltDegrees, KeyboardSettings::MinTilt, KeyboardSettings::MaxTilt,
-    "%.0f\xC2\xB0", Clamp);
-  Help("0 stands it upright; more tilts it back like a laptop's keyboard.");
-  ImGui::SliderFloat("Key size", &keyboard.mKeyMillimeters, KeyboardSettings::MinKey, KeyboardSettings::MaxKey,
-    "%.0f mm", Clamp);
-  Help("From one key to the next. Bigger keys are easier to hit; the keyboard gets wider.");
-  DragPercent("Opacity while typing", &keyboard.mTypingOpacity);
-  DragPercent("Opacity otherwise", &keyboard.mIdleOpacity);
+  // Where it is and how it looks: a panel's controls (test round 19), its
+  // width standing for its key size
+  ImGui::PushID("keyboard");
+  auto definition = KeyboardPanel(keyboard);
+  const float widthBefore = definition.mWidthMeters;
+  PlacementControls(definition,
+    {.mHeading = "Where the keyboard is",
+      .mMinWidthCm = KeyboardWidthMeters(KeyboardSettings::MinKey) * 100.0f,
+      .mMaxWidthCm = KeyboardWidthMeters(KeyboardSettings::MaxKey) * 100.0f,
+      .mWidthHelp = "Wider makes the keys bigger and easier to hit. Far enough to rest your eyes, near enough to "
+                    "reach: about 45 to 55 cm away.",
+      .mLimitHeight = false});
+  ImGui::TextDisabled("Keys %.1f mm apart.", keyboard.mKeyMillimeters);
+  LookControls(definition, {.mHeading = "How the keyboard looks", .mOpacity = [&keyboard] {
+    // K9: its own two, not a panel's
+    bool changed = DragPercent("Opacity while typing", &keyboard.mTypingOpacity);
+    changed |= DragPercent("Opacity otherwise", &keyboard.mIdleOpacity);
+    return changed;
+  }});
+  ImGui::PopID();
   ImGui::EndDisabled();
   ImGui::EndDisabled();
   ImGui::PopItemWidth();
-  // Whole steps, as the sliders show them
-  keyboard.mDistanceCentimeters = std::round(keyboard.mDistanceCentimeters);
-  keyboard.mHeightCentimeters = std::round(keyboard.mHeightCentimeters);
-  keyboard.mTiltDegrees = std::round(keyboard.mTiltDegrees);
-  keyboard.mKeyMillimeters = std::round(keyboard.mKeyMillimeters);
+  const float typingOpacity = keyboard.mTypingOpacity;
+  const float idleOpacity = keyboard.mIdleOpacity;
+  keyboard.mPlacement = PanelPlacementConfig::From(definition);
+  keyboard.mTypingOpacity = typingOpacity;
+  keyboard.mIdleOpacity = idleOpacity;
+  if (definition.mWidthMeters != widthBefore) {
+    // Only when the width moved: a round trip through millimetres isn't
+    // exact, and a change every frame would save every frame
+    keyboard.mKeyMillimeters = std::clamp(std::round(KeyMillimetersFor(definition.mWidthMeters) * 10.0f) / 10.0f,
+      KeyboardSettings::MinKey, KeyboardSettings::MaxKey);
+  }
   if (!(keyboard == mPanels.Keyboard())) {
     mPanels.SetKeyboard(keyboard);
   }
@@ -2204,34 +2255,31 @@ void SettingsWindow::QuickMenuSettingsUi(bool handsEnabled) {
   ImGui::PushItemWidth(ImGui::GetFontSize() * 14);
   ImGui::BeginDisabled(!handsEnabled);
   ImGui::TextWrapped(
-    "A menu you tap in VR: show and hide panels, change their look, size and distance, recenter, and switch "
-    "profile. Its keybind opens it too (Keybinds tab).");
+    "A menu you tap in VR: show and hide panels, change their look, size and position, move the keyboard, "
+    "recenter, and switch profile. Its keybind opens it too (Keybinds tab).");
   ImGui::Checkbox("Show its button while it's closed", &menu.mButton);
   Help("A small round button where the menu opens. Tap it to open the menu. Off, only the keybind opens it.");
-  ImGui::SliderFloat("Distance##menu", &menu.mDistanceCentimeters, QuickMenuSettings::MinDistance,
-    QuickMenuSettings::MaxDistance, "%.0f cm", Clamp);
-  ImGui::SliderFloat("Below your eyes##menu", &menu.mHeightCentimeters, QuickMenuSettings::MinHeight,
-    QuickMenuSettings::MaxHeight, "%.0f cm", Clamp);
-  // Shown as left and right; stored with left positive
-  float right = -menu.mTurnDegrees;
-  if (ImGui::SliderFloat("To your right##menu", &right, -QuickMenuSettings::MaxTurn, QuickMenuSettings::MaxTurn,
-        "%.0f\xC2\xB0", Clamp)) {
-    menu.mTurnDegrees = -right;
-  }
-  Help("How far round from straight ahead. Below zero puts it on your left.");
-  ImGui::SliderFloat("Tilt##menu", &menu.mTiltDegrees, QuickMenuSettings::MinTilt, QuickMenuSettings::MaxTilt,
-    "%.0f\xC2\xB0", Clamp);
   if (ImGui::Button("Open it now") && mOpenQuickMenu) {
     mOpenQuickMenu();
   }
   Help("Opens the menu in VR, to see where it is.");
+  // Where it is and how it looks: a panel's controls (test round 19), set
+  // here only (moving the menu you're tapping would be awkward)
+  ImGui::PushID("menu");
+  auto definition = QuickMenuPanel(menu);
+  PlacementControls(definition,
+    {.mHeading = "Where the menu is",
+      .mMinWidthCm = QuickMenuSettings::MinWidth * 100.0f,
+      .mMaxWidthCm = QuickMenuSettings::MaxWidth * 100.0f,
+      .mWidthHelp = "The open menu's width; its height follows each page. It can't be narrower: its buttons stay at "
+                    "least 20 mm across.",
+      .mLimitHeight = false});
+  LookControls(definition, {.mHeading = "How the menu looks"});
+  ImGui::PopID();
   ImGui::EndDisabled();
   ImGui::PopItemWidth();
-  // Whole steps, as the sliders show them
-  menu.mDistanceCentimeters = std::round(menu.mDistanceCentimeters);
-  menu.mHeightCentimeters = std::round(menu.mHeightCentimeters);
-  menu.mTurnDegrees = std::round(menu.mTurnDegrees);
-  menu.mTiltDegrees = std::round(menu.mTiltDegrees);
+  menu.mPlacement = PanelPlacementConfig::From(definition);
+  menu.mWidthMeters = definition.mWidthMeters;
   if (!(menu == mPanels.QuickMenu())) {
     mPanels.SetQuickMenu(menu);
   }

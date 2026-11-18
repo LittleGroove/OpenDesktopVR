@@ -11,7 +11,9 @@
 //   ignored if that panel has gone (DU-2);
 // - opens and closes the menu: its button, its keybind, its close button;
 // - the Windows page's list is made on a worker (window enumeration stays
-//   off the UI thread, ADR-020), checked every 100 ms until it's there.
+//   off the UI thread, ADR-020), checked every 100 ms until it's there;
+// - the Position page (test round 19) moves a panel, or the keyboard, which
+//   shows while its Position page is open so you can see where it goes.
 // Every message is caught (TH-8).
 #pragma once
 
@@ -28,6 +30,7 @@
 #include <Windows.h>
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -51,11 +54,20 @@ class QuickMenuController {
   // Runs a command as if it were tapped (UI thread; tests and tools)
   void Run(const QuickMenu::Command& command);
 
+  // Shows (true) or hides (false) the keyboard while its Position page is
+  // open; showing returns false if it was already showing (then it's left
+  // showing afterwards)
+  void SetKeyboardPreview(std::function<bool(bool show)> preview) {
+    mKeyboardPreview = std::move(preview);
+  }
+
  private:
   static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
   void TakeCommands();
   void RunOnPanel(const QuickMenu::Command& command);
   void RunSetting(const QuickMenu::Command& command);
+  void RunPosition(const QuickMenu::Command& command);
+  void PreviewKeyboard();
   void Rebuild();
   QuickMenu::MenuData Gather() const;
   void StartListing();
@@ -77,6 +89,9 @@ class QuickMenuController {
   bool mHaveWindows {false};
   Events::Subscription mChanged;
   bool mRebuilding {false};
+  std::function<bool(bool)> mKeyboardPreview;
+  bool mPreviewing {false};    // the keyboard's Position page is open
+  bool mPreviewShowed {false}; // and showed the keyboard
 };
 
 }// namespace OpenDesktopVR::Host

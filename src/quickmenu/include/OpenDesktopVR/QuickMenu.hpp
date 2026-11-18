@@ -10,11 +10,15 @@
 // - what a touch does (MenuPointer): a target acts when the finger lifts
 //   off the same target it pressed; sliding off first cancels (DU-7);
 // - where a command takes the menu (Navigate): pages and list scrolling.
+// The Position page (test round 19) moves a panel or the keyboard with the
+// same settings the settings window has: left and right, down and up,
+// distance, facing, turn and tilt.
 // Commands that change the host's state (show a panel, switch profile) are
 // for the host's controller to run; this only says which.
 // Closed, the menu is a 40 mm button that opens it.
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -39,11 +43,25 @@ inline constexpr float MinLevel = 0.1f; // never invisible
 inline constexpr float SizeStepFactor = 1.1f;
 inline constexpr float MinWidthMeters = 0.1f;
 inline constexpr float MaxWidthMeters = 3.0f;
-inline constexpr float DistanceStepMeters = 0.05f;
-inline constexpr float MinDistanceMeters = 0.25f;
-inline constexpr float MaxDistanceMeters = 5.0f;
 
-enum class Page : uint8_t { Home, Panel, Windows, Profiles, Settings };
+// Where panels can go, from where the head was at the last recenter: the
+// settings window's limits too
+inline constexpr float MaxAcrossMeters = 5.0f;// left or right
+inline constexpr float MaxUpDownMeters = 3.0f;
+inline constexpr float MinAwayMeters = 0.1f;  // distance ahead
+inline constexpr float MaxAwayMeters = 10.0f;
+inline constexpr float MaxTurnDegrees = 180.0f;
+inline constexpr float MaxTiltDegrees = 90.0f;
+// The Position page's steps, big and small
+inline constexpr float StepMeters = 0.05f;
+inline constexpr float SmallStepMeters = 0.01f;
+inline constexpr float StepDegrees = 5.0f;
+inline constexpr float SmallStepDegrees = 1.0f;
+
+// The keyboard, as the Position page's target (the host's KeyboardPanelID)
+inline constexpr uint64_t KeyboardID = 0x6B6579626F617264ull;
+
+enum class Page : uint8_t { Home, Panel, Windows, Profiles, Settings, Position };
 
 enum class CommandKind : uint8_t {
   None,
@@ -53,6 +71,7 @@ enum class CommandKind : uint8_t {
   Back,
   ShowPanelPage,// mArg: the panel's ID
   ShowWindows,  // for the Panel page's panel
+  ShowPosition, // mArg: the panel's ID, or KeyboardID
   ShowProfiles,
   ShowSettings,
   PreviousRows, // a list's previous or next rows
@@ -64,12 +83,19 @@ enum class CommandKind : uint8_t {
   Recenter,
   SwitchProfile,// mArg: the index in MenuData::mProfiles
   PickWindow,   // mArg: the index in MenuData::mWindows
-  // The Panel page's panel, by mStep (-1 or +1)
+  // The Panel page's panel (mArg), by mStep (-1 or +1)
   Opacity,
   Brightness,
   ToggleTint,
   Size,
-  Distance,
+  // The Position page's panel or keyboard (mArg), by mStep steps
+  MoveAcross,// + to the right
+  MoveUp,
+  MoveAway,// + farther
+  ToggleFaceMe,
+  Turn,// + to its left, as the settings window's Turn
+  Tilt,// + its top away
+  ToggleSmallSteps,
   // Settings
   ToggleKeyboard,
   UpdateRate,// mStep
@@ -97,7 +123,11 @@ struct PanelInfo {
   float mBrightness {1.0f};
   bool mTint {false};
   float mWidthMeters {0.36f};
-  float mDistanceMeters {0.6f};
+  // Where it is (the Position page)
+  std::array<float, 3> mPosition {0, 0, -0.6f};
+  bool mFaceOrigin {true};
+  float mYawDegrees {0};
+  float mPitchDegrees {0};
   bool operator==(const PanelInfo&) const = default;
 };
 
@@ -120,6 +150,8 @@ struct MenuData {
   std::wstring mProfileName;
   bool mAnyShowing {false};
   bool mKeyboard {true};
+  // Where the keyboard is (its Position page); its ID is KeyboardID
+  PanelInfo mKeyboardPlacement {.mID = KeyboardID, .mName = L"Keyboard"};
   int mUpdateRate {30};
   bool mSlowerRate {true};// a slower or faster update rate exists
   bool mFasterRate {true};
@@ -133,8 +165,9 @@ struct MenuData {
 struct MenuState {
   bool mOpen {false};
   Page mPage {Page::Home};
-  uint64_t mPanel {0};    // the Panel and Windows pages' panel
+  uint64_t mPanel {0};    // the Panel, Windows and Position pages' panel
   std::size_t mFirst {0}; // a list's first row shown
+  bool mSmallSteps {false};// the Position page's
   bool operator==(const MenuState&) const = default;
 };
 

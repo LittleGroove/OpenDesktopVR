@@ -358,6 +358,11 @@ int main() {
     Check(WindowsVersion().starts_with("Windows"), std::format("Windows: {}", WindowsVersion()));
     const auto environment = CheckEnvironment();
     Check(!environment.mFacts.empty(), std::format("environment checked ({} problems here)", environment.mProblems.size()));
+    Check(ChosenCompatibilityModes("DetectorsAppHealth").empty() && ChosenCompatibilityModes("~ DetectorsAppHealth").empty(),
+      "Windows' own DetectorsAppHealth isn't a compatibility mode anyone chose (test rounds 18 and 19)");
+    Check(ChosenCompatibilityModes("~ WIN7RTM") == "WIN7RTM"
+        && ChosenCompatibilityModes("DetectorsAppHealth WIN8RTM HIGHDPIAWARE") == "WIN8RTM HIGHDPIAWARE",
+      "chosen modes still are, beside it");
   });
 
   return Testing::Finish();

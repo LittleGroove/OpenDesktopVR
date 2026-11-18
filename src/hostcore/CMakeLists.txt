@@ -18,6 +18,7 @@ odvr_module(
   KeyboardConfig.cpp
   KeyboardService.cpp
   QuickMenuConfig.cpp
+  PanelPlacement.cpp
   QuickMenuModel.cpp
   QuickMenuSource.cpp
   QuickMenuHands.cpp

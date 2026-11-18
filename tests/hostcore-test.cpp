@@ -323,21 +323,35 @@ int main() {
     const auto defaults = KeyboardConfig::Read(settings);
     Check(defaults.mEnabled && defaults.mPrimaryLayout.empty() && defaults.mFunctionRow && !defaults.mHideAfterEnter,
       "on, \"My Windows layouts\", function row, Enter doesn't hide (K6, K8, K10)");
-    Check(defaults.mDistanceCentimeters == 50 && defaults.mKeyMillimeters == 24, "50 cm away, 24 mm keys (doc 07)");
+    Check(defaults.mPlacement == KeyboardSettings::DefaultPlacement() && defaults.mKeyMillimeters == 24,
+      "50 cm away, 30 cm below the eyes, tilted 45, 24 mm keys (doc 07, Q7)");
     KeyboardSettings changed;
     changed.mPrimaryLayout = "00000407";
     changed.mSecondaryLayout = "00000409";
     changed.mClickVolume = 0;
     changed.mHideAfterEnter = true;
-    changed.mTiltDegrees = 30;
+    changed.mPlacement.mPitchDegrees = 30;
+    changed.mPlacement.mPosition[0] = 0.12f;
+    changed.mPlacement.mBrightness = 0.5f;
+    changed.mPlacement.mTintEnabled = true;
     KeyboardConfig::Write(settings, changed);
-    Check(KeyboardConfig::Read(settings) == changed, "a changed keyboard round-trips");
-    settings["keyboard"]["distanceCentimeters"] = 500;
+    Check(KeyboardConfig::Read(settings) == changed, "a changed keyboard round-trips, its placement and look too (test round 19)");
+    settings["keyboard"]["position"] = JsonUtil::Json::array({9, 0, 0.5});
     settings["keyboard"]["keyMillimeters"] = "big";
     settings["keyboard"]["primaryLayout"] = "../../evil";
     const auto odd = KeyboardConfig::Read(settings);
-    Check(odd.mDistanceCentimeters == KeyboardSettings::MaxDistance && odd.mKeyMillimeters == 24 && odd.mPrimaryLayout.empty(),
-      "too far is the farthest; not a number is the default; not a layout ID is none");
+    Check(odd.mPlacement.mPosition[0] == 5.0f && std::abs(odd.mPlacement.mPosition[2] + 0.1f) < 0.0001f
+        && odd.mKeyMillimeters == 24 && odd.mPrimaryLayout.empty(),
+      "5 m to the side at most, never behind; not a number is the default; not a layout ID is none");
+
+    auto old = JsonUtil::Json::parse(R"({"keyboard": {"distanceCentimeters": 60, "heightCentimeters": 20, "tiltDegrees": 30}})");
+    const auto migrated = KeyboardConfig::Read(old);
+    Check(migrated.mPlacement == PanelPlacementConfig::FromDistance(60, 20, 0, 30),
+      "an older file's distance, height and tilt: the same place, as a panel's settings");
+    KeyboardConfig::Write(old, migrated);
+    Check(!old["keyboard"].contains("distanceCentimeters") && !old["keyboard"].contains("tiltDegrees")
+        && old["keyboard"].contains("position") && KeyboardConfig::Read(old) == migrated,
+      "saved as a panel's settings; the old ones go");
   });
 
   Scenario("The keyboard's panel: below the eyes, at its distance, tilted up, sized by its keys (doc 07, Q7)", [] {

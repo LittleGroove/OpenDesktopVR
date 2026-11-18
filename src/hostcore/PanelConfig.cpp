@@ -38,7 +38,12 @@ bool Finite(float v) {
   return std::isfinite(v);
 }
 
-// "#RRGGBB"
+}// namespace
+
+std::string FormatColor(uint32_t rgb) {
+  return std::format("#{:06X}", rgb & 0xFFFFFF);
+}
+
 std::optional<uint32_t> ParseColor(const std::string& text) {
   if (text.size() != 7 || text[0] != '#') {
     return std::nullopt;
@@ -59,8 +64,6 @@ std::optional<uint32_t> ParseColor(const std::string& text) {
   }
   return value;
 }
-
-}// namespace
 
 std::optional<PanelDefinition> FromJson(const Json& json) noexcept {
   try {
@@ -185,7 +188,7 @@ Json ToJson(const PanelDefinition& panel) {
   json["focusedOpacity"] = panel.mFocusedOpacity;
   json["brightness"] = panel.mBrightness;
   json["tintEnabled"] = panel.mTintEnabled;
-  json["tintColor"] = std::format("#{:06X}", panel.mTintColor & 0xFFFFFF);
+  json["tintColor"] = FormatColor(panel.mTintColor);
   json["keepUpdatingWhenCovered"] = panel.mKeepUpdatingWhenCovered;
   json["touch"] = panel.mTouch;
   json["scroll"] = panel.mScroll;

@@ -49,7 +49,8 @@
 //   its width and must be laid out as QuickMenu::BuildLayout says; tapping
 //   the first panel's switch hides that panel's layer and tapping it again
 //   brings it back; the close button leaves the 40 mm button, and tapping
-//   that opens the menu again.
+//   that opens the menu again. Then the first panel's row, Position, and +
+//   on Left / right: that panel's layer must move 5 cm to the right.
 // --type <text> <log>: doc 11's typing scenario (M5b). With the keyboard
 //   showing (the host's --show-keyboard) and a window panel of
 //   edit-target-app writing its text to <log>: tap the panel (where keys
@@ -2066,15 +2067,16 @@ int main(int rawArgc, char** rawArgv) {
     SaveQuad(*menu, outputDir / "quick-menu.png");
 
     poke(*menu, firstSwitch.first, firstSwitch.second);
-    checks.Check(until(2.0, [&] { return gRuntime.mQuadCount == layers - 1; }),
-      std::format("tapping the first panel's switch hid that panel ({} layers)", gRuntime.mQuadCount));
+    // Each wait runs before its message is made (argument order is unspecified)
+    bool done = until(2.0, [&] { return gRuntime.mQuadCount == layers - 1; });
+    checks.Check(done, std::format("tapping the first panel's switch hid that panel ({} layers)", gRuntime.mQuadCount));
     menu = findMenu(openWidth);
     if (menu) {
       SaveQuad(*menu, outputDir / "quick-menu-hidden.png");
       poke(*menu, firstSwitch.first, firstSwitch.second);
     }
-    checks.Check(until(2.0, [&] { return gRuntime.mQuadCount == layers; }),
-      std::format("tapping it again showed it ({} layers)", gRuntime.mQuadCount));
+    done = until(2.0, [&] { return gRuntime.mQuadCount == layers; });
+    checks.Check(done, std::format("tapping it again showed it ({} layers)", gRuntime.mQuadCount));
 
     menu = findMenu(openWidth);
     if (menu) {
@@ -2088,6 +2090,64 @@ int main(int rawArgc, char** rawArgv) {
       poke(*button, 0.5f, 0.5f);
     }
     checks.Check(until(2.0, [&] { return findMenu(openWidth).has_value(); }), "tapping the button opened it again");
+
+    // Test round 19: the first panel's Position page, and + on Left / right
+    // moves that panel 5 cm to the right (in LOCAL, which the game uses)
+    const auto pageOf = [&](const QuickMenu::MenuState& state) {
+      return QuickMenu::BuildLayout(state, data);
+    };
+    const auto middleIn = [](const QuickMenu::Layout& page, QuickMenu::CommandKind kind, int step) -> std::pair<float, float> {
+      for (const auto& item: page.mItems) {
+        if (item.mCommand.mKind == kind && item.mCommand.mStep == step && item.IsTarget()) {
+          return {((item.mRect.mLeft + item.mRect.mRight) / 2) / static_cast<float>(page.mWidth),
+            ((item.mRect.mTop + item.mRect.mBottom) / 2) / static_cast<float>(page.mHeight)};
+        }
+      }
+      return {0.5f, 0.5f};
+    };
+    const auto menuIsTall = [&](const QuickMenu::Layout& page) {
+      const auto quad = findMenu(openWidth);
+      return quad && std::abs(quad->size.height - (static_cast<float>(page.mHeight) * QuickMenu::MetersPerPixel)) < 0.003f;
+    };
+    const auto panelPage = pageOf({.mOpen = true, .mPage = QuickMenu::Page::Panel, .mPanel = 1});
+    const auto positionPage = pageOf({.mOpen = true, .mPage = QuickMenu::Page::Position, .mPanel = 1});
+    const auto row = middleIn(layout, QuickMenu::CommandKind::ShowPanelPage, 0);
+    if (const auto open = findMenu(openWidth)) {
+      poke(*open, row.first, row.second);
+    }
+    checks.Check(until(2.0, [&] { return menuIsTall(panelPage); }), "tapping the first panel's name opened its page");
+    const auto positionRow = middleIn(panelPage, QuickMenu::CommandKind::ShowPosition, 0);
+    if (const auto open = findMenu(openWidth)) {
+      poke(*open, positionRow.first, positionRow.second);
+    }
+    checks.Check(until(2.0, [&] { return menuIsTall(positionPage); }), "tapping Position opened the Position page");
+    if (const auto open = findMenu(openWidth)) {
+      SaveQuad(*open, outputDir / "quick-menu-position.png");
+    }
+    // The first panel: the one on the left (the host's first test panel)
+    const auto leftPanel = []() -> std::optional<std::pair<uint64_t, float>> {
+      for (const auto& quad: gRuntime.mQuads) {
+        if (quad.pose.position.x < -0.1f) {
+          return std::pair {FromHandle(quad.subImage.swapchain), quad.pose.position.x};
+        }
+      }
+      return std::nullopt;
+    };
+    const auto before = leftPanel();
+    const auto plus = middleIn(positionPage, QuickMenu::CommandKind::MoveAcross, 1);
+    if (const auto open = findMenu(openWidth)) {
+      poke(*open, plus.first, plus.second);
+    }
+    float moved = 0;
+    done = before && until(2.0, [&] {
+      for (const auto& quad: gRuntime.mQuads) {
+        if (FromHandle(quad.subImage.swapchain) == before->first) {
+          moved = quad.pose.position.x - before->second;
+        }
+      }
+      return std::abs(moved - QuickMenu::StepMeters) < 0.002f;
+    });
+    checks.Check(done, std::format("tapping + on Left / right moved that panel {:.1f} cm to the right (5 expected)", moved * 100));
 
     layerDestroySession(session);
     layerDestroyInstance(instance);

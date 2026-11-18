@@ -47,7 +47,7 @@ D2D1_RECT_F ToD2D(const QuickMenu::Rect& rect) {
 
 bool OpensPage(CommandKind kind) {
   return kind == CommandKind::ShowPanelPage || kind == CommandKind::ShowWindows || kind == CommandKind::ShowProfiles
-    || kind == CommandKind::ShowSettings;
+    || kind == CommandKind::ShowSettings || kind == CommandKind::ShowPosition;
 }
 
 }// namespace

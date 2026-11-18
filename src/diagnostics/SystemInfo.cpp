@@ -141,15 +141,35 @@ std::optional<bool> HardwareGpuScheduling() noexcept {
   return *mode == 2;
 }
 
+std::string ChosenCompatibilityModes(std::string_view compatLayer) {
+  std::string chosen;
+  std::size_t at = 0;
+  while (at < compatLayer.size()) {
+    const auto end = std::min(compatLayer.find(' ', at), compatLayer.size());
+    const auto word = compatLayer.substr(at, end - at);
+    at = end + 1;
+    const bool detector = word.size() >= 9 && _strnicmp(word.data(), "Detectors", 9) == 0;
+    if (word.empty() || word == "~" || detector) {
+      continue;
+    }
+    chosen += (chosen.empty() ? "" : " ") + std::string {word};
+  }
+  return chosen;
+}
+
 EnvironmentCheck CheckEnvironment() noexcept {
   EnvironmentCheck check;
   try {
     check.mFacts.push_back(std::format("Code pages: ANSI {}, OEM {}", GetACP(), GetOEMCP()));
     if (const auto layer = ProcessUtil::GetEnvironment("__COMPAT_LAYER"); layer && !layer->empty()) {
-      check.mProblems.push_back(std::format(
-        "Running in compatibility mode ({}). Open Desktop VR doesn't need it: turn it off in the program's "
-        "Properties, Compatibility tab",
-        *layer));
+      if (const auto chosen = ChosenCompatibilityModes(*layer); !chosen.empty()) {
+        check.mProblems.push_back(std::format(
+          "Running in compatibility mode ({}). Open Desktop VR doesn't need it: turn it off in the program's "
+          "Properties, Compatibility tab",
+          chosen));
+      } else {
+        check.mFacts.push_back(std::format("Windows' own compatibility shims: {} (nothing to change)", *layer));
+      }
     }
     if (GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version")) {
       check.mProblems.push_back("Running under Wine: some features may not work; carrying on");

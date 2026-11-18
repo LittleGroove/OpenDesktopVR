@@ -37,6 +37,10 @@ void WriteGlobalKeybinds(JsonUtil::Json& settings, Keybinds::ActionKind kind, co
 void Write(JsonUtil::Json& settings, std::span<const PanelDefinition> panels);
 
 std::optional<PanelDefinition> FromJson(const JsonUtil::Json& json) noexcept;
+
+// Colours as stored: "#RRGGBB"; nullopt if it isn't one
+std::optional<uint32_t> ParseColor(const std::string& text);
+std::string FormatColor(uint32_t rgb);
 JsonUtil::Json ToJson(const PanelDefinition& panel);
 
 }// namespace OpenDesktopVR::Host::PanelConfig
