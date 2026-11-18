@@ -13,6 +13,7 @@ odvr_executable(
   SettingsWindow.cpp
   KeybindService.cpp
   Support.cpp
+  QuickMenuController.cpp
   DEPS
   odvr::hostcore
   odvr::hostlink

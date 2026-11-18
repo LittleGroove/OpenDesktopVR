@@ -21,7 +21,7 @@
 
 namespace OpenDesktopVR::Host {
 
-enum class PanelKind { TestPattern, Window, Keyboard };
+enum class PanelKind { TestPattern, Window, Keyboard, QuickMenu };
 
 struct PanelDefinition {
   uint64_t mID {0};
@@ -43,6 +43,10 @@ struct PanelDefinition {
   // ... up to this (PN-14: a box; 0 for none), the width then shrinking to
   // keep the aspect
   float mMaxHeightMeters {0};
+  // Built-in menus (the quick menu, ADR-041): a fixed size per content
+  // pixel instead, so the panel grows and shrinks with its content and
+  // its targets keep their size in VR (DU-6). 0: the width above.
+  float mMetersPerPixel {0};
   double mMaxUpdatesPerSecond {0};// 0 = the global maximum
   Render::Crop mCrop;// trimmed edges in pixels (CT-12)
   // How it looks (PN-4, PN-5), applied when the host draws it (doc 08)

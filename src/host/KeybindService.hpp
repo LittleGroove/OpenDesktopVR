@@ -59,6 +59,10 @@ class KeybindService {
   void SetRecenter(std::function<void()> recenter) {
     mRecenter = std::move(recenter);
   }
+  // "Open or close the quick menu": returns whether it's now open
+  void SetQuickMenuToggle(std::function<bool()> toggle) {
+    mToggleQuickMenu = std::move(toggle);
+  }
 
  private:
   static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
@@ -73,6 +77,7 @@ class KeybindService {
   Events::Subscription mChanged;
   std::function<bool()> mToggleKeyboard;
   std::function<void()> mRecenter;
+  std::function<bool()> mToggleQuickMenu;
 };
 
 }// namespace OpenDesktopVR::Host

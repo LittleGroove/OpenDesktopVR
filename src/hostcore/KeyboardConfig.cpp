@@ -119,15 +119,21 @@ PanelDefinition KeyboardPanel(const KeyboardSettings& settings) {
   return panel;
 }
 
-std::vector<PanelDefinition> PanelsForRenderer(std::vector<PanelDefinition> enabled, const KeyboardSettings* keyboard) {
-  if (!keyboard) {
+std::vector<PanelDefinition> PanelsForRenderer(
+  std::vector<PanelDefinition> enabled, const KeyboardSettings* keyboard, const QuickMenuSettings* quickMenu) {
+  if (!keyboard && !quickMenu) {
     return enabled;
   }
   std::vector<PanelDefinition> panels;
-  panels.reserve(enabled.size() + 1);
-  panels.push_back(KeyboardPanel(*keyboard));
+  panels.reserve(enabled.size() + 2);
+  if (keyboard) {
+    panels.push_back(KeyboardPanel(*keyboard));
+  }
+  if (quickMenu) {
+    panels.push_back(QuickMenuPanel(*quickMenu));
+  }
   for (auto& panel: enabled) {
-    if (panel.mID != KeyboardPanelID) {
+    if (panel.mID != KeyboardPanelID && panel.mID != QuickMenuPanelID) {
       panels.push_back(std::move(panel));
     }
   }

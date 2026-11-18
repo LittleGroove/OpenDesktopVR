@@ -259,7 +259,9 @@ XrFrameEndInfo Session::Compose(const XrFrameEndInfo& game) noexcept {
       // Recentering (ADR-037): the host's keybind, or the runtime's
       // recenter once its change time has come
       if (mHostPanels && mHostPanels->Link().TakeRecenterRequest()) {
-        mRecenterWhy = "the Recenter keybind";
+        // Its keybind, the Diagnostics tab's button or the quick menu: the
+        // layer can't tell which (round 18)
+        mRecenterWhy = "the host app's Recenter";
         RecenterAt(game.displayTime);
       }
       ApplyRecenter(game.displayTime);

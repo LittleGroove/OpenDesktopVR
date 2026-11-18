@@ -40,6 +40,7 @@
 
 #include <winrt/base.h>
 
+#include <functional>
 #include <array>
 #include <filesystem>
 #include <map>
@@ -93,6 +94,10 @@ class SettingsWindow {
   }
   void ShowDiagnosticsTab() noexcept {
     mSelectDiagnostics = true;
+  }
+  // The Hands tab's "Open it now" for the quick menu (ADR-041)
+  void SetQuickMenuOpener(std::function<void()> open) {
+    mOpenQuickMenu = std::move(open);
   }
 
  private:
@@ -160,6 +165,8 @@ class SettingsWindow {
   void RunPendingDialog();
   // The virtual keyboard's settings, on the Hands tab (K10)
   void KeyboardSettingsUi(bool handsEnabled);
+  // The quick menu's, below them (ADR-041)
+  void QuickMenuSettingsUi(bool handsEnabled);
   bool LayoutCombo(const char* label, std::string* klid, const char* none);
   void SlotButton(const Keybinds::Action& action, std::size_t slot, const Keybinds::Binding& binding);
   void StartCapture(const Keybinds::Action& action, std::size_t slot);
@@ -286,6 +293,7 @@ class SettingsWindow {
 
   // The Diagnostics tab
   bool mSelectDiagnostics {false};
+  std::function<void()> mOpenQuickMenu;
   bool mDiagnosticsDrawn {false};// this frame
   bool mDiagnosticsWasDrawn {false};// the frame before: the checks run again each time the tab comes into view
   bool mDiagnosticsTimer {false};

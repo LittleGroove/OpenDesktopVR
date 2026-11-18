@@ -113,6 +113,15 @@ add_test(
     -- $<TARGET_FILE:openxr-simulator> --recenter ${ODVR_SIM_ARGS} ${ODVR_SIM_OUT}/recenter
 )
 set_tests_properties(sim-recenter PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL" PASS_REGULAR_EXPRESSION "PASSED" TIMEOUT 200)
+# M6d (ADR-041): the quick menu, tapped end to end: a panel's switch hides
+# it and shows it again, the close button leaves its button, the button
+# opens it (DU-6, DU-7, CT-10)
+add_test(
+  NAME sim-quick-menu
+  COMMAND with-host $<TARGET_FILE:OpenDesktopVR> --show-quick-menu
+    -- $<TARGET_FILE:openxr-simulator> --quick-menu ${ODVR_SIM_ARGS} ${ODVR_SIM_OUT}/quick-menu
+)
+set_tests_properties(sim-quick-menu PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL" PASS_REGULAR_EXPRESSION "PASSED" TIMEOUT 200)
 # M4c: two panels overlapping in depth, given nearest first: back to front in
 # every frame
 add_test(
@@ -149,6 +158,11 @@ set_tests_properties(settings-migration-test PROPERTIES TIMEOUT 120)
 odvr_test(vkeyboard-test SOURCES vkeyboard-test.cpp DEPS odvr::vkeyboard)
 # Draws the keyboard to PNGs for looking at (needs a GPU or WARP)
 odvr_test(keyboard-render-test NO_CTEST SOURCES keyboard-render-test.cpp DEPS odvr::vkeyboardui windowscodecs)
+# The quick menu (M6d): every page's targets (DU-6), touches (DU-7), where
+# commands go, its model (RN-6) and queue (TH-5), settings, its panel
+odvr_test(quickmenu-test SOURCES quickmenu-test.cpp DEPS odvr::hostcore)
+# Draws the quick menu's pages to PNGs for looking at (needs a GPU or WARP)
+odvr_test(quickmenu-render-test NO_CTEST SOURCES quickmenu-render-test.cpp DEPS odvr::hostcore windowscodecs)
 
 # M2 end to end: the real host (child processes) and the real layer DLL
 odvr_executable(host-layer-test SOURCES host-layer-test.cpp DEPS odvr::xrshared odvr::core odvr::openxr_headers odvr::cppwinrt d3d11 winmm)

@@ -1459,6 +1459,7 @@ void SettingsWindow::HandsPage() {
     mPanels.SetHands(hands);
   }
   KeyboardSettingsUi(hands.mEnabled);
+  QuickMenuSettingsUi(hands.mEnabled);
   ImGui::EndChild();
 }
 
@@ -2191,6 +2192,48 @@ void SettingsWindow::KeyboardSettingsUi(bool handsEnabled) {
   keyboard.mKeyMillimeters = std::round(keyboard.mKeyMillimeters);
   if (!(keyboard == mPanels.Keyboard())) {
     mPanels.SetKeyboard(keyboard);
+  }
+}
+
+// The quick menu in VR (doc 09 "In-VR UI", ADR-041): its button and where
+// it sits. It's tapped, so it needs the hands.
+void SettingsWindow::QuickMenuSettingsUi(bool handsEnabled) {
+  ImGui::Spacing();
+  ImGui::SeparatorText("Quick menu in VR");
+  auto menu = mPanels.QuickMenu();
+  ImGui::PushItemWidth(ImGui::GetFontSize() * 14);
+  ImGui::BeginDisabled(!handsEnabled);
+  ImGui::TextWrapped(
+    "A menu you tap in VR: show and hide panels, change their look, size and distance, recenter, and switch "
+    "profile. Its keybind opens it too (Keybinds tab).");
+  ImGui::Checkbox("Show its button while it's closed", &menu.mButton);
+  Help("A small round button where the menu opens. Tap it to open the menu. Off, only the keybind opens it.");
+  ImGui::SliderFloat("Distance##menu", &menu.mDistanceCentimeters, QuickMenuSettings::MinDistance,
+    QuickMenuSettings::MaxDistance, "%.0f cm", Clamp);
+  ImGui::SliderFloat("Below your eyes##menu", &menu.mHeightCentimeters, QuickMenuSettings::MinHeight,
+    QuickMenuSettings::MaxHeight, "%.0f cm", Clamp);
+  // Shown as left and right; stored with left positive
+  float right = -menu.mTurnDegrees;
+  if (ImGui::SliderFloat("To your right##menu", &right, -QuickMenuSettings::MaxTurn, QuickMenuSettings::MaxTurn,
+        "%.0f\xC2\xB0", Clamp)) {
+    menu.mTurnDegrees = -right;
+  }
+  Help("How far round from straight ahead. Below zero puts it on your left.");
+  ImGui::SliderFloat("Tilt##menu", &menu.mTiltDegrees, QuickMenuSettings::MinTilt, QuickMenuSettings::MaxTilt,
+    "%.0f\xC2\xB0", Clamp);
+  if (ImGui::Button("Open it now") && mOpenQuickMenu) {
+    mOpenQuickMenu();
+  }
+  Help("Opens the menu in VR, to see where it is.");
+  ImGui::EndDisabled();
+  ImGui::PopItemWidth();
+  // Whole steps, as the sliders show them
+  menu.mDistanceCentimeters = std::round(menu.mDistanceCentimeters);
+  menu.mHeightCentimeters = std::round(menu.mHeightCentimeters);
+  menu.mTurnDegrees = std::round(menu.mTurnDegrees);
+  menu.mTiltDegrees = std::round(menu.mTiltDegrees);
+  if (!(menu == mPanels.QuickMenu())) {
+    mPanels.SetQuickMenu(menu);
   }
 }
 

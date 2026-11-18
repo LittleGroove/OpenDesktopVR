@@ -141,6 +141,11 @@ void KeybindService::Run(const Keybinds::Action& action) {
         Log::Info("Keybind: {}: there's no other profile", Keybinds::ActionName(action.mKind));
       }
       return;
+    case ActionKind::ToggleQuickMenu:
+      if (mToggleQuickMenu) {
+        mToggleQuickMenu();// it logs what it did
+      }
+      return;
   }
 }
 

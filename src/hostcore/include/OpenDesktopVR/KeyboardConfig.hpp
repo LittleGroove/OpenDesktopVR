@@ -17,6 +17,7 @@
 
 #include <OpenDesktopVR/HostPanel.hpp>
 #include <OpenDesktopVR/JsonUtil.hpp>
+#include <OpenDesktopVR/QuickMenuConfig.hpp>
 
 #include <string>
 #include <vector>
@@ -70,7 +71,9 @@ inline constexpr uint64_t KeyboardPanelID = 0x6B6579626F617264ull;
 PanelDefinition KeyboardPanel(const KeyboardSettings& keyboard);
 
 // What the renderer gets: the keyboard first (VK-5) if `keyboard` is
-// given, then the enabled panels
-std::vector<PanelDefinition> PanelsForRenderer(std::vector<PanelDefinition> enabled, const KeyboardSettings* keyboard);
+// given, then the quick menu if `quickMenu` is (ADR-041), then the enabled
+// panels
+std::vector<PanelDefinition> PanelsForRenderer(
+  std::vector<PanelDefinition> enabled, const KeyboardSettings* keyboard, const QuickMenuSettings* quickMenu = nullptr);
 
 }// namespace OpenDesktopVR::Host

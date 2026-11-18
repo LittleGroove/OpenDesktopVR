@@ -147,6 +147,8 @@ std::string ActionName(ActionKind kind) {
       return "Next profile";
     case ActionKind::PreviousProfile:
       return "Previous profile";
+    case ActionKind::ToggleQuickMenu:
+      return "Open or close the quick menu";
   }
   return "?";
 }
@@ -171,6 +173,8 @@ const char* ActionKey(ActionKind kind) noexcept {
       return "nextProfile";
     case ActionKind::PreviousProfile:
       return "previousProfile";
+    case ActionKind::ToggleQuickMenu:
+      return "toggleQuickMenu";
   }
   return "";
 }

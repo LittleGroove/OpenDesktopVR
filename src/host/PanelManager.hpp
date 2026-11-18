@@ -15,8 +15,10 @@
 // It also holds what isn't stored: which panels are hidden for now (PN-6,
 // Visibility.hpp); and some global settings: the global keybinds' slots
 // (stored in "keybinds"), the hand settings ("hands") and the keyboard's
-// ("keyboard"; ADR-036). The keyboard's panel goes to the renderer first
-// (VK-5) but isn't in Panels(): the settings window never lists it (K10).
+// ("keyboard"; ADR-036) and the quick menu's ("quickMenu"; ADR-041). The
+// keyboard's panel goes to the renderer first (VK-5), then the quick
+// menu's; neither is in Panels(): the settings window never lists them
+// (K10) and hiding all panels never hides them.
 // Changed() fires after every change, on the UI thread; AllHidden() when
 // panels are all hidden (which dismisses the keyboard, doc 09).
 //
@@ -33,6 +35,7 @@
 #include <OpenDesktopVR/HostPanel.hpp>
 #include <OpenDesktopVR/KeyboardConfig.hpp>
 #include <OpenDesktopVR/ProfileLibrary.hpp>
+#include <OpenDesktopVR/QuickMenuConfig.hpp>
 #include <OpenDesktopVR/RenderLoop.hpp>
 #include <OpenDesktopVR/SettingsStore.hpp>
 #include <OpenDesktopVR/Visibility.hpp>
@@ -103,6 +106,13 @@ class PanelManager {
     return mKeyboard;
   }
   void SetKeyboard(const KeyboardSettings& keyboard);
+
+  // The quick menu in VR (doc 09 "In-VR UI"); its panel is there while
+  // the hands are on
+  const QuickMenuSettings& QuickMenu() const noexcept {
+    return mQuickMenu;
+  }
+  void SetQuickMenu(const QuickMenuSettings& menu);
 
   // PN-12: panels update at most this often ("performance" in settings)
   double MaxUpdatesPerSecond() const noexcept {
@@ -184,6 +194,7 @@ class PanelManager {
   std::array<Keybinds::Slots, Keybinds::GlobalActions.size()> mGlobalKeybinds {};
   HandSettings mHands;
   KeyboardSettings mKeyboard;
+  QuickMenuSettings mQuickMenu;
   double mMaxUpdatesPerSecond {Panels::DefaultMaxUpdatesPerSecond};
   Events::Event<> mChanged;
   Events::Event<> mAllHidden;

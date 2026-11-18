@@ -44,6 +44,12 @@
 //   change); panels must then sit from the head as they sat from LOCAL's
 //   origin at the start. Then the host's "Recenter" keybind (its
 //   --test-recenter-after) must do the same at the head's new place.
+// --quick-menu: the quick menu, tapped (M6d, ADR-041). With the host's
+//   --show-quick-menu and its two test panels: the open menu is found by
+//   its width and must be laid out as QuickMenu::BuildLayout says; tapping
+//   the first panel's switch hides that panel's layer and tapping it again
+//   brings it back; the close button leaves the 40 mm button, and tapping
+//   that opens the menu again.
 // --type <text> <log>: doc 11's typing scenario (M5b). With the keyboard
 //   showing (the host's --show-keyboard) and a window panel of
 //   edit-target-app writing its text to <log>: tap the panel (where keys
@@ -59,6 +65,7 @@
 
 #include <OpenDesktopVR/KeyboardGeometry.hpp>
 #include <OpenDesktopVR/KeyboardLayout.hpp>
+#include <OpenDesktopVR/QuickMenu.hpp>
 
 #include <winrt/base.h>
 
@@ -1547,6 +1554,7 @@ int main(int rawArgc, char** rawArgv) {
   bool gestures = false;
   bool depthOrder = false;
   bool recenter = false;
+  bool quickMenu = false;
   std::vector<char*> positional;
   for (int i = 0; i < rawArgc; ++i) {
     const std::string_view arg {rawArgv[i]};
@@ -1570,6 +1578,8 @@ int main(int rawArgc, char** rawArgv) {
       depthOrder = true;
     } else if (arg == "--recenter") {
       recenter = true;
+    } else if (arg == "--quick-menu") {
+      quickMenu = true;
     } else {
       positional.push_back(rawArgv[i]);
     }
@@ -1935,6 +1945,149 @@ int main(int rawArgc, char** rawArgv) {
     checks.Check(followed,
       std::format("the host's Recenter keybind puts panels the same way, where the head is then ({:.1f} mm, {:.2f} degrees off)",
         moved * 1000, turned));
+
+    layerDestroySession(session);
+    layerDestroyInstance(instance);
+    std::printf("\n%s (%d failed)\n", checks.mFailures == 0 ? "PASSED" : "FAILED", checks.mFailures);
+    return checks.mFailures == 0 ? 0 : 1;
+  }
+
+  // M6d (ADR-041): the quick menu, tapped, end to end. The host was started
+  // with --show-quick-menu (open from the start, over its two test panels).
+  // Each poke hovers 5 cm out, goes 8 mm through, holds and pulls back, as
+  // on the keyboard; where to poke comes from the menu's own layout.
+  if (quickMenu) {
+    using Clock = std::chrono::steady_clock;
+    const auto start = Clock::now();
+    const auto displayTime = [&] {
+      return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count() + 1'000'000'000;
+    };
+    const auto frame = [&](const std::optional<HandJoints>& hand) {
+      XrEventDataBuffer event {XR_TYPE_EVENT_DATA_BUFFER};
+      while (layerPollEvent && layerPollEvent(instance, &event) == XR_SUCCESS) {
+        event = {XR_TYPE_EVENT_DATA_BUFFER};
+      }
+      gRuntime.mHands = {};
+      if (hand) {
+        gRuntime.mHands[1] = *hand;
+      }
+      const XrFrameEndInfo frameEndInfo {
+        .type = XR_TYPE_FRAME_END_INFO,
+        .displayTime = displayTime(),
+        .environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE,
+        .layerCount = 1,
+        .layers = &gameLayerHeader,
+      };
+      layerEndFrame(session, &frameEndInfo);
+      std::this_thread::sleep_for(std::chrono::microseconds(11111));
+    };
+    // Frames with no hand until `done`, or `seconds` pass; true if done
+    const auto until = [&](double seconds, const std::function<bool()>& done) {
+      const auto deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(seconds));
+      while (Clock::now() < deadline) {
+        frame(std::nullopt);
+        if (done()) {
+          return true;
+        }
+      }
+      return false;
+    };
+    // The menu's layer: open (256 mm wide) or closed (its 40 mm button)
+    const float openWidth = static_cast<float>(QuickMenu::Width) * QuickMenu::MetersPerPixel;
+    const float closedWidth = static_cast<float>(QuickMenu::ButtonSize) * QuickMenu::MetersPerPixel;
+    const auto findMenu = [](float width) -> std::optional<XrCompositionLayerQuad> {
+      for (const auto& quad: gRuntime.mQuads) {
+        if (std::abs(quad.size.width - width) < 0.003f) {
+          return quad;
+        }
+      }
+      return std::nullopt;
+    };
+    // A poke at (u, v) on `quad`, over a second, then the hand goes
+    const auto poke = [&](const XrCompositionLayerQuad& quad, float u, float v) {
+      const auto begin = Clock::now();
+      while (true) {
+        const double phase = std::chrono::duration<double>(Clock::now() - begin).count();
+        if (phase >= 1.0) {
+          break;
+        }
+        float distance = 0.05f;
+        if (phase >= 0.45 && phase < 0.6) {
+          distance = 0.05f + ((-0.008f - 0.05f) * static_cast<float>((phase - 0.45) / 0.15));
+        } else if (phase >= 0.6 && phase < 0.7) {
+          distance = -0.008f;
+        } else if (phase >= 0.7) {
+          distance = -0.008f + ((0.05f + 0.008f) * static_cast<float>((phase - 0.7) / 0.3));
+        }
+        frame(HandAt(Pose::Point, quad, u, v, distance));
+      }
+      for (int i = 0; i < 5; ++i) {
+        frame(std::nullopt);
+      }
+    };
+
+    // The start page as the host lays it out for two panels
+    QuickMenu::MenuData data;
+    data.mPanels.resize(2);
+    data.mPanels[0].mID = 1;
+    data.mPanels[1].mID = 2;
+    data.mProfiles = {{"test", L"Test panels", true}};
+    data.mProfileName = L"Test panels";
+    data.mAnyShowing = true;
+    const auto layout = QuickMenu::BuildLayout({.mOpen = true}, data);
+    const auto middleOf = [&](auto&& match) -> std::pair<float, float> {
+      for (const auto& item: layout.mItems) {
+        if (match(item)) {
+          return {((item.mRect.mLeft + item.mRect.mRight) / 2) / static_cast<float>(layout.mWidth),
+            ((item.mRect.mTop + item.mRect.mBottom) / 2) / static_cast<float>(layout.mHeight)};
+        }
+      }
+      return {0.5f, 0.5f};
+    };
+    const auto firstSwitch = middleOf([](const QuickMenu::Item& item) { return item.mKind == QuickMenu::ItemKind::Toggle; });
+    const auto close = middleOf([](const QuickMenu::Item& item) { return item.mCommand.mKind == QuickMenu::CommandKind::Close; });
+
+    std::optional<XrCompositionLayerQuad> menu;
+    const bool shown = until(20, [&] { return (menu = findMenu(openWidth)).has_value(); });
+    checks.Check(shown, "the quick menu shows, open, 256 mm wide");
+    if (!shown) {
+      layerDestroySession(session);
+      layerDestroyInstance(instance);
+      std::printf("\nFAILED (%d failed)\n", checks.mFailures);
+      return 1;
+    }
+    until(1.0, [] { return false; });// its first frames settle
+    menu = findMenu(openWidth);
+    const int layers = gRuntime.mQuadCount;
+    const float expectedHeight = static_cast<float>(layout.mHeight) * QuickMenu::MetersPerPixel;
+    checks.Check(menu && std::abs(menu->size.height - expectedHeight) < 0.003f && layers == 3,
+      std::format("laid out as the simulator expects: {:.0f} mm tall ({:.0f} expected), with the 2 test panels ({} layers)",
+        menu ? menu->size.height * 1000 : 0.0f, expectedHeight * 1000, layers));
+    SaveQuad(*menu, outputDir / "quick-menu.png");
+
+    poke(*menu, firstSwitch.first, firstSwitch.second);
+    checks.Check(until(2.0, [&] { return gRuntime.mQuadCount == layers - 1; }),
+      std::format("tapping the first panel's switch hid that panel ({} layers)", gRuntime.mQuadCount));
+    menu = findMenu(openWidth);
+    if (menu) {
+      SaveQuad(*menu, outputDir / "quick-menu-hidden.png");
+      poke(*menu, firstSwitch.first, firstSwitch.second);
+    }
+    checks.Check(until(2.0, [&] { return gRuntime.mQuadCount == layers; }),
+      std::format("tapping it again showed it ({} layers)", gRuntime.mQuadCount));
+
+    menu = findMenu(openWidth);
+    if (menu) {
+      poke(*menu, close.first, close.second);
+    }
+    std::optional<XrCompositionLayerQuad> button;
+    checks.Check(until(2.0, [&] { return (button = findMenu(closedWidth)).has_value() && !findMenu(openWidth); }),
+      "the close button closed it, leaving its 40 mm button");
+    if (button) {
+      SaveQuad(*button, outputDir / "quick-menu-button.png");
+      poke(*button, 0.5f, 0.5f);
+    }
+    checks.Check(until(2.0, [&] { return findMenu(openWidth).has_value(); }), "tapping the button opened it again");
 
     layerDestroySession(session);
     layerDestroyInstance(instance);

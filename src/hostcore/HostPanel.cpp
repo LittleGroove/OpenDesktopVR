@@ -61,6 +61,10 @@ PanelSize PanelSizeFor(const PanelDefinition& definition, uint32_t contentWidth,
   if (contentWidth == 0 || contentHeight == 0) {
     return {};
   }
+  if (definition.mMetersPerPixel > 0) {
+    return {definition.mMetersPerPixel * static_cast<float>(contentWidth),
+      definition.mMetersPerPixel * static_cast<float>(contentHeight)};
+  }
   PanelSize size {definition.mWidthMeters,
     definition.mWidthMeters * static_cast<float>(contentHeight) / static_cast<float>(contentWidth)};
   if (definition.mMaxHeightMeters > 0 && size.mHeight > definition.mMaxHeightMeters) {

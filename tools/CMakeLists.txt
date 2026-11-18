@@ -16,7 +16,7 @@ odvr_executable(
   openxr-simulator
   PORTED
   SOURCES openxr-simulator/openxr-simulator.cpp
-  DEPS odvr::interaction odvr::vkeyboard odvr::openxr_headers odvr::cppwinrt d3d11 windowscodecs
+  DEPS odvr::interaction odvr::vkeyboard odvr::quickmenu odvr::openxr_headers odvr::cppwinrt d3d11 windowscodecs
 )
 target_include_directories(openxr-simulator PRIVATE "${PROJECT_SOURCE_DIR}/tests/support")
 

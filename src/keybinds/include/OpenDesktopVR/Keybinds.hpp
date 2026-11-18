@@ -96,13 +96,14 @@ enum class ActionKind : uint8_t {
   Recenter,      // global: panels where the head is now (PN-7, ADR-037)
   NextProfile,   // global (ADR-038)
   PreviousProfile,
+  ToggleQuickMenu,// global: open or close the quick menu in VR (ADR-041)
 };
-inline constexpr ActionKind LastActionKind = ActionKind::PreviousProfile;
+inline constexpr ActionKind LastActionKind = ActionKind::ToggleQuickMenu;
 inline constexpr std::array PanelActions {
   ActionKind::TogglePanel, ActionKind::BrightnessUp, ActionKind::BrightnessDown, ActionKind::ToggleTint};
 // Stored in "keybinds", not with a panel
 inline constexpr std::array GlobalActions {ActionKind::ToggleAllPanels, ActionKind::ToggleKeyboard, ActionKind::Recenter,
-  ActionKind::NextProfile, ActionKind::PreviousProfile};
+  ActionKind::NextProfile, ActionKind::PreviousProfile, ActionKind::ToggleQuickMenu};
 constexpr bool IsGlobal(ActionKind kind) noexcept {
   for (const auto global: GlobalActions) {
     if (global == kind) {

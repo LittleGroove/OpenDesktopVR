@@ -145,8 +145,10 @@ std::vector<Row> DescribeHelpers(const PanelManager& panels, const AppHelper::Ap
     if (const auto status = appHelper.StatusOf(panel.mID)) {
       text = status->mText;
     }
-    if (const auto input = appHelper.InputStatusOf(panel.mID); input && !input->mText.empty()) {
-      text += text.empty() ? input->mText : " " + input->mText;
+    // One helper does both; its two states read alike once it's loaded
+    // (round 18 showed the same sentence twice)
+    if (const auto input = appHelper.InputStatusOf(panel.mID); input && !input->mText.empty() && input->mText != text) {
+      text = text.empty() ? input->mText : std::format("{} Taps: {}", text, input->mText);
     }
     rows.push_back({StringUtil::Narrow(panel.mName.empty() ? L"(no name)" : panel.mName), text.empty() ? "not showing yet" : text});
   }

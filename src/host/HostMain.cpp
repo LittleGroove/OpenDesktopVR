@@ -46,6 +46,7 @@
 
 #include "KeybindService.hpp"
 #include "PanelManager.hpp"
+#include "QuickMenuController.hpp"
 #include "SettingsWindow.hpp"
 #include "Support.hpp"
 #include "TrayIcon.hpp"
@@ -60,6 +61,8 @@
 #include <OpenDesktopVR/Log.hpp>
 #include <OpenDesktopVR/LogRing.hpp>
 #include <OpenDesktopVR/ProcessUtil.hpp>
+#include <OpenDesktopVR/QuickMenuHands.hpp>
+#include <OpenDesktopVR/QuickMenuSource.hpp>
 #include <OpenDesktopVR/Product.hpp>
 #include <OpenDesktopVR/RenderLoop.hpp>
 #include <OpenDesktopVR/SharedAbi.hpp>
@@ -108,6 +111,7 @@ struct Options {
   bool mSettingsDiagnostics {false};
   std::wstring mDebugInfoZip;
   bool mShowKeyboard {false};
+  bool mShowQuickMenu {false};
   double mTestRecenterAfterSeconds {0};
   std::wstring mScreenshot;
   bool mScreenshotPicker {false};
@@ -157,6 +161,8 @@ Options ParseOptions() {
       options.mDebugInfoZip = argv[++i];
     } else if (arg == L"--show-keyboard") {
       options.mShowKeyboard = true;
+    } else if (arg == L"--show-quick-menu") {
+      options.mShowQuickMenu = true;
     } else if (arg == L"--test-recenter-after" && i + 1 < argc) {
       options.mTestRecenterAfterSeconds = std::clamp(std::wcstod(argv[++i], nullptr), 0.0, 600.0);
     } else if (arg == L"--settings-delay" && i + 1 < argc) {
@@ -252,14 +258,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     // What the keyboard panel draws: changed by the keyboard service, drawn
     // by the renderer (ADR-036)
     const auto keyboardModel = std::make_shared<VirtualKeyboard::KeyboardModel>();
+    const auto quickMenuModel = std::make_shared<Host::QuickMenuModel>();
     // What each kind of panel shows
     const bool staticPanels = options.mStaticPanels;
     const bool resizingPanels = options.mResizingPanels;
     Host::RenderLoop renderer {loopOptions,
-      [staticPanels, resizingPanels, &appHelper, keyboardModel](const Host::PanelDefinition& definition,
+      [staticPanels, resizingPanels, &appHelper, keyboardModel, quickMenuModel](const Host::PanelDefinition& definition,
         Render::GpuDevice& gpu, Render::MarkDirty markDirty) -> std::unique_ptr<Render::ContentSource> {
         if (definition.mKind == Host::PanelKind::Keyboard) {
           return std::make_unique<VirtualKeyboard::KeyboardSource>(gpu, keyboardModel, std::move(markDirty));
+        }
+        if (definition.mKind == Host::PanelKind::QuickMenu) {
+          return std::make_unique<Host::QuickMenuSource>(gpu, quickMenuModel, std::move(markDirty));
         }
         if (definition.mKind == Host::PanelKind::Window) {
           Capture::WindowCaptureOptions capture {definition.mWindow, definition.mName};
@@ -311,6 +321,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     const bool privateFolder = ProcessUtil::GetEnvironment("OPENDESKTOPVR_DATA_FOLDER").has_value();
     Host::PanelManager panels {renderer, !options.mTestInstance || privateFolder, std::move(testPanels)};
     panels.Load();
+    if (options.mTestInstance && !privateFolder && !options.mShowQuickMenu) {
+      // Tests that count panels see only theirs: no menu button
+      auto menu = panels.QuickMenu();
+      menu.mButton = false;
+      panels.SetQuickMenu(menu);
+    }
     renderer.Start();
 
     // Hands (doc 05): samples from the layer, touches into the captured
@@ -322,8 +338,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     VirtualKeyboard::ClickSound click;
     Host::KeyboardService keyboard {injector, keyboardModel, [&click](float volume) { click.Play(volume); }};
     Host::InjectingSink injectingSink {injector, &keyboard};
+    // The quick menu's pointer goes to it (ADR-041), the rest to the injector
+    Host::QuickMenuHands quickMenuHands {quickMenuModel};
+    Host::PointerRouter pointerRouter {injectingSink, quickMenuHands, Host::QuickMenuPanelID};
     Host::HandService hands {
-      renderer.Tracking(), [&renderer] { return renderer.TouchablePanels(); }, &injectingSink, {}, &keyboard};
+      renderer.Tracking(), [&renderer] { return renderer.TouchablePanels(); }, &pointerRouter, {}, &keyboard};
     const auto applyHands = [&] {
       hands.SetSettings(panels.Hands());
       renderer.SetHandsEnabled(panels.Hands().mEnabled);
@@ -338,12 +357,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     if (options.mShowKeyboard && options.mTestInstance) {
       keyboard.Toggle();
     }
+    Host::QuickMenuController quickMenu {instance, panels, renderer, quickMenuModel, quickMenuHands};
+    if (options.mShowQuickMenu && options.mTestInstance) {
+      quickMenu.Open("--show-quick-menu");
+    }
     hands.Start();
 
     // Keybinds: the keyboard and game controllers, on their own thread
     Host::KeybindService keybinds {instance, panels};
     keybinds.SetKeyboardToggle([&keyboard] { return keyboard.Toggle(); });
     keybinds.SetRecenter([&renderer] { renderer.Recenter(); });
+    keybinds.SetQuickMenuToggle([&quickMenu] { return quickMenu.Toggle("its keybind"); });
     // Tests: the keybind's recenter, at a known time
     std::jthread testRecenter;
     if (options.mTestRecenterAfterSeconds > 0 && options.mTestInstance) {
@@ -364,6 +388,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       panels.SetGlobalKeybinds(Keybinds::ActionKind::ToggleAllPanels, slots);// in memory: a test instance saves nothing
     }
     Host::SettingsWindow settings {instance, renderer, panels, keybinds, appHelper, logRing};
+    settings.SetQuickMenuOpener([&quickMenu] { quickMenu.Open("the settings window"); });
     Host::TrayIcon tray {instance, renderer, panels, settings};
     if (options.mExitAfterSeconds > 0) {
       tray.QuitAfter(options.mExitAfterSeconds);

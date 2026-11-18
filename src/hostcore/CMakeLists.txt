@@ -17,10 +17,15 @@ odvr_module(
   InjectingSink.cpp
   KeyboardConfig.cpp
   KeyboardService.cpp
+  QuickMenuConfig.cpp
+  QuickMenuModel.cpp
+  QuickMenuSource.cpp
+  QuickMenuHands.cpp
   ProfileLibrary.cpp
   GameFollower.cpp
   DEPS
   odvr::vkeyboard
+  odvr::quickmenu
   odvr::inject
   odvr::interaction
   odvr::pointer

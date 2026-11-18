@@ -100,6 +100,7 @@ void PanelManager::ReadGlobals() {
   }
   mHands = HandConfig::Read(mDocument);
   mKeyboard = KeyboardConfig::Read(mDocument);
+  mQuickMenu = QuickMenuConfig::Read(mDocument);
   const auto performance = JsonUtil::GetOr<JsonUtil::Json>(mDocument, "performance", JsonUtil::Json {});
   const double rate = JsonUtil::GetOr<double>(performance, "maxUpdatesPerSecond", Panels::DefaultMaxUpdatesPerSecond);
   mMaxUpdatesPerSecond = std::isfinite(rate) ? std::clamp(rate, 1.0, 120.0) : Panels::DefaultMaxUpdatesPerSecond;
@@ -465,6 +466,19 @@ void PanelManager::SetKeyboard(const KeyboardSettings& keyboard) {
   Push();// its panel may have moved, come or gone (only what changed is redone: ST-6)
 }
 
+void PanelManager::SetQuickMenu(const QuickMenuSettings& menu) {
+  const auto clean = QuickMenuConfig::Clean(menu);
+  if (clean == mQuickMenu) {
+    return;
+  }
+  mQuickMenu = clean;
+  if (mPersistent) {
+    QuickMenuConfig::Write(mDocument, mQuickMenu);
+    mStore.Save(Spec().mPath, mDocument);// debounced (ST-1)
+  }
+  Push();// its panel may have moved
+}
+
 void PanelManager::SetHands(const HandSettings& hands) {
   if (hands == mHands) {
     return;
@@ -476,7 +490,7 @@ void PanelManager::SetHands(const HandSettings& hands) {
     mStore.Save(Spec().mPath, mDocument);// debounced (ST-1)
   }
   if (enabledChanged) {
-    Push();// the keyboard comes and goes with the hands
+    Push();// the keyboard and the quick menu come and go with the hands
   } else {
     mChanged.Emit();
   }
@@ -490,9 +504,11 @@ void PanelManager::Push() {
     }
   }
   mHidden = Visibility::Prune(mPanels, mHidden);
-  // The keyboard first (VK-5), while it and the hands are on (K10)
+  // The keyboard first (VK-5), while it and the hands are on (K10); the
+  // quick menu while the hands are on (it's tapped, ADR-041)
   const bool keyboard = mKeyboard.mEnabled && mHands.mEnabled;
-  mRenderer.SetPanels(PanelsForRenderer(std::move(enabled), keyboard ? &mKeyboard : nullptr), mHidden);
+  mRenderer.SetPanels(
+    PanelsForRenderer(std::move(enabled), keyboard ? &mKeyboard : nullptr, mHands.mEnabled ? &mQuickMenu : nullptr), mHidden);
   mChanged.Emit();
 }
 
