@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // Keybinds (doc 09 "Keybinds", UI-2, UI-3): what a binding is, the actions
 // it can trigger, how it's stored and how it's named.

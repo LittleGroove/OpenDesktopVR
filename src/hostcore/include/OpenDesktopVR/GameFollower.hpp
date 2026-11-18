@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // Which game's layer is attached, for per-game profiles (ADR-038), from
 // the render stats' layer process ID, about once a second.

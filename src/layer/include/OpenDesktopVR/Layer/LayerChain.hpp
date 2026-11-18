@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // What the layer learns about the game's OpenXR setup when its instance is
 // created, for the log, the host's diagnostics page and the self-test

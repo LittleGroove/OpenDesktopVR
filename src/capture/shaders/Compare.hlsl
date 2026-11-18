@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // Did a captured frame change? Compares the new frame with the one shown and
 // sets the result to 1 if any pixel differs. Windows 10 delivers frames for

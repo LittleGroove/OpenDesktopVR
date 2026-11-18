@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // Keybinds in the host (doc 09, UI-2, UI-3): the bindings from settings go
 // to the input thread (Keybinds::InputThread), and what fires comes back to

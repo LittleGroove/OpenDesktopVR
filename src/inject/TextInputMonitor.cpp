@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 // Provenance: the author's own prototype code, imported at handover v2 (2026-11-15).
 // Changed in M5b (ADR-036): checks asked for with Poke() are kept, several
 // at once (up to 8), each with its own "report" flag; it kept only the

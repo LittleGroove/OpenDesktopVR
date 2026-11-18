@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // When the virtual keyboard shows and hides (doc 07 K3 to K6, VK-1, VK-2;
 // ADR-036). Pure logic, with time passed in; the caller makes it

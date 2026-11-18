@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: LicenseRef-Proprietary
-# Copyright (c) 2026 Robert McGough. All rights reserved.
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Robert McGough
 #
 # One folder per module (doc 02, "Modules"). Order follows the dependencies.
 
@@ -15,6 +15,7 @@ add_subdirectory(capture)
 add_subdirectory(quickmenu)
 add_subdirectory(automation)
 add_subdirectory(install)
+add_subdirectory(update)
 add_subdirectory(hostcore)
 add_subdirectory(hostlink)
 add_subdirectory(ui)

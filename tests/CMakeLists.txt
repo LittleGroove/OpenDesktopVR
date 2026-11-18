@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: LicenseRef-Proprietary
-# Copyright (c) 2026 Robert McGough. All rights reserved.
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Robert McGough
 #
 # Unit tests run in CI; render tests need a GPU (or WARP) and are not
 # registered with CTest by default.
@@ -154,6 +154,15 @@ odvr_test(profiles-test SOURCES profiles-test.cpp DEPS odvr::hostcore)
 odvr_test(install-test SOURCES install-test.cpp DEPS odvr::install odvr::core ole32)
 # Two real DLLs from the output folder, one loaded while the other replaces it
 add_dependencies(install-test ${ODVR_LAYER_FILE_STEM} ${ODVR_APP_HELPER_FILE_STEM})
+# Updates from GitHub Releases (ADR-045): the release list, the choice, the
+# HTTPS client against a fake server on 127.0.0.1
+odvr_test(update-test SOURCES update-test.cpp DEPS odvr::update odvr::core ws2_32)
+# Updates end to end: the installed host, a fake GitHub, the real setup
+# program as the release; the beta, a bad checksum, an install by itself
+odvr_test(update-host-test NO_CTEST SOURCES update-host-test.cpp DEPS odvr::install odvr::settings odvr::core ws2_32)
+add_dependencies(update-host-test odvr-setup)
+add_test(NAME update-host-test COMMAND update-host-test "$<TARGET_FILE_DIR:OpenDesktopVR>/OpenDesktopVR-Setup.exe")
+set_tests_properties(update-host-test PROPERTIES TIMEOUT 300)
 # The real OpenDesktopVR-Setup.exe, silent, in a private folder and key:
 # install, update over a running host and a held layer, uninstall (M7a)
 odvr_test(setup-test NO_CTEST SOURCES setup-test.cpp DEPS odvr::install odvr::xrshared odvr::core)

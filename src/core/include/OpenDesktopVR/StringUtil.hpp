@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // String helpers: UTF-8 / UTF-16 conversion, safe truncation, comparisons.
 // None of them throw; invalid input is replaced, never rejected (TH-9).

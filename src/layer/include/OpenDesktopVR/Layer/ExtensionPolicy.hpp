@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // Which extensions the layer adds to the game's xrCreateInstance (XR-7).
 // Hand tracking is probed in three states; "unknown" requests it anyway and

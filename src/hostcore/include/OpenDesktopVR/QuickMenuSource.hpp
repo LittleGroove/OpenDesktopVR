@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // The quick menu panel's content (ADR-041): draws what the QuickMenuModel
 // says with Direct2D and DirectWrite, on the render thread, only when it

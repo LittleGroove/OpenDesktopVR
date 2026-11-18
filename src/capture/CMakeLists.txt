@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: LicenseRef-Proprietary
-# Copyright (c) 2026 Robert McGough. All rights reserved.
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Robert McGough
 #
 # Desktop windows as panel content (doc 04 "Window capture"): window
 # listing and match rules, and the Windows.Graphics.Capture source.

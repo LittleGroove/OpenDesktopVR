@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // Profiles (doc 09 "Profiles"; ADR-038): one file per profile in a folder,
 // `<id>.json`, each a full set of panels plus the games that claim it:

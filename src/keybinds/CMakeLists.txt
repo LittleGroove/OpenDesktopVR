@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: LicenseRef-Proprietary
-# Copyright (c) 2026 Robert McGough. All rights reserved.
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Robert McGough
 #
 # Keybinds (doc 09, KY-1 to KY-4): bindings, when they fire, bind capture,
 # and the input thread watching the keyboard (Raw Input) and game

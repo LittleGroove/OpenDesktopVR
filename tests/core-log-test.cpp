@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // Logging (LG-1, XR-3, XR-4): bounded queue that drops the oldest entries
 // with a notice, truncation without split characters, no allocation on the

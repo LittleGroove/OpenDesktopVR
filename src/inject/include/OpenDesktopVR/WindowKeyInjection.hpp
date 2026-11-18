@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 // Provenance: the author's own prototype code, imported at handover v2 (2026-11-15).
 //
 // Typing into a window that isn't the foreground window (e.g. a captured app

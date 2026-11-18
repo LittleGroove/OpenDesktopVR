@@ -1,6 +1,6 @@
 @echo off
-rem SPDX-License-Identifier: LicenseRef-Proprietary
-rem Copyright (c) 2026 Robert McGough. All rights reserved.
+rem SPDX-License-Identifier: GPL-3.0-or-later
+rem Copyright (c) 2026 Robert McGough
 rem
 rem Installs this test build for the current Windows user, with no admin
 rem rights (ADR-009): copies it to %LOCALAPPDATA%\Programs\OpenDesktopVR,

@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // JSON helpers for settings and any other untrusted JSON (TH-9): parsing and
 // reading never throw, wrong types read as "absent", and one bad array entry

@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: LicenseRef-Proprietary
-# Copyright (c) 2026 Robert McGough. All rights reserved.
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Robert McGough
 #
 # The client side of the shared block (layer and tools): connect, follow
 # host restarts, pull handles, open shared textures and fences.

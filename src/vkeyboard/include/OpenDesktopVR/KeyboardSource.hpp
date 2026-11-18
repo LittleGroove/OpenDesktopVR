@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // The keyboard panel's content (doc 07 "Rendering", ADR-036): draws what
 // the KeyboardModel says with Direct2D, on the render thread.

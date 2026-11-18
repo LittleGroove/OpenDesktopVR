@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // Open Desktop VR host app (doc 02): a tray app, single instance, that
 // renders panels and shares them with the layer in each game.
@@ -51,12 +51,14 @@
 #include "SettingsWindow.hpp"
 #include "Support.hpp"
 #include "TrayIcon.hpp"
+#include "UpdateService.hpp"
 
 #include <OpenDesktopVR/AppHelperService.hpp>
 #include <OpenDesktopVR/ClickSound.hpp>
 #include <OpenDesktopVR/CrashHandler.hpp>
 #include <OpenDesktopVR/InjectingSink.hpp>
 #include <OpenDesktopVR/Installer.hpp>
+#include <OpenDesktopVR/Version.hpp>
 #include <OpenDesktopVR/KeyboardService.hpp>
 #include <OpenDesktopVR/KeyboardSource.hpp>
 #include <OpenDesktopVR/LayerRegistration.hpp>
@@ -114,6 +116,8 @@ struct Options {
   bool mSettingsCommands {false};
   bool mSettingsWelcome {false};
   std::wstring mDebugInfoZip;
+  // The setup program started this after replacing that version (ADR-045)
+  std::string mUpdatedFrom;
   bool mShowKeyboard {false};
   bool mShowQuickMenu {false};
   double mTestRecenterAfterSeconds {0};
@@ -169,6 +173,9 @@ Options ParseOptions() {
       options.mDebugInfoZip = argv[++i];
     } else if (arg == L"--show-keyboard") {
       options.mShowKeyboard = true;
+    } else if (arg == L"--updated-from" && i + 1 < argc) {
+      const auto from = StringUtil::Narrow(argv[++i]);
+      options.mUpdatedFrom = Install::ParseVersion(from) ? from : std::string {};
     } else if (arg == L"--show-quick-menu") {
       options.mShowQuickMenu = true;
     } else if (arg == L"--test-recenter-after" && i + 1 < argc) {
@@ -449,6 +456,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       settings.Show();
     }
     settings.SetQuickMenuOpener([&quickMenu] { quickMenu.Open("the settings window"); });
+    // New versions from GitHub (ADR-045): installed by themselves only while
+    // no game runs and the settings window is closed
+    Host::UpdateService updates {instance, panels, options.mUpdatedFrom};
+    updates.SetBusy([&panels, &settings]() -> std::string {
+      if (!panels.AttachedGame().empty()) {
+        return "a game is running";
+      }
+      return settings.IsOpen() ? "the settings window is open" : "";
+    });
+    updates.SetOnChange([&settings] { settings.Invalidate(); });
+    settings.SetUpdates(&updates);
     Host::TrayIcon tray {instance, renderer, panels, settings};
     if (options.mExitAfterSeconds > 0) {
       tray.QuitAfter(options.mExitAfterSeconds);

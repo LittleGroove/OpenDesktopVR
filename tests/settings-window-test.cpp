@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // The desktop settings window (M3b; ADR-020, ADR-023, RN-12): the real host,
 // as a test instance, opens its settings window, saves it as a PNG, then

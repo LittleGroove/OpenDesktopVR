@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: LicenseRef-Proprietary
-# Copyright (c) 2026 Robert McGough. All rights reserved.
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Robert McGough
 #
 # The OpenXR API layer (doc 03): composition only; thin, bounded, never
 # blocks. Pure logic lives in odvr_layerlogic so tests can link it; the DLL

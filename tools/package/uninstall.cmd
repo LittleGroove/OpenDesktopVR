@@ -1,6 +1,6 @@
 @echo off
-rem SPDX-License-Identifier: LicenseRef-Proprietary
-rem Copyright (c) 2026 Robert McGough. All rights reserved.
+rem SPDX-License-Identifier: GPL-3.0-or-later
+rem Copyright (c) 2026 Robert McGough
 rem
 rem Removes the test build for the current Windows user: unregisters the
 rem OpenXR layer and deletes %LOCALAPPDATA%\Programs\OpenDesktopVR. Asks

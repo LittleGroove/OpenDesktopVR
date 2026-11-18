@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // What the virtual keyboard's keys do (doc 07 "Modifier behavior", K7, K8,
 // K12; ADR-036): key presses in, key strokes out. Pure logic, with time

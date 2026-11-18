@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // Utility files: strings, files (atomic writes, ST-2), time, lock checks
 // (TH-2), the catch-all (TH-8), product names and the frame timer.

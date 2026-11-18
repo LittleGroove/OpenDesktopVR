@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // "Start with Windows" (UI-7): a value in the per-user Run key pointing at
 // the host. Per user, so it needs no elevation. Tests pass their own key.

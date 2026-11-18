@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // Hands inside the game (doc 03 steps 2 and 4, doc 05 "Hand visual"):
 // - Tracking: once the host asks for samples, one hand tracker per hand

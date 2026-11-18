@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // Which captured windows need the app helper to keep painting while covered
 // (CT-3, doc 06 "Occlusion", ADR-031). Measured on Windows 11 (M3d): Edge

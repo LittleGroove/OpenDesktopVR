@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // The helper's input mode (doc 06 "Why a helper is needed", "Helper
 // behavior requirements"; HK-5, HK-8, HK-9; M4b). Inside the captured app.

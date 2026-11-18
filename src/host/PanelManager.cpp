@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 
 #include "PanelManager.hpp"
 
@@ -144,6 +144,29 @@ void PanelManager::ReadGlobals() {
   const double rate = JsonUtil::GetOr<double>(performance, "maxUpdatesPerSecond", Panels::DefaultMaxUpdatesPerSecond);
   mMaxUpdatesPerSecond = std::isfinite(rate) ? std::clamp(rate, 1.0, 120.0) : Panels::DefaultMaxUpdatesPerSecond;
   mRenderer.SetGlobalMaxUpdatesPerSecond(mMaxUpdatesPerSecond);
+  const auto updates = JsonUtil::GetOr<JsonUtil::Json>(mDocument, "updates", JsonUtil::Json {});
+  mUpdates.mCheck = JsonUtil::GetOr<bool>(updates, "check", true);
+  mUpdates.mInstallItself = JsonUtil::GetOr<bool>(updates, "installItself", true);
+  mUpdates.mBeta = JsonUtil::GetOr<bool>(updates, "beta", false);
+}
+
+void PanelManager::SetUpdates(const UpdateSettings& updates) {
+  if (updates == mUpdates) {
+    return;
+  }
+  mUpdates = updates;
+  JsonUtil::Json saved = JsonUtil::GetOr<JsonUtil::Json>(mDocument, "updates", JsonUtil::Json::object());
+  if (!saved.is_object()) {
+    saved = JsonUtil::Json::object();
+  }
+  saved["check"] = mUpdates.mCheck;
+  saved["installItself"] = mUpdates.mInstallItself;
+  saved["beta"] = mUpdates.mBeta;
+  mDocument["updates"] = std::move(saved);
+  SaveSettings();
+  Log::Info("Updates: check {}, install by itself {}, beta {}", mUpdates.mCheck ? "on" : "off",
+    mUpdates.mInstallItself ? "on" : "off", mUpdates.mBeta ? "on" : "off");
+  mChanged.Emit();
 }
 
 void PanelManager::SetMaxUpdatesPerSecond(double perSecond) {

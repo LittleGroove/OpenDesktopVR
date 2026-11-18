@@ -1,6 +1,6 @@
 @echo off
-rem SPDX-License-Identifier: LicenseRef-Proprietary
-rem Copyright (c) 2026 Robert McGough. All rights reserved.
+rem SPDX-License-Identifier: GPL-3.0-or-later
+rem Copyright (c) 2026 Robert McGough
 rem
 rem Open Desktop VR self-test: loads the layer into a simulated game and a
 rem simulated headset. No headset, registration or settings change needed.

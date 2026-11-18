@@ -1,8 +1,8 @@
-# SPDX-License-Identifier: LicenseRef-Proprietary
-# Copyright (c) 2026 Robert McGough. All rights reserved.
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Robert McGough
 #
 # Writes BUILD-INFO.txt at install/package time. Expects ODVR_SOURCE_DIR,
-# ODVR_VERSION, ODVR_LAYER_NAME, ODVR_CONFIG and ODVR_OUTPUT.
+# ODVR_VERSION, ODVR_LAYER_NAME, ODVR_REPOSITORY, ODVR_CONFIG and ODVR_OUTPUT.
 
 find_package(Git QUIET)
 set(commit "unknown")
@@ -37,5 +37,6 @@ file(
   "Built:       ${built} (${ODVR_CONFIG})\n"
   "OpenXR layer: ${ODVR_LAYER_NAME}\n"
   "\n"
-  "Proprietary test build for personal use. Don't redistribute.\n"
+  "Free software under the GNU GPL, version 3 or later (see LICENSE), with\n"
+  "no warranty. Source code: https://github.com/${ODVR_REPOSITORY}\n"
 )

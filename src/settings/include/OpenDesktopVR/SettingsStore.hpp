@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // Settings documents on disk (ADR-010; doc 09 "Settings storage"):
 // - Save() is debounced (~300 ms after the last change, at most 2 s after

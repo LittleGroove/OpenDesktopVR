@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: LicenseRef-Proprietary
-# Copyright (c) 2026 Robert McGough. All rights reserved.
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Robert McGough
 #
 # Installing for one Windows user (M7a, ADR-043, ADR-009): versions, the
 # setup program's payload, and the steps it takes (files, the Start menu,

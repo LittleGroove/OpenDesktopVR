@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // The host's GPU: one D3D11 device with Direct2D and DirectWrite on top
 // (doc 08 "Host side"). It must sit on the same adapter as the game, or the

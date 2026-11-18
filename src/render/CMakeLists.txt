@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: LicenseRef-Proprietary
-# Copyright (c) 2026 Robert McGough. All rights reserved.
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Robert McGough
 #
 # The host's GPU side (doc 08 "Host side"): device on the game's adapter,
 # Direct2D/DirectWrite, shared panel rings with fences, content sources.

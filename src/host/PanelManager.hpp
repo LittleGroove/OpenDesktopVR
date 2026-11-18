@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // The panel list on the UI side: loads it from settings, applies edits,
 // saves them through the debounced store (ST-1), and hands the enabled
@@ -134,6 +134,18 @@ class PanelManager {
   void SetMaxUpdatesPerSecond(double perSecond);
   static constexpr std::array<int, 8> UpdateRates {10, 15, 24, 30, 45, 60, 72, 90};
 
+  // New versions from GitHub (ADR-045; "updates" in settings)
+  struct UpdateSettings {
+    bool mCheck {true};// look for them now and then
+    bool mInstallItself {true};// when no game runs and the settings window is closed
+    bool mBeta {false};// pre-releases too
+    bool operator==(const UpdateSettings&) const = default;
+  };
+  const UpdateSettings& Updates() const noexcept {
+    return mUpdates;
+  }
+  void SetUpdates(const UpdateSettings& updates);
+
   // The layer in games ("layer" in settings, read by the layer when a game
   // starts: VR-8)
   struct GameSettings {
@@ -213,6 +225,7 @@ class PanelManager {
   KeyboardSettings mKeyboard;
   QuickMenuSettings mQuickMenu;
   double mMaxUpdatesPerSecond {Panels::DefaultMaxUpdatesPerSecond};
+  UpdateSettings mUpdates;
   Events::Event<> mChanged;
   Events::Event<> mAllHidden;
 };

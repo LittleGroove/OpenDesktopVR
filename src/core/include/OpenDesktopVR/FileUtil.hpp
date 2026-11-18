@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // File helpers. All of them use the non-throwing filesystem calls (doc 02,
 // rule 8): a missing folder, a locked file or a full disk is a result, never

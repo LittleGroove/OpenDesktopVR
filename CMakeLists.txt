@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: LicenseRef-Proprietary
-# Copyright (c) 2026 Robert McGough. All rights reserved.
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Robert McGough
 #
 # Open Desktop VR: OpenXR layer, host app and tools.
 #
@@ -12,7 +12,7 @@
 # (see cmake/OdvrThirdParty.cmake), for example
 #   -DFETCHCONTENT_SOURCE_DIR_DIRECTXTK=<dir>
 cmake_minimum_required(VERSION 3.25)
-project(OpenDesktopVR VERSION 0.1.0 LANGUAGES CXX)
+project(OpenDesktopVR VERSION 0.7.0 LANGUAGES CXX)
 
 if(NOT MSVC)
   message(FATAL_ERROR "Open Desktop VR targets Windows with MSVC")

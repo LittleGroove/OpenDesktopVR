@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // odvr-mirror: shows, in a desktop window, the panel images a layer receives
 // from the host app (doc 02 "Mirror viewer"). For checking panels without a

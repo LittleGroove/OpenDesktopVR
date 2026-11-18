@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // The injection matrix's mouse rows (doc 11) on real browsers, Firefox and
 // Edge on throwaway profiles, each fully covered by this test's window with

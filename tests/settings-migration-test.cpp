@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // The real host moving a version 1 settings.json's panels into a profile
 // (M6a, ADR-038), in a private data folder (OPENDESKTOPVR_DATA_FOLDER), so

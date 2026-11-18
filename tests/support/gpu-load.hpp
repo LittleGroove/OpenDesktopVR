@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // A game-like GPU delay for tests (test round 7). In the game, the host's GPU
 // work completed about 44 ms after it was sent, queued behind Elite

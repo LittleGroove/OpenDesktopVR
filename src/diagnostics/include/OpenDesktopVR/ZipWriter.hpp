@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // A minimal .zip writer for the debug bundle (doc 09 "Debug bundle"):
 // files are stored, not compressed, with their CRC-32, in memory. Written

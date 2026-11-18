@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // The virtual keyboard's keys (doc 07 "Layout and geometry", ADR-036): a
 // full-size keyboard in key units (1 = a letter key's pitch), ANSI or ISO,

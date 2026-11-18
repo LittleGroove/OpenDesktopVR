@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // Where the hands fall in each eye's image (doc 03 "xrEndFrame work",
 // step 4; XR-13): the layer draws and clears only inside this area.

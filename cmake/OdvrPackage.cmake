@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: LicenseRef-Proprietary
-# Copyright (c) 2026 Robert McGough. All rights reserved.
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Robert McGough
 #
 # What goes into a package, and the ZIP it's packed into:
 #
@@ -53,6 +53,7 @@ install(
     set(ODVR_SOURCE_DIR \"${PROJECT_SOURCE_DIR}\")
     set(ODVR_VERSION \"${ODVR_VERSION}\")
     set(ODVR_LAYER_NAME \"${ODVR_LAYER_NAME}\")
+    set(ODVR_REPOSITORY \"${ODVR_REPOSITORY}\")
     set(ODVR_CONFIG \"\${CMAKE_INSTALL_CONFIG_NAME}\")
     set(ODVR_OUTPUT \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/BUILD-INFO.txt\")
     include(\"${PROJECT_SOURCE_DIR}/cmake/OdvrBuildInfo.cmake\")

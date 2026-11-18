@@ -1,9 +1,11 @@
 Open Desktop VR: third-party notices
 ====================================
 
-Open Desktop VR is proprietary software (see LICENSE). It includes or is built
-with the components below, each under its own license. Every dependency is
-pinned by version and SHA-256 in cmake/OdvrThirdParty.cmake.
+Open Desktop VR is free software under the GNU General Public License,
+version 3 or (at your option) any later version (see LICENSE). It includes or
+is built with the components below, each under its own license, all of them
+compatible with the GPL version 3. Every dependency is pinned by version and
+SHA-256 in cmake/OdvrThirdParty.cmake.
 
 
 DirectXTK (SimpleMath only), release oct2025
@@ -136,4 +138,5 @@ POSSIBILITY OF SUCH DAMAGE.
 Windows SDK components (Direct3D 11, Win32, Windows Runtime APIs, fxc)
 -------------------------------------------------------------------------------
 Operating-system components and build tools, used under the Windows SDK
-license. Nothing from them is redistributed.
+license: system libraries in the GPL's sense. Nothing from them is
+redistributed.

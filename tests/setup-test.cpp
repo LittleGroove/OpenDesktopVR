@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // The real OpenDesktopVR-Setup.exe (M7a, ADR-043), silent, as a test
 // instance: a private install folder, data folder and registry key.

@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // Draws the quick menu offscreen (M6d) and saves PNGs, for looking at: the
 // closed button (plain and hovered), the start page with a hover and a

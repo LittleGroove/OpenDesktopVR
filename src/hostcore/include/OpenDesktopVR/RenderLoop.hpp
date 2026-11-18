@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // The host's render thread (doc 02 "Threads", doc 08 "Render loop"):
 // - wakes only for dirty panels (FrameWakeup timer, at least 8 ms apart);

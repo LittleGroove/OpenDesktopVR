@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // The setup program's payload (ADR-043): the program's files, each packed
 // with Windows' own LZMS (the Compression API) and checked by its SHA-256,
@@ -18,6 +18,7 @@
 #pragma once
 
 #include <cstddef>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -55,5 +56,12 @@ bool IsSafeRelativePath(std::string_view path) noexcept;
 
 // SHA-256 as 64 lowercase hex digits (Windows' CNG); empty if it failed
 std::string Sha256Hex(std::string_view data) noexcept;
+
+// The version in a payload's header, without unpacking its files
+std::optional<std::string> PeekVersion(std::string_view bytes) noexcept;
+
+// The version a setup program file carries (its payload resource), so an
+// update can check it's the version the release claims (ADR-045)
+std::optional<std::string> SetupProgramVersion(const std::filesystem::path& setup) noexcept;
 
 }// namespace OpenDesktopVR::Install

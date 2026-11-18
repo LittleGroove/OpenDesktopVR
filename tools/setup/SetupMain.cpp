@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // OpenDesktopVR-Setup.exe (M7a, ADR-043): installs, updates, reinstalls and
 // uninstalls Open Desktop VR for the current Windows user, with no
@@ -237,8 +237,12 @@ std::wstring Names(const std::vector<Install::FileUser>& users) {
   return names;
 }
 
-bool StartHost(const fs::path& host) {
+// `previous`: the version it replaced, so the host can say it was updated
+bool StartHost(const fs::path& host, const std::string& previous) {
   std::wstring line = L"\"" + host.wstring() + L"\"";
+  if (Install::ParseVersion(previous)) {
+    line += L" --updated-from " + StringUtil::Widen(previous);
+  }
   STARTUPINFOW startup {sizeof(startup)};
   PROCESS_INFORMATION info {};
   if (!CreateProcessW(host.c_str(), line.data(), nullptr, nullptr, FALSE, 0, nullptr, host.parent_path().c_str(),
@@ -258,8 +262,8 @@ Outcome StillRunning() {
 
 // ---- Install, update, reinstall --------------------------------------------
 
-Outcome InstallSteps(
-  Work& work, const Install::Layout& layout, const Install::Payload& payload, const fs::path& self, const Options& options) {
+Outcome InstallSteps(Work& work, const Install::Layout& layout, const Install::Payload& payload, const fs::path& self,
+  const Options& options, const std::string& previous) {
   const auto& folder = layout.mInstallFolder;
   const auto host = folder / Install::HostFileName;
   work.Say(L"Closing Open Desktop VR...", 2);
@@ -313,7 +317,7 @@ Outcome InstallSteps(
   work.Say(L"Done.", 100);
 
   Outcome outcome {Done, std::format(L"Open Desktop VR {} is installed", StringUtil::Widen(payload.mVersion)), L""};
-  if (!options.mNoStart && StartHost(host)) {
+  if (!options.mNoStart && StartHost(host, previous)) {
     outcome.mText = L"It's starting now. Its settings window opens the first time; after that, it waits in the tray "
                     L"by the clock, and starting it again from the Start menu opens its window.";
   } else {
@@ -395,7 +399,7 @@ int InstallOrUpdate(const Options& options, const Install::Payload& payload, con
     }
   }
   const auto outcome = RunSteps(options.mSilent, L"Installing Open Desktop VR " + newText,
-    [&](Work& work) { return InstallSteps(work, layout, payload, self, options); });
+    [&](Work& work) { return InstallSteps(work, layout, payload, self, options, installed ? installed->mVersion : ""); });
   if (!options.mSilent) {
     Tell(outcome.mCode == Done ? TD_INFORMATION_ICON : TD_ERROR_ICON, outcome.mHeading, outcome.mText);
   }

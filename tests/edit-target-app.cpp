@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // The injection matrix's Win32 target (doc 11, M5a): a window filled by a
 // multiline EDIT control, as a plain Win32 app would have. key-inject-test

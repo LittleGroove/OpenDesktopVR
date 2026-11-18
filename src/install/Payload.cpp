@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 
 #include <OpenDesktopVR/JsonUtil.hpp>
 #include <OpenDesktopVR/Payload.hpp>
@@ -196,6 +196,41 @@ std::optional<std::string> Pack(const Payload& payload, std::string* error) {
   bytes += headerText;
   bytes += body;
   return bytes;
+}
+
+std::optional<std::string> PeekVersion(std::string_view bytes) noexcept {
+  try {
+    if (bytes.size() < PreambleBytes || bytes.substr(0, Magic.size()) != Magic) {
+      return std::nullopt;
+    }
+    std::uint32_t headerSize = 0;
+    for (int i = 0; i < 4; ++i) {
+      headerSize |= static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[8 + i])) << (8 * i);
+    }
+    if (headerSize == 0 || headerSize > MaxPayloadHeaderBytes || headerSize > bytes.size() - PreambleBytes) {
+      return std::nullopt;
+    }
+    const auto header = JsonUtil::Parse(bytes.substr(PreambleBytes, headerSize));
+    const auto version = header ? JsonUtil::Get<std::string>(*header, "version") : std::nullopt;
+    return version && ParseVersion(*version) ? version : std::nullopt;
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+std::optional<std::string> SetupProgramVersion(const std::filesystem::path& setup) noexcept {
+  const HMODULE module = LoadLibraryExW(setup.c_str(), nullptr, LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+  if (!module) {
+    return std::nullopt;
+  }
+  std::optional<std::string> version;
+  const HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(PayloadResourceID), RT_RCDATA);
+  const HGLOBAL loaded = resource ? LoadResource(module, resource) : nullptr;
+  if (const void* data = loaded ? LockResource(loaded) : nullptr) {
+    version = PeekVersion({static_cast<const char*>(data), SizeofResource(module, resource)});
+  }
+  FreeLibrary(module);
+  return version;
 }
 
 std::optional<Payload> Unpack(std::string_view bytes, std::string* error) noexcept {

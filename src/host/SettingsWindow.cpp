@@ -1,7 +1,9 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 
 #include "SettingsWindow.hpp"
+
+#include "UpdateService.hpp"
 
 #include <OpenDesktopVR/Automation.hpp>
 #include <OpenDesktopVR/Autostart.hpp>
@@ -1611,11 +1613,23 @@ void SettingsWindow::GeneralPage() {
   }
   Help("Starts in the tray when you sign in to Windows, ready before the game.");
 
-  // About
+  UpdatesSection();
+
+  // About (ADR-044: the licence and where the source is)
   ImGui::Spacing();
   ImGui::SeparatorText("About");
-  ImGui::TextUnformatted(Utf8(Product::DisplayName).c_str());
+  ImGui::TextUnformatted(std::format("{} {}", Utf8(Product::DisplayName), Product::Version).c_str());
   ImGui::TextDisabled("%s", Product::BuildDescription().c_str());
+  ImGui::TextWrapped("Free software: you may share and change it under the GNU General Public License, version 3 or "
+                     "later. It comes with no warranty.");
+  if (ImGui::Button("Source code and releases")) {
+    const auto site = StringUtil::Widen(std::format("https://github.com/{}", Product::Repository));
+    ShellExecuteW(mWindow, L"open", site.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("The licence")) {
+    ShellExecuteW(mWindow, L"open", L"https://www.gnu.org/licenses/gpl-3.0.html", nullptr, nullptr, SW_SHOWNORMAL);
+  }
   ImGui::TextDisabled("Settings and logs: %s", Utf8(Product::DataFolder().wstring()).c_str());
   if (ImGui::Button("Open the logs folder")) {
     const auto folder = Product::LogsFolder();
@@ -1623,6 +1637,67 @@ void SettingsWindow::GeneralPage() {
   }
   ImGui::PopItemWidth();
   ImGui::EndChild();
+}
+
+// ---- Updates (ADR-045) ------------------------------------------------------
+
+void SettingsWindow::UpdatesSection() {
+  ImGui::Spacing();
+  ImGui::SeparatorText("Updates");
+  auto settings = mPanels.Updates();
+  bool changed = ImGui::Checkbox("Check for new versions", &settings.mCheck);
+  Help("Every few hours it asks GitHub, where Open Desktop VR's releases are, whether there's a newer one. Nothing "
+       "about you is sent.");
+  ImGui::BeginDisabled(!settings.mCheck);
+  changed = ImGui::Checkbox("Install them by themselves", &settings.mInstallItself) || changed;
+  Help("Only while no game is running and this window is closed: Open Desktop VR closes for a moment and starts again "
+       "as the new version.");
+  ImGui::EndDisabled();
+  changed = ImGui::Checkbox("Get beta versions (pre-releases)", &settings.mBeta) || changed;
+  Help("Test versions of what's coming, before it's released. They may have rough edges. Turning this off keeps the "
+       "beta you have until a newer release comes out.");
+  if (changed) {
+    mPanels.SetUpdates(settings);
+  }
+  if (!mUpdates) {
+    return;
+  }
+  using State = UpdateService::State;
+  const auto& status = mUpdates->GetStatus();
+  if (!status.mUpdatedFrom.empty()) {
+    ImGui::TextUnformatted(std::format("Updated from {} to {}.", status.mUpdatedFrom, Product::Version).c_str());
+  }
+  if (status.mState == State::Failed) {
+    const auto warning = Theme::ToRgba(Theme::StatusWarning);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4 {warning.r, warning.g, warning.b, warning.a});
+  }
+  ImGui::TextWrapped("%s", status.mText.c_str());
+  if (status.mState == State::Failed) {
+    ImGui::PopStyleColor();
+  }
+  if (status.mState == State::Unavailable) {
+    return;
+  }
+  ImGui::BeginDisabled(!mUpdates->CanCheck());
+  if (ImGui::Button("Check now")) {
+    mUpdates->CheckNow();
+  }
+  ImGui::EndDisabled();
+  if (status.mState == State::Ready) {
+    ImGui::SameLine();
+    if (ImGui::Button(std::format("Install {} now", status.mVersion).c_str())) {
+      mUpdates->InstallNow();
+    }
+    ImGui::SetItemTooltip("Open Desktop VR closes and starts again. A game that's running keeps the old in-game part "
+                          "until it restarts.");
+  }
+  // Only GitHub's own pages (the address came from GitHub's answer)
+  if ((status.mState == State::Ready || status.mState == State::Installing) && status.mPage.starts_with("https://github.com/")) {
+    ImGui::SameLine();
+    if (ImGui::Button("What's new")) {
+      ShellExecuteW(mWindow, L"open", StringUtil::Widen(status.mPage).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
+  }
 }
 
 // ---- Diagnostics (M6c, doc 09) -------------------------------------------------

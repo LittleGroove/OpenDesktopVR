@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: LicenseRef-Proprietary
-# Copyright (c) 2026 Robert McGough. All rights reserved.
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 Robert McGough
 #
 # OpenDesktopVR.exe: the tray app (doc 02 "Host").
 
@@ -15,6 +15,7 @@ odvr_executable(
   Support.cpp
   QuickMenuController.cpp
   AutomationService.cpp
+  UpdateService.cpp
   DEPS
   odvr::hostcore
   odvr::hostlink
@@ -27,6 +28,7 @@ odvr_executable(
   odvr::diagnostics
   odvr::automation
   odvr::install
+  odvr::update
   odvr::ui
   odvr::imgui
   odvr::gfx

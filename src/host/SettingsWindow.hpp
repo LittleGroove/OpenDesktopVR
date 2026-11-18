@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // The desktop settings window (doc 09 "Desktop UI", ADR-020): the panel
 // list, a window picker, and each panel's window rule, placement, crop and
@@ -53,6 +53,8 @@ struct ImFontAtlas;
 struct ImGuiContext;
 
 namespace OpenDesktopVR::Host {
+
+class UpdateService;
 
 class SettingsWindow {
  public:
@@ -108,6 +110,10 @@ class SettingsWindow {
   // The Hands tab's "Open it now" for the quick menu (ADR-041)
   void SetQuickMenuOpener(std::function<void()> open) {
     mOpenQuickMenu = std::move(open);
+  }
+  // The General tab's Updates section (ADR-045); it outlives this window's use
+  void SetUpdates(UpdateService* updates) noexcept {
+    mUpdates = updates;
   }
   // The command builder's "Try it" (UI-9, ADR-042): runs a command's words
   // and says what happened
@@ -309,6 +315,8 @@ class SettingsWindow {
   // The Diagnostics tab
   bool mSelectDiagnostics {false};
   std::function<void()> mOpenQuickMenu;
+  UpdateService* mUpdates {nullptr};
+  void UpdatesSection();
   // The Keybinds tab's command builder (UI-9)
   void CommandBuilder(const std::vector<PanelDefinition>& panels);
   std::function<std::string(std::span<const std::wstring>)> mRunCommand;

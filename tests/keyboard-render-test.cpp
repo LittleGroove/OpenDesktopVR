@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Proprietary
-// Copyright (c) 2026 Robert McGough. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Robert McGough
 //
 // Draws the keyboard panel offscreen (M5b) and saves PNGs, for looking at:
 // the US layout plain, and the German one (ISO) plain, with Shift latched,
