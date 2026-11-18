@@ -500,9 +500,17 @@ int Uninstall(const Options& options, const fs::path& self) {
       work.Say(L"Deleting its settings and logs...", 90);
       Log::Info("Setup: deleting {}", StringUtil::Narrow(layout.mDataFolder.wstring()));
       Log::Stop();
+      // An antivirus scanner may hold a freshly written file for a moment
       std::error_code error;
-      fs::remove_all(layout.mDataFolder, error);
-      done.mText = L"Its panels, profiles, settings and logs are deleted too.";
+      for (int attempt = 0; attempt < 10 && fs::exists(layout.mDataFolder, error); ++attempt) {
+        fs::remove_all(layout.mDataFolder, error);
+        if (fs::exists(layout.mDataFolder, error)) {
+          std::this_thread::sleep_for(300ms);
+        }
+      }
+      done.mText = fs::exists(layout.mDataFolder, error)
+        ? L"Some of its settings and logs couldn't be deleted: delete " + layout.mDataFolder.wstring() + L" yourself."
+        : L"Its panels, profiles, settings and logs are deleted too.";
     } else {
       done.mText = L"Your panels, profiles and settings are kept, in " + layout.mDataFolder.wstring()
         + L", for a later install. Delete that folder to remove them.";

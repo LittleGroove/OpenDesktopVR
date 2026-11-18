@@ -10,7 +10,9 @@
 //   the window carrying on with the panels it now has (DU-2);
 // - the shared memory's name held by another program, as an elevated game
 //   holds it (here, with a DACL that refuses everyone): the host says so and
-//   what to do, carries on, and makes the block once it's let go (CMP-8).
+//   what to do, carries on, and makes the block once it's let go (CMP-8);
+// - started on a game's profile with no game running (as an update mid-game
+//   leaves it): back to the profile it replaced (test round 23).
 //
 //   robustness-host-test <OpenDesktopVR.exe>
 
@@ -229,6 +231,33 @@ int wmain(int argc, wchar_t** argv) {
     CloseHandle(squatter);
     Check(LogShows("Shared memory created; layers can attach", 15), "once it's let go, the host makes the block");
     Check(WaitExit(host) == 0, "and quits normally");
+  });
+
+  Scenario("Started on a game's profile with no game running: back to the one it replaced (round 23)", [&] {
+    // As an update leaves it: closed mid-game, on the game's profile, with
+    // the profile it replaced remembered
+    std::string defaultID;
+    for (const auto& entry: fs::directory_iterator(gData / "profiles")) {
+      const auto json = JsonUtil::Json::parse(ReadText(entry.path()), nullptr, false);
+      if (entry.path().extension() == ".json" && json.is_object() && json.value("name", "") == "Default") {
+        defaultID = json.value("id", "");
+      }
+    }
+    auto settings = JsonUtil::Json::parse(ReadText(gData / "settings.json"), nullptr, false);
+    if (!Check(!defaultID.empty() && settings.is_object(), "the profiles 'Default' and 'Second', and settings")) {
+      return;
+    }
+    settings["activeProfile"] = "aaaaaaaaaaaaaaaa";
+    settings["profileBeforeGame"] = defaultID;
+    WriteText(gData / "settings.json", settings.dump(2));
+    auto host = Start(L"--exit-after 20");
+    Check(LogShows("active 'Second'", 10), "it starts on the game's profile, 'Second'");
+    Check(LogShows("Profile: 'Default' (the game it was for isn't running)", 18),
+      "with no game's layer in 10 s, it goes back to 'Default'");
+    Check(WaitExit(host) == 0, "and quits normally");
+    const auto saved = JsonUtil::Json::parse(ReadText(gData / "settings.json"), nullptr, false);
+    Check(saved.is_object() && saved.value("activeProfile", "") == defaultID && !saved.contains("profileBeforeGame"),
+      "saved: 'Default' active, nothing left to go back to");
   });
 
   return Finish();

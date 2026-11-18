@@ -644,15 +644,31 @@ CloseResult CloseHost(const fs::path& hostExe, std::chrono::milliseconds wait) n
         processes.push_back(process);
       }
     }
-    // Not forced: the host is asked, and saves its settings first
-    session.Shutdown();
-    const auto deadline = std::chrono::steady_clock::now() + wait;
-    bool allGone = true;
-    for (const HANDLE process: processes) {
-      const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-      if (WaitForSingleObject(process, static_cast<DWORD>(std::max<long long>(left.count(), 0))) != WAIT_OBJECT_0) {
-        allGone = false;
+    // Not forced: the host is asked, and saves its settings first. A host
+    // still starting up may not answer yet, so it's asked again every few
+    // seconds until the deadline.
+    using Clock = std::chrono::steady_clock;
+    const auto deadline = Clock::now() + wait;
+    bool allGone = false;
+    while (!allGone) {
+      session.Shutdown();
+      const auto now = Clock::now();
+      const auto round = std::min(deadline, now + std::chrono::seconds(3));
+      const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(std::max(round - now, Clock::duration::zero()));
+      if (processes.empty()) {
+        // They couldn't be opened to wait on: asked, then listed again
+        std::this_thread::sleep_for(left);
+        allGone = session.List().empty();
+      } else {
+        const DWORD result = WaitForMultipleObjects(static_cast<DWORD>(processes.size()), processes.data(), TRUE,
+          static_cast<DWORD>(left.count()));
+        allGone = result < WAIT_OBJECT_0 + processes.size();
       }
+      if (Clock::now() >= deadline) {
+        break;
+      }
+    }
+    for (const HANDLE process: processes) {
       CloseHandle(process);
     }
     return allGone ? CloseResult::Closed : CloseResult::StillRunning;

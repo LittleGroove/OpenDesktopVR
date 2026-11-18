@@ -9,7 +9,8 @@
 //   (in the test key), Store apps' read access (CMP-4). It runs without
 //   asking for elevation, though its name says "Setup".
 // - An update while the host runs: the Restart Manager closes it (it saves
-//   and logs why), the files are replaced, the new host starts.
+//   and logs why), the files are replaced, the new host starts. A host
+//   only just started, not answering yet, is asked again until it does.
 // - An update while a game holds the layer: set aside, the game named in
 //   the log (CMP-5), cleaned once free.
 // - A newer version installed: refused, unless --allow-older.
@@ -203,6 +204,22 @@ int wmain(int argc, wchar_t** argv) {
     std::this_thread::sleep_for(1s);
     Check(Install::CloseHost(host, 15s) == Install::CloseResult::Closed, "and closes the same way (as the next setup would)");
     Check(!HostWindowUp(), "none left running");
+  });
+
+  Scenario("A host only just started is still closed: asked again until it answers", [&] {
+    auto starting = StartHost(host);
+    if (!Check(starting.hProcess != nullptr, "started")) {
+      return;
+    }
+    // At once: before its windows exist and its message loop runs
+    const auto result = Install::CloseHost(host, 30s);
+    DWORD exitCode = 1;
+    WaitForSingleObject(starting.hProcess, 5'000);
+    GetExitCodeProcess(starting.hProcess, &exitCode);
+    Check(result == Install::CloseResult::Closed && exitCode == 0,
+      std::format("closed, and quit normally (exit code {})", exitCode));
+    CloseHandle(starting.hThread);
+    CloseHandle(starting.hProcess);
   });
 
   Scenario("An update while a game holds the layer: set aside, the game named (CMP-5), cleaned once free", [&] {

@@ -83,7 +83,33 @@ void PanelManager::Load() {
   mPanels = mProfiles.Find(mActiveProfile)->mPanels;
   Log::Info("Profiles: {} ({} unreadable, set aside); active '{}' with {} panels", mProfiles.All().size(), unreadable,
     StringUtil::Narrow(ProfileName(mActiveProfile)), mPanels.size());
+  // Started on a game's profile (an update restarts the host mid-game):
+  // the profile it replaced, remembered for when the game ends
+  auto remembered = JsonUtil::Get<std::string>(mDocument, "profileBeforeGame");
+  if (remembered && !mProfiles.Find(*remembered)) {
+    remembered.reset();
+  }
+  mReturn.Restore(remembered, mActiveProfile, ProfileReturn::Clock::now());
+  if (const auto& back = mReturn.Remembered()) {
+    Log::Info("Profiles: back to '{}' when the game ends, or in {} s if it isn't running",
+      StringUtil::Narrow(ProfileName(*back)), ProfileReturn::Grace.count());
+  }
+  SaveReturn();
   Push();
+}
+
+void PanelManager::SaveReturn() {
+  const auto& back = mReturn.Remembered();
+  const bool saved = mDocument.contains("profileBeforeGame");
+  if (back) {
+    if (!saved || JsonUtil::GetOr<std::string>(mDocument, "profileBeforeGame", "") != *back) {
+      mDocument["profileBeforeGame"] = *back;
+      SaveSettings();
+    }
+  } else if (saved) {
+    mDocument.erase("profileBeforeGame");
+    SaveSettings();
+  }
 }
 
 void PanelManager::FlushSettings() {
@@ -223,13 +249,14 @@ bool PanelManager::Switch(std::string_view id, const char* why, bool byHand) {
   }
   mStore.Flush();// ST-3
   if (byHand) {
-    mProfileBeforeGame.reset();// the user chose: the game ending doesn't switch back
+    mReturn.Forget();// the user chose: the game ending doesn't switch back
   }
   mActiveProfile = std::string {id};
   mPanels = profile->mPanels;
   mHidden.clear();
   mDocument["activeProfile"] = mActiveProfile;
   SaveSettings();
+  SaveReturn();
   Log::Info("Profile: '{}' ({}), {} panels", StringUtil::Narrow(profile->mName), why, mPanels.size());
   Push();
   return true;
@@ -302,9 +329,8 @@ bool PanelManager::DeleteProfile(std::string_view id) {
   if (!mProfiles.Remove(id)) {
     return false;
   }
-  if (mProfileBeforeGame == id) {
-    mProfileBeforeGame.reset();
-  }
+  mReturn.ForgetIf(id);
+  SaveReturn();
   Log::Info("Profiles: '{}' deleted", StringUtil::Narrow(name));
   mChanged.Emit();
   return true;
@@ -332,26 +358,37 @@ std::optional<std::string> PanelManager::ImportProfile(const std::filesystem::pa
 
 void PanelManager::FollowGame(uint32_t processID, const std::wstring& executable) {
   const auto change = mGame.Update(processID, executable);
+  const auto now = ProfileReturn::Clock::now();
   if (!change) {
+    // Started on a game's profile, and no game's layer came in time: the
+    // game has gone, so back to the profile it replaced
+    if (const auto back = mReturn.Tick(!mGame.Executable().empty(), now)) {
+      Switch(*back, "the game it was for isn't running", false);
+      SaveReturn();
+      mChanged.Emit();
+    }
     return;
   }
   if (change->mKind == GameFollower::Change::Kind::Ended) {
     // Back to the profile it replaced, if it switched one in and the user
     // hasn't chosen another since
     Log::Info("Profiles: {} ended", StringUtil::Narrow(change->mExecutable));
-    if (const auto back = std::exchange(mProfileBeforeGame, std::nullopt)) {
+    if (const auto back = mReturn.GameEnded()) {
       Switch(*back, "the game ended", false);
     }
+    SaveReturn();
     mChanged.Emit();
     return;
   }
   // A game's layer attached: its profile, if one claims it
   Log::Info("Profiles: {} started", StringUtil::Narrow(change->mExecutable));
+  mReturn.Tick(true, now);
   mChanged.Emit();
   if (const auto id = mProfiles.ForGame(change->mExecutable); id && *id != mActiveProfile) {
     const auto before = mActiveProfile;
     if (Switch(*id, "the game claims it", false)) {
-      mProfileBeforeGame = before;
+      mReturn.Replaced(before);
+      SaveReturn();
     }
   }
 }

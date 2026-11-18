@@ -190,6 +190,8 @@ class PanelManager {
   void Push();
   void SaveSettings();
   bool Switch(std::string_view id, const char* why, bool byHand);
+  // settings.json's "profileBeforeGame", from mReturn
+  void SaveReturn();
   Settings::DocumentSpec Spec() const;
 
   RenderLoop& mRenderer;
@@ -200,8 +202,9 @@ class PanelManager {
   ProfileLibrary mProfiles;
   std::string mActiveProfile;
   // Per-game switching: the game followed, and the profile to go back to
+  // (kept in settings.json across restarts)
   GameFollower mGame;
-  std::optional<std::string> mProfileBeforeGame;
+  ProfileReturn mReturn;
   std::vector<PanelDefinition> mPanels;
   std::vector<PanelDefinition> mTestPanels;
   Visibility::Hidden mHidden;

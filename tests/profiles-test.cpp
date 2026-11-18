@@ -179,5 +179,42 @@ int main() {
     Check(next && next->mKind == GameFollower::Change::Kind::Started, "Elite started again (a new process): followed");
   });
 
+  Scenario("The profile a game replaced: back when it ends, also after a restart (test round 23)", [] {
+    using namespace std::chrono_literals;
+    const auto t0 = ProfileReturn::Clock::now();
+    ProfileReturn back;
+    back.Replaced("desk");
+    Check(!back.Tick(false, t0 + 60s), "while the game runs, ticks don't switch back");
+    Check(back.GameEnded() == "desk" && !back.Remembered(), "the game ended: back to 'desk', then nothing remembered");
+
+    back.Replaced("desk");
+    back.Forget();
+    Check(!back.GameEnded(), "the user chose a profile meanwhile: no switch back");
+
+    back.Replaced("desk");
+    back.ForgetIf("other");
+    Check(back.Remembered() == "desk", "another profile deleted: still remembered");
+    back.ForgetIf("desk");
+    Check(!back.Remembered(), "the remembered profile deleted: forgotten");
+
+    // Restarted mid-game (an update): the game's layer comes back in time
+    back.Restore("desk", "elite", t0);
+    Check(!back.Tick(false, t0 + 2s), "restored: waits for the game");
+    Check(!back.Tick(true, t0 + 3s), "the game's layer is back: keeps waiting for it to end");
+    Check(!back.Tick(false, t0 + 60s), "no switch after the grace once the game was seen");
+    Check(back.GameEnded() == "desk", "the game ended: back to 'desk'");
+
+    // Started after the game had gone
+    back.Restore("desk", "elite", t0);
+    Check(!back.Tick(false, t0 + ProfileReturn::Grace - 1s), "no game yet, within the grace: waits");
+    Check(back.Tick(false, t0 + ProfileReturn::Grace) == "desk", "no game within the grace: back to 'desk'");
+    Check(!back.Tick(false, t0 + 60s) && !back.Remembered(), "once");
+
+    back.Restore("elite", "elite", t0);
+    Check(!back.Remembered(), "a remembered profile that's already active is dropped");
+    back.Restore(std::nullopt, "elite", t0);
+    Check(!back.Tick(false, t0 + 60s), "nothing remembered: nothing happens");
+  });
+
   return Testing::Finish();
 }
