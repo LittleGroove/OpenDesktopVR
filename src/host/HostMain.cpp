@@ -432,7 +432,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     settings.SetCommandRunner([&automation](std::span<const std::wstring> words) { return automation.Try(words); });
     automation.SetSettingsOpener([&settings] { settings.Show(); });
     if (panels.IsFirstRun() && !options.mTestInstance) {
-      // A fresh install: the way in, open, with a welcome (M6f)
+      // A fresh install: the way in, open, with a welcome (M6f). Test
+      // instances only log the decision (PanelManager::Load)
       Log::Info("First start: the settings window opens by itself");
       settings.ShowWelcome();
       settings.Show();

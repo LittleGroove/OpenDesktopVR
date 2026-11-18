@@ -59,7 +59,8 @@ class PanelManager {
   PanelManager& operator=(const PanelManager&) = delete;
 
   void Load();
-  // This start found no settings and no profiles: a fresh install (M6f:
+  // This start found no profiles and nothing the host writes in settings
+  // (the installer's layer settings may be there): a fresh install (M6f:
   // the settings window opens by itself, with a welcome)
   bool IsFirstRun() const noexcept {
     return mFirstRun;

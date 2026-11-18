@@ -43,11 +43,18 @@ void PanelManager::Load() {
     return;
   }
   auto loaded = mStore.Load(Spec());
-  const bool noSettings = loaded.mStatus == Settings::LoadStatus::Missing;
   mDocument = std::move(loaded.mDocument);
   ReadGlobals();
   const auto unreadable = mProfiles.Load();
-  mFirstRun = noSettings && mProfiles.All().empty() && unreadable == 0;
+  // A first start: the host has never run here. The installer writes
+  // settings.json's "layer" part before it does (odvr-layer test-panel off;
+  // round 22), so the file being there isn't enough: what only the host
+  // writes is, the active profile (version 1: the panel list), and profiles
+  const bool hostRanHere = mDocument.contains("activeProfile") || mDocument.contains("panels");
+  mFirstRun = !hostRanHere && mProfiles.All().empty() && unreadable == 0;
+  if (mFirstRun) {
+    Log::Info("First start: no profiles, and no settings from an earlier start");
+  }
   // Version 1's panel list becomes the profile "Default" (ADR-038; the
   // store backed the old file up when it migrated it)
   std::size_t skipped = 0;

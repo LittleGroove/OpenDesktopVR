@@ -149,10 +149,11 @@ odvr_test(hand-service-test SOURCES hand-service-test.cpp DEPS odvr::hostcore)
 odvr_test(keybinds-test SOURCES keybinds-test.cpp DEPS odvr::keybinds)
 # Profiles (M6a): files, unreadable ones, export and import, games, migration
 odvr_test(profiles-test SOURCES profiles-test.cpp DEPS odvr::hostcore)
-# The real host moving version 1's panels into a profile, in a private folder
+# The real host moving version 1's panels into a profile, in a private folder;
+# a fresh install's first start after the installer's layer settings (round 22)
 odvr_test(settings-migration-test NO_CTEST SOURCES settings-migration-test.cpp DEPS odvr::settings odvr::core)
-add_dependencies(settings-migration-test OpenDesktopVR)
-add_test(NAME settings-migration-test COMMAND settings-migration-test $<TARGET_FILE:OpenDesktopVR>)
+add_dependencies(settings-migration-test OpenDesktopVR odvr-layer)
+add_test(NAME settings-migration-test COMMAND settings-migration-test $<TARGET_FILE:OpenDesktopVR> $<TARGET_FILE:odvr-layer>)
 set_tests_properties(settings-migration-test PROPERTIES TIMEOUT 120)
 # The virtual keyboard's logic (M5b): geometry, keys, repeat, when it shows
 odvr_test(vkeyboard-test SOURCES vkeyboard-test.cpp DEPS odvr::vkeyboard)
