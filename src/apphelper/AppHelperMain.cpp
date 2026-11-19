@@ -25,7 +25,7 @@
 
 #include <OpenDesktopVR/AppHelperProtocol.hpp>
 #include <OpenDesktopVR/ImportPatch.hpp>
-#include <OpenDesktopVR/InjectionHookProtocol.hpp>
+#include <OpenDesktopVR/KeyChannel.hpp>
 
 #include <Windows.h>
 
@@ -37,7 +37,7 @@ namespace {
 
 namespace Protocol = OpenDesktopVR::AppHelperProtocol;
 namespace InputFakes = OpenDesktopVR::AppHelper::InputFakes;
-using OpenDesktopVR::InjectionHookProtocol::KeyCommand;
+using OpenDesktopVR::KeyChannel::KeyCommand;
 using OpenDesktopVR::AppHelper::ImportPatch;
 using OpenDesktopVR::AppHelper::InputFakes::gInFlight;
 

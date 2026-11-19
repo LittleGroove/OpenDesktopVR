@@ -5,7 +5,7 @@
 
 #include <OpenDesktopVR/AppHelperProtocol.hpp>
 #include <OpenDesktopVR/ImportPatch.hpp>
-#include <OpenDesktopVR/InjectionHookProtocol.hpp>
+#include <OpenDesktopVR/KeyChannel.hpp>
 
 #include <array>
 #include <initializer_list>
@@ -48,7 +48,7 @@ struct Window {
   // taken when an override starts, and the code units kept back for the
   // coming key-down
   std::array<BYTE, 256> mRealKeys {};
-  std::array<wchar_t, InjectionHookProtocol::CharacterQueueLimit> mChars {};
+  std::array<wchar_t, KeyChannel::CharacterQueueLimit> mChars {};
   int mCharCount {0};
 };
 std::array<Window, MaxThreads> gWindows {};
@@ -513,7 +513,7 @@ void Activate(HWND target) noexcept {
 }
 
 void OverrideModifiers(LPARAM argument) noexcept {
-  namespace Keys = InjectionHookProtocol;
+  namespace Keys = KeyChannel;
   auto* window = FindOrClaim(GetCurrentThreadId());
   if (!window) {
     return;
@@ -558,7 +558,7 @@ void OverrideModifiers(LPARAM argument) noexcept {
 }
 
 void HoldCharacter(LPARAM argument) noexcept {
-  const auto unit = InjectionHookProtocol::DecodeCharacter(argument);
+  const auto unit = KeyChannel::DecodeCharacter(argument);
   if (!unit) {
     return;// wider than one UTF-16 unit
   }

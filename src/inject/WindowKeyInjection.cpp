@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Robert McGough
 // Provenance: the author's own prototype code, imported at handover v2 (2026-11-15).
-#include <OpenDesktopVR/InjectionHookProtocol.hpp>
+#include <OpenDesktopVR/KeyChannel.hpp>
 #include <OpenDesktopVR/WindowKeyInjection.hpp>
 
 namespace OpenDesktopVR::WindowKeyInjection {
@@ -96,8 +96,8 @@ std::vector<Message> GetMessages(
     for (const auto ch: stroke.mText) {
       ret.push_back({
         hookMessage,
-        static_cast<WPARAM>(InjectionHookProtocol::KeyCommand::CharacterForNextKey),
-        InjectionHookProtocol::EncodeCharacter(ch),
+        static_cast<WPARAM>(KeyChannel::KeyCommand::CharacterForNextKey),
+        KeyChannel::EncodeCharacter(ch),
       });
     }
   }
@@ -115,7 +115,7 @@ std::vector<Message> GetMessages(
 }
 
 LPARAM GetModifierArgument(const VirtualKeyStroke& stroke) {
-  return InjectionHookProtocol::EncodeModifiers({
+  return KeyChannel::EncodeModifiers({
     .mShiftHeld = stroke.mShift,
     .mCtrlHeld = stroke.mControl,
     .mAltHeld = stroke.mAlt,

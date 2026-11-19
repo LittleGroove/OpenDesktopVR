@@ -23,7 +23,7 @@
 #include <cstdint>
 #include <optional>
 
-namespace OpenDesktopVR::InjectionHookProtocol {
+namespace OpenDesktopVR::KeyChannel {
 
 // Numbered in the order the injector issues them for one key press. The 0x30
 // block keeps clear of every AppHelperProtocol::Command value; the helper's
@@ -129,4 +129,4 @@ inline constexpr std::optional<wchar_t> DecodeCharacter(LPARAM argument) noexcep
   return static_cast<wchar_t>(value);
 }
 
-}// namespace OpenDesktopVR::InjectionHookProtocol
+}// namespace OpenDesktopVR::KeyChannel

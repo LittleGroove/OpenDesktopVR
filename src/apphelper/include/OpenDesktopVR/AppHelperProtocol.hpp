@@ -23,7 +23,7 @@
 //   reply window (given by Hello). wParam packs the command, a Result and a
 //   detail; lParam is the hooked thread's ID.
 //
-// The keyboard's sent commands (0x30 to 0x32) are in InjectionHookProtocol.hpp.
+// The keyboard's sent commands (0x30 to 0x32) are in KeyChannel.hpp.
 #pragma once
 
 #include <Windows.h>
@@ -69,7 +69,7 @@ enum class Command : uint8_t {
   InputOff = 0x06,
 
   // ---- Sent, around each injected event; never answered ----
-  // 0x30 to 0x32 belong to the keyboard (InjectionHookProtocol::KeyCommand):
+  // 0x30 to 0x32 belong to the keyboard (KeyChannel::KeyCommand):
   // activating the window on its thread, the modifier state, and a character
   // for the next key-down.
   //

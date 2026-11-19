@@ -66,7 +66,7 @@ void SetMouseButtons(LPARAM buttons) noexcept;
 // that took the real foreground, gives it back
 void Activate(HWND window) noexcept;
 
-// ---- Keys (M5a; InjectionHookProtocol::KeyCommand) ------------------------
+// ---- Keys (M5a; KeyChannel::KeyCommand) -----------------------------------
 // OverrideModifiers: a copy of this thread's real keyboard state is taken,
 // and the virtual keyboard's held modifiers and lock toggles (doc 06) are
 // written over it with SetKeyboardState, which GetKeyState and

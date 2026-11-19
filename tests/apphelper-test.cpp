@@ -36,7 +36,7 @@
 #include <OpenDesktopVR/AppHelperRules.hpp>
 #include <OpenDesktopVR/AppHelperService.hpp>
 #include <OpenDesktopVR/ImportPatch.hpp>
-#include <OpenDesktopVR/InjectionHookProtocol.hpp>
+#include <OpenDesktopVR/KeyChannel.hpp>
 
 #include <Windows.h>
 
@@ -343,7 +343,7 @@ int main(int argc, char** argv) {
       // Active on its own thread first (activation reorders the app's own
       // windows by itself), then its second window on top
       begin(0, 0);
-      send(command, static_cast<WPARAM>(InjectionHookProtocol::KeyCommand::ActivateOnThread), reinterpret_cast<LPARAM>(main));
+      send(command, static_cast<WPARAM>(KeyChannel::KeyCommand::ActivateOnThread), reinterpret_cast<LPARAM>(main));
       end();
       std::this_thread::sleep_for(150ms);
       Check(secondOnTop(), "before: the app's second window is above its main one");
@@ -425,7 +425,7 @@ int main(int argc, char** argv) {
       if (!on) {
         return;
       }
-      namespace Keys = InjectionHookProtocol;
+      namespace Keys = KeyChannel;
       const UINT command = RegisterWindowMessageW(AppHelperProtocol::CommandMessageName);
       const auto send = [&](UINT message, WPARAM wParam, LPARAM lParam) {
         DWORD_PTR result = 0;

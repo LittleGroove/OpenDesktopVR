@@ -54,7 +54,7 @@ bool IsBlocked(const VirtualKeyStroke&);
 
 // The messages for a stroke, in order, to send (not post) to the window. Each
 // unit of the text comes first, as a
-// `InjectionHookProtocol::KeyCommand::CharacterForNextKey` command on
+// `KeyChannel::KeyCommand::CharacterForNextKey` command on
 // `hookMessage` (the helper's registered command message); the helper posts
 // them when the key-down reaches the window, like TranslateMessage(). Alt
 // combinations become WM_SYSKEYDOWN/WM_SYSKEYUP without characters, so the
@@ -62,7 +62,7 @@ bool IsBlocked(const VirtualKeyStroke&);
 std::vector<Message> GetMessages(const VirtualKeyStroke&, UINT hookMessage);
 
 // The stroke's modifiers, as the argument of
-// `InjectionHookProtocol::KeyCommand::OverrideModifiers`
+// `KeyChannel::KeyCommand::OverrideModifiers`
 LPARAM GetModifierArgument(const VirtualKeyStroke&);
 
 // Where key messages for a captured window should go: the focused window on
