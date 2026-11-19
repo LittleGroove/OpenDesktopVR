@@ -56,6 +56,8 @@ struct FakeRuntime {
   std::vector<XrCompositionLayerQuad> mLastQuads;
   XrCompositionLayerFlags mLastQuadFlags {0};
   std::vector<std::string> mEnabledExtensions;
+  // How many lookups reached the runtime with a null instance (XR-8)
+  int mNullInstanceLookups {0};
 };
 inline FakeRuntime gRT;
 
@@ -180,7 +182,10 @@ inline XRAPI_ATTR XrResult XRAPI_CALL F_xrEndFrame(XrSession, const XrFrameEndIn
   return XR_SUCCESS;
 }
 
-inline XRAPI_ATTR XrResult XRAPI_CALL F_xrGetInstanceProcAddr(XrInstance, const char* name, PFN_xrVoidFunction* function) {
+inline XRAPI_ATTR XrResult XRAPI_CALL F_xrGetInstanceProcAddr(XrInstance instance, const char* name, PFN_xrVoidFunction* function) {
+  if (instance == XR_NULL_HANDLE) {
+    ++gRT.mNullInstanceLookups;
+  }
 #define F(fn) {#fn, reinterpret_cast<PFN_xrVoidFunction>(&F_##fn)}
   static const std::map<std::string, PFN_xrVoidFunction> functions {
     F(xrGetInstanceProcAddr), F(xrEnumerateInstanceExtensionProperties), F(xrDestroyInstance), F(xrGetSystemProperties),

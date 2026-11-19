@@ -72,6 +72,34 @@ int main(int argc, char** argv) {
     Check(layer.mRequest.getInstanceProcAddr && layer.mRequest.createApiLayerInstance, "entry points returned");
   });
 
+  // XR-8 (revised 2026-11-19, Q-1): what a layer above gets when it probes
+  // through ours with a null instance before calling down, while no instance
+  // of ours is alive
+  const auto probeFromAbove = [&](const std::string& when) {
+    const int runtimeAsked = gRT.mNullInstanceLookups;
+    PFN_xrVoidFunction fn = nullptr;
+    const auto layers = layer.mRequest.getInstanceProcAddr(XR_NULL_HANDLE, "xrEnumerateApiLayerProperties", &fn);
+    Check(XR_SUCCEEDED(layers) && fn, when + ": the layer properties: answered by the layer");
+    if (fn) {
+      const auto enumerate = reinterpret_cast<PFN_xrEnumerateApiLayerProperties>(fn);
+      uint32_t count = 0;
+      XrApiLayerProperties properties {XR_TYPE_API_LAYER_PROPERTIES};
+      const bool listed = XR_SUCCEEDED(enumerate(0, &count, nullptr)) && count == 1
+        && XR_SUCCEEDED(enumerate(1, &count, &properties)) && Product::LayerName == properties.layerName;
+      Check(listed, when + ": they list this layer");
+    }
+    for (const char* name: {"xrEnumerateInstanceExtensionProperties", "xrCreateInstance", "xrGetSystem"}) {
+      fn = reinterpret_cast<PFN_xrVoidFunction>(&F_xrDestroyInstance);// anything but null
+      const auto result = layer.mRequest.getInstanceProcAddr(XR_NULL_HANDLE, name, &fn);
+      Check(result == XR_ERROR_FUNCTION_UNSUPPORTED && !fn, std::format("{}: {} fails cleanly (unsupported)", when, name));
+    }
+    Check(gRT.mNullInstanceLookups == runtimeAsked, when + ": nothing was forwarded to the layer below");
+  };
+
+  Scenario("XR-8: before the first instance, a layer above gets clean answers", [&] {
+    probeFromAbove("before any instance");
+  });
+
   Scenario("The test panel is composed as a world-locked quad", [&] {
     Game game {layer};
     Check(game.mInstance != XR_NULL_HANDLE, "instance created");
@@ -91,12 +119,34 @@ int main(int argc, char** argv) {
       std::format("the static image was copied once in 50 frames (got {})", gRT.mReleases - releasesBefore));
   });
 
-  Scenario("XR-8: null-instance lookups are forwarded to the next layer", [&] {
+  Scenario("XR-8: while an instance lives, null-instance lookups reach its next layer", [&] {
+    Game game {layer};
+    const int runtimeAsked = gRT.mNullInstanceLookups;
     PFN_xrVoidFunction fn = nullptr;
     const auto result = layer.mRequest.getInstanceProcAddr(XR_NULL_HANDLE, "xrEnumerateInstanceExtensionProperties", &fn);
     Check(
-      XR_SUCCEEDED(result) && fn == reinterpret_cast<PFN_xrVoidFunction>(&F_xrEnumerateInstanceExtensionProperties),
+      XR_SUCCEEDED(result) && fn == reinterpret_cast<PFN_xrVoidFunction>(&F_xrEnumerateInstanceExtensionProperties)
+        && gRT.mNullInstanceLookups == runtimeAsked + 1,
       "reaches the next layer's function");
+  });
+
+  Scenario("XR-8: once that instance is destroyed, its next layer is forgotten", [&] {
+    probeFromAbove("for a second instance, after the first was destroyed");
+    // Two unsupported asks for the same function (one per probe): logged once
+    const auto log = std::filesystem::path {dataFolder.Path()} / L"logs" / L"layer-layer-dll-test.log";
+    const std::string line = "A layer above asked for xrEnumerateInstanceExtensionProperties with no instance";
+    std::string text;
+    for (int i = 0; i < 40 && text.find(line) == std::string::npos; ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      text = FileUtil::ReadAll(log).value_or("");
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));// anything still on its way
+    text = FileUtil::ReadAll(log).value_or("");
+    int times = 0;
+    for (auto at = text.find(line); at != std::string::npos; at = text.find(line, at + 1)) {
+      ++times;
+    }
+    Check(times == 1, std::format("an unsupported lookup is logged once per function (logged {} times)", times));
   });
 
   Scenario("XR-6, XR-5, XR-9: zero layers, another thread, the layer limit", [&] {

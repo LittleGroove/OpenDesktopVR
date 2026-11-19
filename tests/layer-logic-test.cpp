@@ -34,13 +34,17 @@ using namespace OpenDesktopVR::Testing;
 namespace {
 
 // ---- A fake "next layer" for the extension probe -----------------------------
-enum class FakeNext { HasHands, NoHands, LookupFails, EnumerateFails };
+enum class FakeNext { HasHands, NoHands, LookupFails, EnumerateFails, EmptyList };
 FakeNext gFake = FakeNext::HasHands;
 
 XRAPI_ATTR XrResult XRAPI_CALL
 FakeEnumerate(const char*, uint32_t capacity, uint32_t* count, XrExtensionProperties* properties) {
   if (gFake == FakeNext::EnumerateFails) {
     return XR_ERROR_RUNTIME_FAILURE;
+  }
+  if (gFake == FakeNext::EmptyList) {
+    *count = 0;
+    return XR_SUCCESS;
   }
   std::vector<const char*> names {"XR_KHR_D3D11_enable"};
   if (gFake == FakeNext::HasHands) {
@@ -154,6 +158,9 @@ int main() {
     Check(ProbeInstanceExtension(&FakeGetProcAddr, XR_EXT_HAND_TRACKING_EXTENSION_NAME) == Support::Unknown, "lookup failed: unknown, not 'no'");
     gFake = FakeNext::EnumerateFails;
     Check(ProbeInstanceExtension(&FakeGetProcAddr, XR_EXT_HAND_TRACKING_EXTENSION_NAME) == Support::Unknown, "enumeration failed: unknown");
+    gFake = FakeNext::EmptyList;
+    Check(ProbeInstanceExtension(&FakeGetProcAddr, XR_EXT_HAND_TRACKING_EXTENSION_NAME) == Support::Unknown,
+      "an empty list: unknown, not 'no' (the layer below doesn't know yet)");
     Check(ProbeInstanceExtension(nullptr, XR_EXT_HAND_TRACKING_EXTENSION_NAME) == Support::Unknown, "no next layer: unknown");
   });
 

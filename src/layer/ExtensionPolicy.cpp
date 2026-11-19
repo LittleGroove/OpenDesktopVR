@@ -42,12 +42,15 @@ Support ProbeInstanceExtension(PFN_xrGetInstanceProcAddr next, std::string_view 
     return Support::Unknown;
   }
   try {
+    // An empty list is "unknown" too (XR-7, 2026-11-19): a PC runtime always
+    // lists a graphics extension, so a layer below that lists nothing doesn't
+    // know yet
     uint32_t count = 0;
-    if (XR_FAILED(enumerate(nullptr, 0, &count, nullptr)) || count > 4096) {
+    if (XR_FAILED(enumerate(nullptr, 0, &count, nullptr)) || count == 0 || count > 4096) {
       return Support::Unknown;
     }
     std::vector<XrExtensionProperties> properties(count, {XR_TYPE_EXTENSION_PROPERTIES});
-    if (XR_FAILED(enumerate(nullptr, count, &count, properties.data()))) {
+    if (XR_FAILED(enumerate(nullptr, count, &count, properties.data())) || count == 0) {
       return Support::Unknown;
     }
     for (uint32_t i = 0; i < count && i < properties.size(); ++i) {

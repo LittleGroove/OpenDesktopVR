@@ -21,11 +21,13 @@
 #include <OpenDesktopVR/ThreadUtil.hpp>
 #include <OpenDesktopVR/XrUtil.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -43,10 +45,15 @@ struct Globals {
   std::vector<std::pair<XrSession, InstanceState*>> mSessions;
   std::unique_ptr<Session> mAttached;// XR-18: one per process
   bool mLoggedSecondSession {false};
-  // XR-8: the next layer's lookup, remembered from the last instance
-  std::atomic<PFN_xrGetInstanceProcAddr> mLastNextGetInstanceProcAddr {nullptr};
   std::once_flag mStartOnce;
+  // XR-8: the null-instance lookups already logged as unsupported (names come
+  // from layers above us, so only so many are kept)
+  std::mutex mLookupLogMutex;
+  std::vector<std::string> mLoggedLookups;
 };
+
+constexpr std::size_t MaxLoggedLookups = 32;
+constexpr std::size_t MaxLoggedNameBytes = 128;
 
 Globals& G() {
   static Globals* sGlobals = new Globals();
@@ -89,6 +96,63 @@ void StartOnce() {
     Log::Info("Layer {} loaded into {}", Product::LayerName, StringUtil::Narrow(ProcessUtil::ExecutablePath().wstring()));
     Log::Info("Build: {}", Product::BuildDescription());
   });
+}
+
+// ---- Null-instance lookups (XR-8, revised 2026-11-19, Q-1) ------------------
+//
+// Only layers above ours ask with a null instance (the loader answers the
+// application's own pre-instance queries itself). They're forwarded only to
+// the next layer of an instance that is still alive: the loader allows one
+// live instance at a time and frees the layers' libraries when it's
+// destroyed, so a next layer remembered from an earlier instance may point
+// into unloaded code.
+
+// The next layer's lookup, from a live instance; null when there's none
+PFN_xrGetInstanceProcAddr LiveNextGetInstanceProcAddr() {
+  std::shared_lock lock(G().mMutex);
+  for (const auto& state: G().mInstances) {
+    if (state->mNext.xrGetInstanceProcAddr) {
+      return state->mNext.xrGetInstanceProcAddr;
+    }
+  }
+  return nullptr;
+}
+
+// With no live next layer, the layers we know are ours alone
+XRAPI_ATTR XrResult XRAPI_CALL
+Own_xrEnumerateApiLayerProperties(uint32_t capacity, uint32_t* count, XrApiLayerProperties* properties) {
+  if (!count) {
+    return XR_ERROR_VALIDATION_FAILURE;
+  }
+  *count = 1;
+  if (capacity == 0) {
+    return XR_SUCCESS;
+  }
+  if (!properties || properties[0].type != XR_TYPE_API_LAYER_PROPERTIES) {
+    return XR_ERROR_VALIDATION_FAILURE;
+  }
+  // As the layer's manifest says (src/layer/manifest.json.in)
+  strncpy_s(properties[0].layerName, Product::LayerName.data(), Product::LayerName.size());
+  strcpy_s(properties[0].description, "Open Desktop VR: desktop windows you can touch with your hands, in any OpenXR game");
+  properties[0].specVersion = XR_CURRENT_API_VERSION;
+  properties[0].layerVersion = 1;
+  return XR_SUCCESS;
+}
+
+// Once per function name, and only for so many names. The log may not have
+// started yet: no instance has been created
+void LogUnsupportedLookup(std::string_view name) {
+  StartOnce();
+  const auto kept = name.substr(0, MaxLoggedNameBytes);
+  std::lock_guard lock(G().mLookupLogMutex);
+  auto& logged = G().mLoggedLookups;
+  if (logged.size() >= MaxLoggedLookups || std::ranges::find(logged, kept) != logged.end()) {
+    return;
+  }
+  logged.emplace_back(kept);
+  Log::Info("A layer above asked for {} with no instance, and no instance of ours is alive to forward it: unsupported "
+            "(XR-8)",
+    logged.back());
 }
 
 // ---- Hooks ---------------------------------------------------------------------
@@ -262,7 +326,6 @@ Hook_xrCreateApiLayerInstance(const XrInstanceCreateInfo* info, const XrApiLayer
   // The layers below us see the chain from the next entry on
   XrApiLayerCreateInfo chained = *layerInfo;
   chained.nextInfo = nextInfo->next;
-  G().mLastNextGetInstanceProcAddr.store(nextGetProcAddr);
 
   auto state = std::make_unique<InstanceState>();
   ExtensionPlan plan;
@@ -361,14 +424,19 @@ Hook_xrGetInstanceProcAddr(XrInstance instance, const char* name, PFN_xrVoidFunc
     }
 
     if (instance == XR_NULL_HANDLE) {
-      // XR-8: let layers above probe through us
-      if (const auto next = G().mLastNextGetInstanceProcAddr.load()) {
+      // XR-8: through a live next layer only (see above)
+      if (const auto next = LiveNextGetInstanceProcAddr()) {
         return next(instance, name, function);
       }
+      if (fn == "xrEnumerateApiLayerProperties") {
+        *function = reinterpret_cast<PFN_xrVoidFunction>(&Own_xrEnumerateApiLayerProperties);
+        return XR_SUCCESS;
+      }
+      // A clean failure for everything else, extension queries included:
+      // an empty list would read as a definite "no" to the layer above
       *function = nullptr;
-      const bool preInstance = fn == "xrEnumerateInstanceExtensionProperties"
-        || fn == "xrEnumerateApiLayerProperties" || fn == "xrCreateInstance";
-      return preInstance ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
+      LogUnsupportedLookup(fn);
+      return XR_ERROR_FUNCTION_UNSUPPORTED;
     }
 
     const InstanceState* state = nullptr;
