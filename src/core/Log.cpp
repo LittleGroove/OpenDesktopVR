@@ -29,8 +29,9 @@ struct Slot {
 };
 
 // Bounded multi-producer, multi-consumer queue of fixed slots.
-// The algorithm is Dmitry Vyukov's bounded MPMC queue (published at
-// 1024cores.net under a BSD-2-Clause-style license; see THIRD_PARTY_NOTICES):
+// The algorithm is Dmitry Vyukov's published bounded MPMC queue (from his
+// site 1024cores.net, no longer online); his licence for it is in
+// THIRD_PARTY_NOTICES. In short:
 // each slot carries a sequence number that tells producers and consumers
 // whose turn it is, so neither side ever takes a lock.
 // The two positions sit on separate cache lines on purpose (C4324).
