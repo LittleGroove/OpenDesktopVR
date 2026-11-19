@@ -18,11 +18,13 @@
 //   foreground and active; another of its threads sees none of it (HK-5);
 //   it can't come to the top or SendInput (HK-8); the fakes end 100 ms
 //   after the end, 2 s after a lost end, and a stray end changes nothing;
-// - keys (M5a): while it handles an injected key-down the app sees the
-//   keyboard's Shift (GetKeyState, GetKeyboardState, GetAsyncKeyState) and
-//   Caps Lock, and the key's characters are already in its queue with the
-//   key's lParam (INJ-9); its own key state comes back after; at most 16
-//   characters wait; one whose key never came isn't typed later;
+// - keys (M5a): during an injected key-down, the virtual keyboard's Shift
+//   and Caps Lock are what the app reads (GetKeyState, GetKeyboardState,
+//   GetAsyncKeyState), and the key's characters are queued ahead of it with
+//   the key's lParam (INJ-9); its real key state returns later, or at once
+//   on the hand-back; "everything released" is a state, not the hand-back;
+//   arguments that decode to nothing change nothing; at most 16 characters
+//   are kept, and one whose key never came isn't typed later;
 // - the service stopping with a window still on unloads it too.
 // The real browsers are in occlusion-test.
 
@@ -341,7 +343,7 @@ int main(int argc, char** argv) {
       // Active on its own thread first (activation reorders the app's own
       // windows by itself), then its second window on top
       begin(0, 0);
-      send(command, 0x11, reinterpret_cast<LPARAM>(main));// ActivateWindow
+      send(command, static_cast<WPARAM>(InjectionHookProtocol::KeyCommand::ActivateOnThread), reinterpret_cast<LPARAM>(main));
       end();
       std::this_thread::sleep_for(150ms);
       Check(secondOnTop(), "before: the app's second window is above its main one");
@@ -424,14 +426,19 @@ int main(int argc, char** argv) {
         return;
       }
       namespace Keys = InjectionHookProtocol;
-      namespace Mods = InjectionHookProtocol::KeyboardModifiers;
       const UINT command = RegisterWindowMessageW(AppHelperProtocol::CommandMessageName);
       const auto send = [&](UINT message, WPARAM wParam, LPARAM lParam) {
         DWORD_PTR result = 0;
         return SendMessageTimeoutW(main, message, wParam, lParam, SMTO_NORMAL | SMTO_ABORTIFHUNG, 2000, &result) != 0;
       };
-      const auto keyCommand = [&](Keys::Command which, LPARAM argument) {
+      const auto keyCommand = [&](Keys::KeyCommand which, LPARAM argument) {
         send(command, static_cast<WPARAM>(which), argument);
+      };
+      const auto modifiers = [&](const Keys::InjectedModifiers& state) {
+        keyCommand(Keys::KeyCommand::OverrideModifiers, Keys::EncodeModifiers(state));
+      };
+      const auto character = [&](wchar_t unit) {
+        keyCommand(Keys::KeyCommand::CharacterForNextKey, Keys::EncodeCharacter(unit));
       };
       const auto begin = [&] {
         send(command, static_cast<WPARAM>(AppHelperProtocol::Command::BeginInjection), AppHelperProtocol::PackPoint(10, 10));
@@ -451,10 +458,9 @@ int main(int argc, char** argv) {
       const LPARAM keyUp = keyDown | (LPARAM {1} << 30) | (LPARAM {1} << 31);
       const auto charsBefore = probe->mChars.load();
       begin();
-      keyCommand(Keys::Command::SetKeyboardModifiers,
-        static_cast<LPARAM>(Mods::Set | Mods::Shift | (capsBefore == 1 ? 0u : Mods::CapsLock)));
-      keyCommand(Keys::Command::QueueChar, L'H');
-      keyCommand(Keys::Command::QueueChar, L'i');
+      modifiers({.mShiftHeld = true, .mCapsLockOn = capsBefore != 1});
+      character(L'H');
+      character(L'i');
       const auto downs = probe->mKeyDowns.load();
       send(WM_KEYDOWN, 'H', keyDown);
       send(WM_KEYUP, 'H', keyUp);
@@ -481,19 +487,21 @@ int main(int argc, char** argv) {
       const auto before16 = probe->mChars.load();
       begin();
       for (int i = 0; i < 20; ++i) {
-        keyCommand(Keys::Command::QueueChar, L'a' + i);
+        character(static_cast<wchar_t>(L'a' + i));
       }
       send(WM_KEYDOWN, 'A', 0x001E0001);
       end();
-      Check(WaitFor([&] { return probe->mChars.load() >= before16 + 16; }, 2s), "20 queued: characters arrive");
+      Check(WaitFor([&] { return probe->mChars.load() >= before16 + Keys::CharacterQueueLimit; }, 2s),
+        "20 queued: characters arrive");
       Pump(200ms);
-      Check(probe->mChars.load() == before16 + 16, std::format("only 16 of them ({})", probe->mChars.load() - before16));
+      Check(probe->mChars.load() == before16 + Keys::CharacterQueueLimit,
+        std::format("only {} of them ({})", Keys::CharacterQueueLimit, probe->mChars.load() - before16));
 
       // A character whose key never came isn't typed by the next injection's
       std::this_thread::sleep_for(150ms);
       const auto beforeStale = probe->mChars.load();
       begin();
-      keyCommand(Keys::Command::QueueChar, L'x');
+      character(L'x');
       end();
       begin();
       send(WM_KEYDOWN, 'B', 0x00300001);
@@ -501,14 +509,41 @@ int main(int argc, char** argv) {
       Pump(200ms);
       Check(probe->mChars.load() == beforeStale, "a character whose key never came is dropped, not typed with the next key");
 
-      // 0 puts the app's own key state back at once
+      // Everything released is a state like any other: it replaces the one
+      // before, Caps Lock included (decisive when Caps Lock is really on)
       std::this_thread::sleep_for(150ms);
       begin();
-      keyCommand(Keys::Command::SetKeyboardModifiers, static_cast<LPARAM>(Mods::Set | Mods::Control));
-      keyCommand(Keys::Command::SetKeyboardModifiers, 0);
+      modifiers({.mShiftHeld = true, .mCtrlHeld = true, .mCapsLockOn = capsBefore != 1});
+      modifiers({});
       send(WM_KEYDOWN, 'C', 0x002E0001);
       end();
-      Check(probe->mKeyControl == 0, "the modifiers set to 0: Ctrl not held for the next key");
+      Check(probe->mKeyShift == 0 && probe->mKeyControl == 0 && probe->mKeyCapsLock == 0,
+        capsBefore == 1 ? "everything released: Shift and Ctrl up, Caps Lock off though it's really on (a state, not the hand-back)"
+                        : "everything released: Shift and Ctrl up, Caps Lock off");
+
+      // The hand-back: the app's real key state at once, mid-injection
+      std::this_thread::sleep_for(150ms);
+      begin();
+      modifiers({.mCtrlHeld = true, .mCapsLockOn = capsBefore != 1});
+      keyCommand(Keys::KeyCommand::OverrideModifiers, Keys::HandBackKeys);
+      send(WM_KEYDOWN, 'C', 0x002E0001);
+      end();
+      Check(probe->mKeyControl == 0 && probe->mKeyCapsLock == capsBefore,
+        "the hand-back: its real key state at once (Ctrl up, Caps Lock as it really is)");
+
+      // Arguments that decode to nothing (another build's, or junk) are
+      // ignored: the state before stays, and no character is kept
+      std::this_thread::sleep_for(150ms);
+      const auto beforeJunk = probe->mChars.load();
+      begin();
+      modifiers({.mCtrlHeld = true});
+      keyCommand(Keys::KeyCommand::OverrideModifiers, 0x1);
+      keyCommand(Keys::KeyCommand::CharacterForNextKey, 0x10041);
+      send(WM_KEYDOWN, 'C', 0x002E0001);
+      end();
+      Check(probe->mKeyControl == 1, "a modifier argument with a stray bit: ignored (Ctrl still held as set before it)");
+      Pump(200ms);
+      Check(probe->mChars.load() == beforeJunk, "a character argument wider than one UTF-16 unit: ignored");
 
       // Outside an injection, a key-down gets no queued characters
       std::this_thread::sleep_for(150ms);

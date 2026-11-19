@@ -341,13 +341,13 @@ class Worker {
     Command(Protocol::Command::BeginInjection, Protocol::PackPoint(cursor.x, cursor.y));
     // Firefox ignores keys in a window it doesn't think is active; the
     // helper does it on the app's own thread, only if it isn't already
-    Send(mWindow, mShared.mCommandMessage, static_cast<WPARAM>(InjectionHookProtocol::Command::ActivateWindow),
+    Send(mWindow, mShared.mCommandMessage, static_cast<WPARAM>(InjectionHookProtocol::KeyCommand::ActivateOnThread),
       reinterpret_cast<LPARAM>(mWindow));
     // INJ-7: where keys go is decided now, after the taps before it landed
     // and the activation (an app may move its focus then)
     const HWND keyTarget = KeyTarget(top);
-    Send(mWindow, mShared.mCommandMessage, static_cast<WPARAM>(InjectionHookProtocol::Command::SetKeyboardModifiers),
-      WindowKeyInjection::GetModifierBits(stroke));
+    Send(mWindow, mShared.mCommandMessage, static_cast<WPARAM>(InjectionHookProtocol::KeyCommand::OverrideModifiers),
+      WindowKeyInjection::GetModifierArgument(stroke));
     for (const auto& message: messages) {
       Send(keyTarget, message.mMessage, message.mWParam, message.mLParam);
     }
@@ -470,7 +470,7 @@ class Worker {
         // that took the foreground and gave it back cost a frame). Where
         // Windows lets the app take the real foreground, the helper gives it
         // straight back (ADR-035).
-        Send(mWindow, mShared.mCommandMessage, static_cast<WPARAM>(InjectionHookProtocol::Command::ActivateWindow),
+        Send(mWindow, mShared.mCommandMessage, static_cast<WPARAM>(InjectionHookProtocol::KeyCommand::ActivateOnThread),
           reinterpret_cast<LPARAM>(mWindow));
         mDown = true;
         mCapture = child;

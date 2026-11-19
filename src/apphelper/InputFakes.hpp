@@ -12,8 +12,8 @@
 //   buttons as the finger holds them (GetKeyState, GetAsyncKeyState), a
 //   plain mouse message (GetMessageExtraInfo), and asking to hear when the
 //   mouse leaves succeeds without Windows saying at once that it has (the
-//   real cursor is elsewhere; TrackMouseEvent): only while an injected
-//   message is being handled;
+//   real cursor is elsewhere; TrackMouseEvent). These hold from the begin to
+//   the end, and not in the grace after it;
 // - its window is the foreground window (GetForegroundWindow), it can't
 //   change its windows' z-order or bring itself forward (SetWindowPos,
 //   BringWindowToTop, SetForegroundWindow), and its own SendInput goes
@@ -66,24 +66,29 @@ void SetMouseButtons(LPARAM buttons) noexcept;
 // that took the real foreground, gives it back
 void Activate(HWND window) noexcept;
 
-// ---- Keys (M5a; the keyboard commands of InjectionHookProtocol) ----------
-// Doc 06: the app's thread sees Shift, Ctrl, Alt and the Caps and Num Lock
-// toggles as the virtual keyboard says. The thread's own key state is kept
-// and replaced (SetKeyboardState, so GetKeyState and GetKeyboardState see
-// it); GetAsyncKeyState is faked for the modifiers. The thread's own state
-// comes back on its first message after the injection window closes (or at
-// once for 0).
-void SetKeyboardModifiers(LPARAM bits) noexcept;
-// A character to type with the next key that goes down in this injection
-// (at most 16 waiting; a new injection starts with none)
-void QueueChar(LPARAM character) noexcept;
-// An injected key-down sent to `window` on this thread, before the app
-// handles it: the waiting characters are posted to it (WM_CHAR, with the
-// key's lParam), so they're in the queue while the app handles the key, as
-// TranslateMessage would have put them (INJ-9)
-void KeyDown(HWND window, LPARAM keyLParam) noexcept;
-// On every message the thread handles: its own key state back, once its
-// injection window has closed. One load when nothing is waiting.
+// ---- Keys (M5a; InjectionHookProtocol::KeyCommand) ------------------------
+// OverrideModifiers: a copy of this thread's real keyboard state is taken,
+// and the virtual keyboard's held modifiers and lock toggles (doc 06) are
+// written over it with SetKeyboardState, which GetKeyState and
+// GetKeyboardState then report; the GetAsyncKeyState fake reports the held
+// ones too. The override stays until the injection window and its grace
+// have closed, and the copy goes back on the thread's next message;
+// HandBackKeys puts the copy back immediately. An argument that decodes to
+// no state is ignored.
+void OverrideModifiers(LPARAM argument) noexcept;
+// CharacterForNextKey: one UTF-16 unit kept back for the next injected
+// key-down on this thread. Up to CharacterQueueLimit are kept, a new
+// injection begins with none, and an argument wider than one unit is ignored.
+void HoldCharacter(LPARAM argument) noexcept;
+// Runs before the app sees an injected key-down for `window` on this thread.
+// Every kept unit is posted to `window` with `keyLParam`, as WM_SYSCHAR when
+// `system` (a WM_SYSKEYDOWN) and as WM_CHAR otherwise. Posting at this point
+// means the app finds the character queued as soon as it starts on the
+// key-down (INJ-9).
+void KeyDown(HWND window, bool system, LPARAM keyLParam) noexcept;
+// Runs on each message the thread takes: once the injection window has
+// closed, the real keyboard state goes back. A single load when no thread
+// is overridden.
 void RestoreKeysIfDone() noexcept;
 // Quick checks for the hooks: one load each
 bool CharsWaiting() noexcept;

@@ -23,7 +23,7 @@
 //   window's own DPI.
 // - **The app helper's input mode** (if loaded): each event is bracketed by
 //   BeginInjection and EndInjection. Right after a press, the window is
-//   made active on its own thread, if it isn't (ActivateWindow): Chromium
+//   made active on its own thread, if it isn't (ActivateOnThread): Chromium
 //   apps and Firefox only show a text field's caret in an active window
 //   (M5b, ADR-036; ADR-034 had left it out, as it takes the real
 //   foreground where Windows allows it, which the helper now gives back:

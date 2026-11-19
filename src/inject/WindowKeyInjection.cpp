@@ -96,8 +96,8 @@ std::vector<Message> GetMessages(
     for (const auto ch: stroke.mText) {
       ret.push_back({
         hookMessage,
-        static_cast<WPARAM>(InjectionHookProtocol::Command::QueueChar),
-        static_cast<LPARAM>(ch),
+        static_cast<WPARAM>(InjectionHookProtocol::KeyCommand::CharacterForNextKey),
+        InjectionHookProtocol::EncodeCharacter(ch),
       });
     }
   }
@@ -114,25 +114,14 @@ std::vector<Message> GetMessages(
   return ret;
 }
 
-LPARAM GetModifierBits(const VirtualKeyStroke& stroke) {
-  namespace Mods = InjectionHookProtocol::KeyboardModifiers;
-  LPARAM ret = Mods::Set;
-  if (stroke.mShift) {
-    ret |= Mods::Shift;
-  }
-  if (stroke.mControl) {
-    ret |= Mods::Control;
-  }
-  if (stroke.mAlt) {
-    ret |= Mods::Alt;
-  }
-  if (stroke.mCapsLock) {
-    ret |= Mods::CapsLock;
-  }
-  if (stroke.mNumLock) {
-    ret |= Mods::NumLock;
-  }
-  return ret;
+LPARAM GetModifierArgument(const VirtualKeyStroke& stroke) {
+  return InjectionHookProtocol::EncodeModifiers({
+    .mShiftHeld = stroke.mShift,
+    .mCtrlHeld = stroke.mControl,
+    .mAltHeld = stroke.mAlt,
+    .mCapsLockOn = stroke.mCapsLock,
+    .mNumLockOn = stroke.mNumLock,
+  });
 }
 
 HWND GetKeyTarget(HWND capturedTopLevel) {

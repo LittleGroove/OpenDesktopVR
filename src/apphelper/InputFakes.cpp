@@ -37,15 +37,18 @@ struct Window {
   // injection began: it gets it back if this app takes it (R1)
   std::atomic<HWND> mForegroundBefore {nullptr};
 
-  // Keys (M5a). The keyboard's modifiers (InjectionHookProtocol bits, with
-  // Set), read by the GetAsyncKeyState fake
-  std::atomic<LONG> mModifiers {0};
-  // The rest is touched only on the window's own thread: the thread's own
-  // key state while the keyboard's replaces it, and the characters waiting
-  // for the next key-down
-  std::array<BYTE, 256> mOwnKeys {};
-  bool mKeysReplaced {false};
-  std::array<wchar_t, 16> mChars {};
+  // Keys (M5a). Whether the virtual keyboard's modifiers are standing in for
+  // this thread's real ones (OverrideModifiers), and which of them are down;
+  // the GetAsyncKeyState fake reads these
+  std::atomic<bool> mKeysReplaced {false};
+  std::atomic<bool> mShiftHeld {false};
+  std::atomic<bool> mCtrlHeld {false};
+  std::atomic<bool> mAltHeld {false};
+  // Used on the owning thread alone: the copy of its real keyboard state
+  // taken when an override starts, and the code units kept back for the
+  // coming key-down
+  std::array<BYTE, 256> mRealKeys {};
+  std::array<wchar_t, InjectionHookProtocol::CharacterQueueLimit> mChars {};
   int mCharCount {0};
 };
 std::array<Window, MaxThreads> gWindows {};
@@ -211,25 +214,23 @@ SHORT WINAPI FakeGetKeyState(int key) {
   return gGetKeyState(key);
 }
 
-// The keyboard's modifiers, for a modifier key code; nullopt for other keys
-// or when the keyboard hasn't set them. The right-hand keys are never held:
-// the keyboard's are the left ones.
+// Whether the virtual keyboard holds a modifier, for a modifier's key code;
+// nullopt for any other key, or with no override in place. It stands for
+// the left-hand keys, so the right-hand codes always read as up.
 std::optional<bool> KeyboardModifier(const Window& window, int key) noexcept {
-  namespace Mods = InjectionHookProtocol::KeyboardModifiers;
-  const auto bits = static_cast<unsigned long>(window.mModifiers.load(std::memory_order_relaxed));
-  if ((bits & Mods::Set) == 0) {
+  if (!window.mKeysReplaced.load(std::memory_order_acquire)) {
     return std::nullopt;
   }
   switch (key) {
     case VK_SHIFT:
     case VK_LSHIFT:
-      return (bits & Mods::Shift) != 0;
+      return window.mShiftHeld.load(std::memory_order_relaxed);
     case VK_CONTROL:
     case VK_LCONTROL:
-      return (bits & Mods::Control) != 0;
+      return window.mCtrlHeld.load(std::memory_order_relaxed);
     case VK_MENU:
     case VK_LMENU:
-      return (bits & Mods::Alt) != 0;
+      return window.mAltHeld.load(std::memory_order_relaxed);
     case VK_RSHIFT:
     case VK_RCONTROL:
     case VK_RMENU:
@@ -364,14 +365,23 @@ std::size_t Apply(HMODULE skip) noexcept {
 
 namespace {
 
-// On the window's own thread
+// On the window's own thread: its real keyboard state back, if overridden
 void RestoreKeys(Window& window) noexcept {
-  if (window.mKeysReplaced) {
-    SetKeyboardState(window.mOwnKeys.data());
-    window.mKeysReplaced = false;
+  if (window.mKeysReplaced.load(std::memory_order_relaxed)) {
+    SetKeyboardState(window.mRealKeys.data());
+    window.mKeysReplaced.store(false, std::memory_order_release);
     gKeysReplaced.fetch_sub(1, std::memory_order_acq_rel);
   }
-  window.mModifiers.store(0, std::memory_order_relaxed);
+}
+
+// A key-state byte keeps "down" in its top bit and "toggled on" in its
+// lowest bit
+constexpr BYTE KeyDownBit = 0x80;
+constexpr BYTE ToggledBit = 0x01;
+
+void MarkKey(std::array<BYTE, 256>& keys, int code, BYTE bit, bool on) noexcept {
+  const auto index = static_cast<std::size_t>(code);
+  keys[index] = static_cast<BYTE>(on ? (keys[index] | bit) : (keys[index] & ~bit));
 }
 
 void DropChars(Window& window) noexcept {
@@ -415,8 +425,10 @@ void Restore() noexcept {
     window.mNesting = 0;
     window.mGraceUntil = 0;
     window.mButtons = 0;
-    window.mModifiers = 0;
     window.mKeysReplaced = false;
+    window.mShiftHeld = false;
+    window.mCtrlHeld = false;
+    window.mAltHeld = false;
     window.mCharCount = 0;
     window.mForegroundBefore = nullptr;
   }
@@ -500,59 +512,72 @@ void Activate(HWND target) noexcept {
   }
 }
 
-void SetKeyboardModifiers(LPARAM bits) noexcept {
-  namespace Mods = InjectionHookProtocol::KeyboardModifiers;
+void OverrideModifiers(LPARAM argument) noexcept {
+  namespace Keys = InjectionHookProtocol;
   auto* window = FindOrClaim(GetCurrentThreadId());
   if (!window) {
     return;
   }
-  const auto value = static_cast<unsigned long>(bits);
-  if ((value & Mods::Set) == 0) {
+  if (argument == Keys::HandBackKeys) {
     RestoreKeys(*window);
     return;
   }
-  if (!window->mKeysReplaced) {
-    if (!GetKeyboardState(window->mOwnKeys.data())) {
-      return;
-    }
-    window->mKeysReplaced = true;
+  const auto state = Keys::DecodeModifiers(argument);
+  if (!state) {
+    return;// not a state this build sends: whatever was in place stays
+  }
+  const bool starting = !window->mKeysReplaced.load(std::memory_order_relaxed);
+  if (starting && !GetKeyboardState(window->mRealKeys.data())) {
+    return;
+  }
+  window->mShiftHeld.store(state->mShiftHeld, std::memory_order_relaxed);
+  window->mCtrlHeld.store(state->mCtrlHeld, std::memory_order_relaxed);
+  window->mAltHeld.store(state->mAltHeld, std::memory_order_relaxed);
+  if (starting) {
+    window->mKeysReplaced.store(true, std::memory_order_release);
     gKeysReplaced.fetch_add(1, std::memory_order_acq_rel);
   }
-  auto keys = window->mOwnKeys;
-  const auto held = [&](std::initializer_list<int> codes, bool on) {
-    for (const int code: codes) {
-      keys[code] = static_cast<BYTE>(on ? (keys[code] | 0x80) : (keys[code] & ~0x80));
-    }
-  };
-  const auto toggled = [&](int code, bool on) {
-    keys[code] = static_cast<BYTE>(on ? (keys[code] | 0x01) : (keys[code] & ~0x01));
-  };
-  held({VK_SHIFT, VK_LSHIFT}, (value & Mods::Shift) != 0);
-  held({VK_CONTROL, VK_LCONTROL}, (value & Mods::Control) != 0);
-  held({VK_MENU, VK_LMENU}, (value & Mods::Alt) != 0);
-  held({VK_RSHIFT, VK_RCONTROL, VK_RMENU}, false);
-  toggled(VK_CAPITAL, (value & Mods::CapsLock) != 0);
-  toggled(VK_NUMLOCK, (value & Mods::NumLock) != 0);
+  // Built from the real copy each time, so one state never leaks into the
+  // next
+  auto keys = window->mRealKeys;
+  for (const int code: {VK_SHIFT, VK_LSHIFT}) {
+    MarkKey(keys, code, KeyDownBit, state->mShiftHeld);
+  }
+  for (const int code: {VK_CONTROL, VK_LCONTROL}) {
+    MarkKey(keys, code, KeyDownBit, state->mCtrlHeld);
+  }
+  for (const int code: {VK_MENU, VK_LMENU}) {
+    MarkKey(keys, code, KeyDownBit, state->mAltHeld);
+  }
+  for (const int code: {VK_RSHIFT, VK_RCONTROL, VK_RMENU}) {
+    MarkKey(keys, code, KeyDownBit, false);
+  }
+  MarkKey(keys, VK_CAPITAL, ToggledBit, state->mCapsLockOn);
+  MarkKey(keys, VK_NUMLOCK, ToggledBit, state->mNumLockOn);
   SetKeyboardState(keys.data());
-  window->mModifiers.store(static_cast<LONG>(value), std::memory_order_relaxed);
 }
 
-void QueueChar(LPARAM character) noexcept {
+void HoldCharacter(LPARAM argument) noexcept {
+  const auto unit = InjectionHookProtocol::DecodeCharacter(argument);
+  if (!unit) {
+    return;// wider than one UTF-16 unit
+  }
   auto* window = FindOrClaim(GetCurrentThreadId());
   if (!window || window->mCharCount >= static_cast<int>(window->mChars.size())) {
-    return;// at most 16 waiting (doc 06)
+    return;// already holding CharacterQueueLimit units (doc 06)
   }
-  window->mChars[static_cast<std::size_t>(window->mCharCount++)] = static_cast<wchar_t>(character);
+  window->mChars[static_cast<std::size_t>(window->mCharCount++)] = *unit;
   gCharsWaiting.fetch_add(1, std::memory_order_acq_rel);
 }
 
-void KeyDown(HWND target, LPARAM keyLParam) noexcept {
+void KeyDown(HWND target, bool system, LPARAM keyLParam) noexcept {
   auto* window = Find(GetCurrentThreadId());
   if (!window || window->mCharCount == 0 || !CursorOpen(*window, GetTickCount64())) {
     return;// only a key the injector sent, inside its injection
   }
+  const UINT message = system ? WM_SYSCHAR : WM_CHAR;
   for (int i = 0; i < window->mCharCount; ++i) {
-    PostMessageW(target, WM_CHAR, static_cast<WPARAM>(window->mChars[static_cast<std::size_t>(i)]), keyLParam);
+    PostMessageW(target, message, static_cast<WPARAM>(window->mChars[static_cast<std::size_t>(i)]), keyLParam);
   }
   DropChars(*window);
 }

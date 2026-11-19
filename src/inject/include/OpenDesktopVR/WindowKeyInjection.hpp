@@ -52,17 +52,18 @@ struct Message {
 // Alt or F10)
 bool IsBlocked(const VirtualKeyStroke&);
 
-// The messages for a stroke, in order, to send (not post) to the window. The
-// text goes as `InjectionHookProtocol::Command::QueueChar` messages (using
-// `hookMessage`, the registered window message the input hook listens for)
-// before the key: the hook queues the characters as the key goes down, like
-// TranslateMessage(). Alt combinations become WM_SYSKEYDOWN/WM_SYSKEYUP
-// without characters, so the app's default handling doesn't open a menu.
-// Empty if blocked.
+// The messages for a stroke, in order, to send (not post) to the window. Each
+// unit of the text comes first, as a
+// `InjectionHookProtocol::KeyCommand::CharacterForNextKey` command on
+// `hookMessage` (the helper's registered command message); the helper posts
+// them when the key-down reaches the window, like TranslateMessage(). Alt
+// combinations become WM_SYSKEYDOWN/WM_SYSKEYUP without characters, so the
+// app's default handling doesn't open a menu. Empty if blocked.
 std::vector<Message> GetMessages(const VirtualKeyStroke&, UINT hookMessage);
 
-// For `InjectionHookProtocol::Command::SetKeyboardModifiers`
-LPARAM GetModifierBits(const VirtualKeyStroke&);
+// The stroke's modifiers, as the argument of
+// `InjectionHookProtocol::KeyCommand::OverrideModifiers`
+LPARAM GetModifierArgument(const VirtualKeyStroke&);
 
 // Where key messages for a captured window should go: the focused window on
 // that window's thread, if it belongs to the captured window; otherwise the

@@ -23,7 +23,7 @@
 //   reply window (given by Hello). wParam packs the command, a Result and a
 //   detail; lParam is the hooked thread's ID.
 //
-// The keyboard commands (0x10 to 0x12) are in InjectionHookProtocol.hpp.
+// The keyboard's sent commands (0x30 to 0x32) are in InjectionHookProtocol.hpp.
 #pragma once
 
 #include <Windows.h>
@@ -40,8 +40,9 @@ inline constexpr char CallHookProcName[] = "OdvrAppHelperCallWndProc";
 // Hello's reply detail: a host and helper from different builds don't mix
 // 2: input (InputOn, InputOff, the sent commands)
 // 3: SetMouseButtons
-// 4: the keyboard's commands (SetKeyboardModifiers, QueueChar)
-inline constexpr uint16_t Version = 4;
+// 4: the first keyboard commands
+// 5: the keyboard commands restated, with new values (C-2)
+inline constexpr uint16_t Version = 5;
 
 enum class Command : uint8_t {
   // lParam: the host's reply window. Posted first after each install, so
@@ -68,12 +69,13 @@ enum class Command : uint8_t {
   InputOff = 0x06,
 
   // ---- Sent, around each injected event; never answered ----
-  // 0x10 to 0x12 are the keyboard commands (InjectionHookProtocol.hpp):
-  // ActivateWindow from M4b, SetKeyboardModifiers and QueueChar from M5a.
+  // 0x30 to 0x32 belong to the keyboard (InjectionHookProtocol::KeyCommand):
+  // activating the window on its thread, the modifier state, and a character
+  // for the next key-down.
   //
   // lParam: the event's screen point (PackPoint). Opens an injection window
-  // on this thread (HK-5): while an injected message is handled, the app
-  // sees the cursor there; until 100 ms after EndInjection it sees its
+  // on this thread (HK-5): from here to EndInjection, the app finds the
+  // cursor at that point; until 100 ms after EndInjection it sees its
   // window as the foreground one, can't change its z-order and can't
   // SendInput. If EndInjection never comes, it closes after 2 s.
   BeginInjection = 0x20,
