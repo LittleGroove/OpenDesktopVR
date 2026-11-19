@@ -81,3 +81,12 @@ by the Free Software Foundation. It comes with no warranty. See
 
 The third-party components it includes, all under GPL-compatible licences,
 are listed in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
+
+## Trademarks
+
+OpenXR™ and the OpenXR logo are trademarks owned by The Khronos Group Inc.
+and are registered as a trademark in China, the European Union, Japan and
+the United Kingdom. Other product names used here belong to their owners
+and only say what Open Desktop VR works with. Open Desktop VR is an
+independent project, not affiliated with or endorsed by The Khronos Group
+or any of those owners.

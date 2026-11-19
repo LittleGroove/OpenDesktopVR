@@ -1630,6 +1630,14 @@ void SettingsWindow::GeneralPage() {
   if (ImGui::Button("The licence")) {
     ShellExecuteW(mWindow, L"open", L"https://www.gnu.org/licenses/gpl-3.0.html", nullptr, nullptr, SW_SHOWNORMAL);
   }
+  // Khronos's attribution for OpenXR (as in the README, without the TM sign,
+  // which the window's font may lack), and no claim of affiliation
+  ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+  ImGui::TextWrapped("OpenXR and the OpenXR logo are trademarks owned by The Khronos Group Inc. and are registered as a "
+                     "trademark in China, the European Union, Japan and the United Kingdom. Other product names belong "
+                     "to their owners. Open Desktop VR is an independent project, not affiliated with or endorsed by "
+                     "any of them.");
+  ImGui::PopStyleColor();
   ImGui::TextDisabled("Settings and logs: %s", Utf8(Product::DataFolder().wstring()).c_str());
   if (ImGui::Button("Open the logs folder")) {
     const auto folder = Product::LogsFolder();
