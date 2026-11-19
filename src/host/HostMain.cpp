@@ -104,6 +104,8 @@ struct Options {
   bool mOverlappingPanels {false};
   UINT mTestKeybind {0};
   bool mTestInstance {false};
+  // Test instances: behave as if run as administrator with UAC on (Q9)
+  bool mFakeAdministrator {false};
   std::vector<std::wstring> mTestWindowTitles;
   bool mOpenSettings {false};
   int mSettingsDelayMs {0};
@@ -197,6 +199,7 @@ Options ParseOptions() {
     if (ProcessUtil::GetEnvironment("OPENDESKTOPVR_ALLOW_WARP") == "1") {
       options.mAllowWarp = true;
     }
+    options.mFakeAdministrator = ProcessUtil::GetEnvironment("OPENDESKTOPVR_FAKE_ADMINISTRATOR") == "1";
   }
   return options;
 }
@@ -271,6 +274,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     ProcessUtil::ElevationName(ProcessUtil::CurrentProcessElevation()),
     ProcessUtil::CurrentElevationType(),
     uac ? (*uac ? "on" : "off") : "unknown");
+  // Q9 (decided 2026-11-19): as administrator it warns, never refuses. With
+  // UAC on, a game that runs normally may not show the panels; with UAC off
+  // every app runs that way, and only the Diagnostics tab says so
+  const bool asAdministrator = options.mFakeAdministrator
+    || (ProcessUtil::CurrentProcessElevation() == ProcessUtil::Elevation::Elevated && uac.value_or(true));
+  if (asAdministrator) {
+    Log::Warning("Running as administrator with UAC on: a game that runs normally may not show the panels "
+                 "(a warning, not a block: Q9)");
+  }
   // Doc 09 "Environment checks at startup": explained, never blocking
   const auto environment = Diagnostics::CheckEnvironment();
   for (const auto& fact: environment.mFacts) {
@@ -458,7 +470,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     settings.SetQuickMenuOpener([&quickMenu] { quickMenu.Open("the settings window"); });
     // New versions from GitHub (ADR-045): installed by themselves only while
     // no game runs and the settings window is closed
-    Host::UpdateService updates {instance, panels, options.mUpdatedFrom};
+    Host::UpdateService updates {instance, panels, options.mUpdatedFrom, asAdministrator};
     updates.SetBusy([&panels, &settings]() -> std::string {
       if (!panels.AttachedGame().empty()) {
         return "a game is running";
@@ -468,6 +480,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     updates.SetOnChange([&settings] { settings.Invalidate(); });
     settings.SetUpdates(&updates);
     Host::TrayIcon tray {instance, renderer, panels, settings};
+    if (asAdministrator) {
+      // Once a start; clicking it opens the Diagnostics tab. Test instances
+      // only log it: tests never put notifications on the desktop
+      if (options.mTestInstance) {
+        Log::Info("Tray: the administrator warning isn't shown in a test instance");
+      } else {
+        tray.ShowWarning(L"Open Desktop VR is running as administrator",
+          L"It doesn't need to, and a game that runs normally may not show its panels. Next time, start it "
+          L"normally: not with \"Run as administrator\", and not from a launcher that runs as administrator.");
+      }
+    }
     if (options.mExitAfterSeconds > 0) {
       tray.QuitAfter(options.mExitAfterSeconds);
     }

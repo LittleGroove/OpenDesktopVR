@@ -16,6 +16,7 @@
 
 #include <Windows.h>
 
+#include <string_view>
 #include <vector>
 
 namespace OpenDesktopVR::Host {
@@ -28,6 +29,9 @@ class TrayIcon {
   TrayIcon& operator=(const TrayIcon&) = delete;
 
   void QuitAfter(double seconds);
+  // A warning notification from the tray icon (Windows shows it as a toast);
+  // clicking it opens the settings window's Diagnostics tab
+  void ShowWarning(std::wstring_view title, std::wstring_view text);
   // Runs the message loop until Exit; returns the exit code
   int Run();
 

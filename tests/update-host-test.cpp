@@ -7,6 +7,8 @@
 // program. The host is told it's 0.6.0, so 0.7.0 is newer.
 // - A pre-release isn't offered without the beta.
 // - A download that doesn't match its checksum is deleted, not installed.
+// - Run as administrator (faked), the host warns and runs, and doesn't check:
+//   the setup program would refuse to install (Q9).
 // - With the beta, the pre-release is downloaded (through a redirect, as
 //   GitHub's are), checked, and installed by itself while no game runs and
 //   the settings window is closed: the setup program closes the host, which
@@ -123,9 +125,11 @@ int wmain(int argc, wchar_t** argv) {
   // as GitHub's do; after one install, the list is empty (no loop)
   std::mutex mutex;
   std::string list = "[]";
+  int listAsked = 0;
   FakeHttpServer server {[&](const std::string& path) -> FakeHttpServer::Response {
     std::lock_guard lock(mutex);
     if (path.starts_with("/repos/LittleGroove/OpenDesktopVR/releases")) {
+      ++listAsked;
       return {200, list};
     }
     if (path.starts_with("/download/")) {
@@ -141,6 +145,10 @@ int wmain(int argc, wchar_t** argv) {
   const auto setList = [&](std::string text) {
     std::lock_guard lock(mutex);
     list = std::move(text);
+  };
+  const auto timesListAsked = [&] {
+    std::lock_guard lock(mutex);
+    return listAsked;
   };
 
   SetEnvironmentVariableW(L"OPENDESKTOPVR_INSTANCE", instance.c_str());
@@ -184,6 +192,28 @@ int wmain(int argc, wchar_t** argv) {
     }
     Check(!leftover, "nothing left in the downloads folder");
     Check(WaitForSingleObject(running.hProcess, 0) == WAIT_TIMEOUT, "the host still runs: nothing was installed");
+    Check(Install::CloseHost(host, 15s) == Install::CloseResult::Closed, "closed");
+    CloseHandle(running.hThread);
+    CloseHandle(running.hProcess);
+  });
+
+  Scenario("As administrator (faked): it warns and runs, and doesn't check, since setup would refuse (Q9)", [&] {
+    SetBeta(true);
+    setList(ReleaseList(version, true, setupBytes.size(), rightHash, assetUrl));
+    const int asked = timesListAsked();
+    const int downloads = server.Requests("/blob/setup.exe");// the checksum scenario downloaded once
+    const auto from = HostLog().size();
+    SetEnvironmentVariableW(L"OPENDESKTOPVR_FAKE_ADMINISTRATOR", L"1");
+    auto running = StartHost(host);
+    SetEnvironmentVariableW(L"OPENDESKTOPVR_FAKE_ADMINISTRATOR", nullptr);
+    Check(LogShows(from, "Running as administrator with UAC on", 30s), "it warns in its log");
+    Check(LogShows(from, "Tray: the administrator warning isn't shown in a test instance", 30s),
+      "the tray warning's turn came (a test instance only logs it)");
+    Check(LogShows(from, "Updates: off while running as administrator", 30s), "updates are off");
+    std::this_thread::sleep_for(3s);// the check delay is 500 ms here
+    Check(timesListAsked() == asked && server.Requests("/blob/setup.exe") == downloads,
+      std::format("GitHub wasn't asked ({} times); nothing downloaded", timesListAsked() - asked));
+    Check(WaitForSingleObject(running.hProcess, 0) == WAIT_TIMEOUT, "it still runs: a warning, not a block");
     Check(Install::CloseHost(host, 15s) == Install::CloseResult::Closed, "closed");
     CloseHandle(running.hThread);
     CloseHandle(running.hProcess);

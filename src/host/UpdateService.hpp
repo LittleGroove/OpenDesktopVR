@@ -12,6 +12,8 @@
 //   host through the Restart Manager (it saves first), installs, and starts
 //   the new one. By itself only when no game runs and the settings window
 //   is closed; or when asked.
+// Run as administrator with UAC on, it stays off: the setup program refuses
+// to run that way (ADR-043), so nothing could install (Q9).
 // The network work runs on a worker; the UI thread only starts it and takes
 // its result (ADR-020). Nothing about the user is sent: GitHub sees an
 // address and "OpenDesktopVR/<version>".
@@ -45,8 +47,9 @@ class UpdateService {
     int mPercent {0};// downloading
   };
 
-  // `updatedFrom`: the version the setup program replaced to start this host
-  UpdateService(HINSTANCE instance, PanelManager& panels, std::string updatedFrom);
+  // `updatedFrom`: the version the setup program replaced to start this host.
+  // `asAdministrator`: elevated with UAC on (or faked in a test instance)
+  UpdateService(HINSTANCE instance, PanelManager& panels, std::string updatedFrom, bool asAdministrator);
   ~UpdateService();
   UpdateService(const UpdateService&) = delete;
   UpdateService& operator=(const UpdateService&) = delete;

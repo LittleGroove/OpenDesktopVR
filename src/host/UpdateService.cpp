@@ -136,7 +136,7 @@ UpdateService::Result Check(const Job& job) {
 
 }// namespace
 
-UpdateService::UpdateService(HINSTANCE instance, PanelManager& panels, std::string updatedFrom)
+UpdateService::UpdateService(HINSTANCE instance, PanelManager& panels, std::string updatedFrom, bool asAdministrator)
   : mInstance(instance),
     mPanels(panels),
     mProgress(std::make_shared<std::atomic<int>>(0)) {
@@ -181,6 +181,16 @@ UpdateService::UpdateService(HINSTANCE instance, PanelManager& panels, std::stri
                          : std::format("This copy wasn't installed by OpenDesktopVR-Setup.exe, so it doesn't update "
                                        "itself. New versions: github.com/{}/releases",
                              Product::Repository);
+    return;
+  }
+  if (asAdministrator) {
+    // Checking would only download what the setup program then refuses to
+    // install, again every hour
+    Log::Info("Updates: off while running as administrator (the setup program won't install that way)");
+    mStatus.mState = State::Unavailable;
+    mStatus.mText =
+      "Off while Open Desktop VR runs as administrator: the setup program won't install that way. Start it normally "
+      "and updates come back.";
     return;
   }
   WNDCLASSEXW windowClass {sizeof(windowClass)};

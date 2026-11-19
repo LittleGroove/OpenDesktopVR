@@ -89,6 +89,22 @@ void TrayIcon::AddIcon() {
   mIconAdded = Shell_NotifyIconW(NIM_ADD, &data) != FALSE;
 }
 
+void TrayIcon::ShowWarning(std::wstring_view title, std::wstring_view text) {
+  if (!mIconAdded) {
+    Log::Warning("Tray: no icon (Explorer isn't running?), so this warning isn't shown");
+    return;
+  }
+  NOTIFYICONDATAW data {sizeof(data)};
+  data.hWnd = mWindow;
+  data.uID = TrayID;
+  data.uFlags = NIF_INFO;
+  data.dwInfoFlags = NIIF_WARNING;
+  wcsncpy_s(data.szInfoTitle, std::wstring {title}.c_str(), _TRUNCATE);
+  wcsncpy_s(data.szInfo, std::wstring {text}.c_str(), _TRUNCATE);
+  const bool shown = Shell_NotifyIconW(NIM_MODIFY, &data) != FALSE;
+  Log::Info("Tray: warning {}", shown ? "shown" : "not shown (notifications refused it)");
+}
+
 void TrayIcon::QuitAfter(double seconds) {
   SetTimer(mWindow, QuitTimer, static_cast<UINT>(seconds * 1000), nullptr);
 }
@@ -206,6 +222,10 @@ LRESULT TrayIcon::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
         mSettings.Show();
       } else if (LOWORD(lParam) == WM_RBUTTONUP) {
         RequestMenu();
+      } else if (LOWORD(lParam) == NIN_BALLOONUSERCLICK) {
+        // The only notification is ShowWarning's, explained there
+        mSettings.ShowDiagnosticsTab();
+        mSettings.Show();
       }
       return 0;
     case WM_COMMAND: {
