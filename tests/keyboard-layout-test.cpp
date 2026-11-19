@@ -300,12 +300,16 @@ int main() {
       std::format(
         "00000409 is 'US' in KBDUS.DLL (got '{}')",
         us ? ToUtf8(us->mDisplayName) : "missing"));
-    const auto colemak = find("00060409");
-    Check(
-      colemak && colemak->mDisplayName.contains(L"Colemak"),
-      std::format(
-        "00060409 is Colemak (got '{}')",
-        colemak ? ToUtf8(colemak->mDisplayName) : "missing"));
+    // Colemak comes with recent Windows 11 only (not with Windows Server, as on
+    // CI's machines): skipped, like any layout this machine doesn't have
+    if (const auto colemak = find("00060409")) {
+      Check(
+        colemak->mDisplayName.contains(L"Colemak"),
+        std::format("00060409 is Colemak (got '{}')", ToUtf8(colemak->mDisplayName)));
+    } else {
+      ++gSkipped;
+      std::printf("    skip: 00060409 (Colemak) isn't installed on this machine\n");
+    }
     Check(
       std::ranges::is_sorted(
         layouts,
@@ -372,10 +376,17 @@ int main() {
       GetKLID(reinterpret_cast<HKL>(static_cast<uintptr_t>(0xf0020409)))
         == "00010409",
       "F0020409 (layout ID 0002) -> 00010409 (Dvorak)");
-    Check(
-      GetKLID(reinterpret_cast<HKL>(static_cast<uintptr_t>(0xf0d30409)))
-        == "00060409",
-      "F0D30409 (layout ID 00d3) -> 00060409 (Colemak)");
+    // A layout ID is found among the installed layouts, so Colemak's only
+    // where it's installed
+    if (GetLayoutInfo("00060409")) {
+      Check(
+        GetKLID(reinterpret_cast<HKL>(static_cast<uintptr_t>(0xf0d30409)))
+          == "00060409",
+        "F0D30409 (layout ID 00d3) -> 00060409 (Colemak)");
+    } else {
+      ++gSkipped;
+      std::printf("    skip: F0D30409 -> 00060409: Colemak isn't installed on this machine\n");
+    }
     Check(GetKLID(nullptr).empty(), "null HKL -> ''");
   });
 

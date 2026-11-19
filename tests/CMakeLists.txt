@@ -269,3 +269,10 @@ set_tests_properties(
   settings-window-test host-layer-test sim-click sim-click-stage sim-gestures sim-keyboard sim-bench-test-panel
   PROPERTIES LABELS desktop
 )
+
+# Tests that need a normal user, not an administrator: the setup program
+# refuses to run as administrator, and the host turns its updates off
+# (ADR-046). CI's machines run everything as administrator, so CI skips
+# these with "ctest -LE normal-user"; they run locally, and before every
+# release.
+set_tests_properties(setup-test update-host-test PROPERTIES LABELS normal-user)

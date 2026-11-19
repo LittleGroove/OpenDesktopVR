@@ -37,10 +37,12 @@ jobs:
         run: cmake --build --preset ${{ matrix.config }} -- /m /v:minimal
 
       # The tests labelled "desktop" need a real PC's desktop (input, the
-      # foreground, browsers, capture, speed budgets); they run locally and
-      # before every release (tests/CMakeLists.txt)
+      # foreground, browsers, capture, speed budgets), and those labelled
+      # "normal-user" need a user who isn't an administrator, which CI's
+      # machines don't have (the setup program refuses to run as one). They
+      # run locally and before every release (tests/CMakeLists.txt)
       - name: Tests
-        run: ctest --preset ${{ matrix.config }} -LE desktop
+        run: ctest --preset ${{ matrix.config }} -LE "desktop|normal-user"
 
       - name: Hand render test (hardware or WARP)
         if: matrix.config == 'release'
