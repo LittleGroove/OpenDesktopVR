@@ -22,10 +22,10 @@ jobs:
       matrix:
         config: [release, debug]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache third-party downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: build/_deps/*-subbuild/*-populate-prefix/src
           key: deps-${{ hashFiles('cmake/OdvrThirdParty.cmake') }}
@@ -50,7 +50,7 @@ jobs:
 
       - name: Publish test output
         if: always() && matrix.config == 'release'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-output
           path: |

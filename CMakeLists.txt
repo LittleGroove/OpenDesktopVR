@@ -12,7 +12,7 @@
 # (see cmake/OdvrThirdParty.cmake), for example
 #   -DFETCHCONTENT_SOURCE_DIR_DIRECTXTK=<dir>
 cmake_minimum_required(VERSION 3.25)
-project(OpenDesktopVR VERSION 0.7.0 LANGUAGES CXX)
+project(OpenDesktopVR VERSION 0.7.1 LANGUAGES CXX)
 
 if(NOT MSVC)
   message(FATAL_ERROR "Open Desktop VR targets Windows with MSVC")

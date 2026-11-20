@@ -28,6 +28,10 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 add_compile_definitions(
   UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
   _WIN32_WINNT=0x0A00 WINVER=0x0A00
+  # C++/WinRT's error checks would otherwise keep each caller's source path
+  # in the binaries (the build folder's, and the Windows SDK's); nothing reads
+  # them. Set for every file alike, as C++/WinRT asks
+  WINRT_NO_SOURCE_LOCATION
 )
 add_compile_options(/utf-8 /permissive- /Zc:__cplusplus /Zc:preprocessor /EHsc /MP)
 
