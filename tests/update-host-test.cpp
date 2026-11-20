@@ -4,7 +4,8 @@
 // Updates end to end (ADR-045): the real setup program installs the real
 // host in a private folder and registry key (a test instance); the host
 // asks a fake GitHub on 127.0.0.1, whose "release" is that same setup
-// program. The host is told it's 0.6.0, so 0.7.0 is newer.
+// program. The host is told it's 0.6.0, so the build's version is newer,
+// whether it's a release (0.7.0) or a beta (0.7.1-beta.1).
 // - A pre-release isn't offered without the beta.
 // - A download that doesn't match its checksum is deleted, not installed.
 // - Run as administrator (faked), the host warns and runs, and doesn't check:
@@ -25,6 +26,7 @@
 #include <OpenDesktopVR/Payload.hpp>
 #include <OpenDesktopVR/Product.hpp>
 #include <OpenDesktopVR/StringUtil.hpp>
+#include <OpenDesktopVR/Version.hpp>
 
 #include <chrono>
 #include <filesystem>
@@ -180,7 +182,13 @@ int wmain(int argc, wchar_t** argv) {
   });
 
   Scenario("A download that doesn't match its checksum is deleted, not installed", [&] {
-    setList(ReleaseList(version, false, setupBytes.size(), std::string(64, '0'), assetUrl));
+    // Offered on its own channel: a beta build as a pre-release, with the beta
+    // on. A beta version not marked as a pre-release would be skipped, not
+    // downloaded (update-test)
+    const auto parsed = Install::ParseVersion(version);
+    const bool beta = parsed && parsed->IsBeta();
+    SetBeta(beta);
+    setList(ReleaseList(version, beta, setupBytes.size(), std::string(64, '0'), assetUrl));
     const auto from = HostLog().size();
     auto running = StartHost(host);
     Check(LogShows(from, "didn't check out (its checksum), so it was deleted", 30s), "refused: the checksum didn't match");
