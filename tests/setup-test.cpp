@@ -241,6 +241,10 @@ int wmain(int argc, wchar_t** argv) {
       "its log says why");
     Check(text.find("the update notice") == std::string::npos, "and no notification");
     Check(Install::CloseHost(host, 15s) == Install::CloseResult::Closed, "it closes with the window open");
+    // Gone, not just closing: a host still exiting holds its files, and the
+    // next update would set them aside too
+    const std::filesystem::path files[] {host};
+    Check(WaitFor(15s, [&] { return Install::FindFileUsers(files).empty(); }), "and has exited");
   });
 
   Scenario("A host only just started is still closed: asked again until it answers", [&] {
@@ -267,7 +271,12 @@ int wmain(int argc, wchar_t** argv) {
     const int code = Run(gSetup, L"--silent --no-start");
     Check(code == 0, std::format("updated (exit code {})", code));
     const auto log = LastSetup();
-    Check(log.find("1 in use set aside") != std::string::npos, "the layer was set aside");
+    // The setup log's "N files written, M in use set aside, ..." line
+    const auto written = log.find(" files written");
+    const auto end = log.find_first_of("\r\n", written);
+    const auto line = written == std::string::npos ? std::string {"no files-written line"}
+                                                   : log.substr(written + 1, end == std::string::npos ? end : end - written - 1);
+    Check(log.find("1 in use set aside") != std::string::npos, "the layer was set aside, and nothing else (" + line + ")");
     Check(log.find("still on the old files until restarted: games 'setup-test") != std::string::npos,
       "the setup log names the program still holding it");
     FreeLibrary(held);
