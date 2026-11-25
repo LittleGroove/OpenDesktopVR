@@ -89,20 +89,22 @@ void TrayIcon::AddIcon() {
   mIconAdded = Shell_NotifyIconW(NIM_ADD, &data) != FALSE;
 }
 
-void TrayIcon::ShowWarning(std::wstring_view title, std::wstring_view text) {
+void TrayIcon::ShowNotice(Notice notice, std::wstring_view title, std::wstring_view text) {
+  const char* name = notice == Notice::Administrator ? "the administrator warning" : "the update notice";
   if (!mIconAdded) {
-    Log::Warning("Tray: no icon (Explorer isn't running?), so this warning isn't shown");
+    Log::Warning("Tray: no icon (Explorer isn't running?), so {} isn't shown", name);
     return;
   }
   NOTIFYICONDATAW data {sizeof(data)};
   data.hWnd = mWindow;
   data.uID = TrayID;
   data.uFlags = NIF_INFO;
-  data.dwInfoFlags = NIIF_WARNING;
+  data.dwInfoFlags = notice == Notice::Administrator ? NIIF_WARNING : NIIF_INFO;
   wcsncpy_s(data.szInfoTitle, std::wstring {title}.c_str(), _TRUNCATE);
   wcsncpy_s(data.szInfo, std::wstring {text}.c_str(), _TRUNCATE);
+  mNotice = notice;
   const bool shown = Shell_NotifyIconW(NIM_MODIFY, &data) != FALSE;
-  Log::Info("Tray: warning {}", shown ? "shown" : "not shown (notifications refused it)");
+  Log::Info("Tray: {} {}", name, shown ? "shown" : "not shown (notifications refused it)");
 }
 
 void TrayIcon::QuitAfter(double seconds) {
@@ -223,8 +225,12 @@ LRESULT TrayIcon::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
       } else if (LOWORD(lParam) == WM_RBUTTONUP) {
         RequestMenu();
       } else if (LOWORD(lParam) == NIN_BALLOONUSERCLICK) {
-        // The only notification is ShowWarning's, explained there
-        mSettings.ShowDiagnosticsTab();
+        // The tab that explains the notification (ShowNotice)
+        if (mNotice == Notice::Updated) {
+          mSettings.ShowGeneralTab();
+        } else {
+          mSettings.ShowDiagnosticsTab();
+        }
         mSettings.Show();
       }
       return 0;

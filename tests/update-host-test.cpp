@@ -245,6 +245,8 @@ int wmain(int argc, wchar_t** argv) {
     Check(LogShows(from, "Closing: the setup program asked (the Restart Manager)", 5s), "it saved and closed when asked");
     Check(LogShows(from, std::format("Updates: started after an update from {} to 0.6.0", version), 60s),
       "the new host started, saying it was updated");
+    Check(LogShows(from, "Tray: the update notice isn't shown in a test instance", 15s),
+      "by itself: the update notice's turn came (UP-8; a test instance only logs it)");
     Check(Install::CloseHost(host, 15s) == Install::CloseResult::Closed, "the new host closed");
     const auto saved = JsonUtil::Parse(FileUtil::ReadAll(gData / L"settings.json").value_or(""));
     Check(saved && JsonUtil::GetOr<bool>(JsonUtil::GetOr<JsonUtil::Json>(*saved, "updates", {}), "beta", false),

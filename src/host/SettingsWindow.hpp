@@ -78,7 +78,7 @@ class SettingsWindow {
   // many input messages it had then, and how long it took to open, to
   // "<png>.idle.txt" (no paints is a pass: RN-12), and quit the host
   void RequestScreenshot(std::filesystem::path path, bool withPicker);
-  // Opens on the Keybinds tab (tests, and later a tray item)
+  // Opens on the General tab (an update's notice or "Install now"; tests)
   void ShowGeneralTab() noexcept {
     mSelectGeneral = true;
   }

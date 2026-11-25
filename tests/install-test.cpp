@@ -11,7 +11,9 @@
 //   set-aside files cleaned once free;
 // - an uninstall removes only ours: never a path from a tampered list;
 // - the Start menu shortcut, the Apps and Features entry, Store apps' read
-//   access (CMP-4), and the Restart Manager finding a file's user.
+//   access (CMP-4), and the Restart Manager finding a file's user;
+// - how the setup program starts the new host after an update, and how the
+//   host reads it (UP-8).
 //
 //   install-test
 
@@ -362,6 +364,25 @@ int wmain() {
 
     Check(!Install::HasAppPackagesRead(folder), "Store apps can't read the folder at first");
     Check(Install::GrantAppPackagesRead(folder) && Install::HasAppPackagesRead(folder), "after the grant, they can");
+  });
+
+  Scenario("After an update: the new host's arguments say from what, and how (UP-8)", [&] {
+    using Install::UpdatedBy;
+    Check(Install::HostArguments("0.7.0", UpdatedBy::Setup) == L"--updated-from 0.7.0",
+      "the user ran the setup program: only the version");
+    Check(Install::HostArguments("0.7.0", UpdatedBy::Itself) == L"--updated-from 0.7.0 --updated-by itself",
+      "an update by itself");
+    Check(Install::HostArguments("0.7.1-beta.1", UpdatedBy::Request)
+        == L"--updated-from 0.7.1-beta.1 --updated-by request",
+      "an update asked for, from a beta");
+    Check(Install::HostArguments("", UpdatedBy::Itself).empty() && Install::HostArguments("not a version", UpdatedBy::Request).empty()
+        && Install::HostArguments("0.7.0 --settings", UpdatedBy::Itself).empty(),
+      "not an update, or not a version: no arguments at all");
+    Check(Install::ParseUpdatedBy(L"itself") == UpdatedBy::Itself && Install::ParseUpdatedBy(L"request") == UpdatedBy::Request,
+      "the host reads both");
+    Check(Install::ParseUpdatedBy(L"") == UpdatedBy::Setup && Install::ParseUpdatedBy(L"Itself") == UpdatedBy::Setup
+        && Install::ParseUpdatedBy(L"request ") == UpdatedBy::Setup,
+      "anything else reads as the setup program's own: no notice, no window");
   });
 
   RegDeleteTreeW(HKEY_CURRENT_USER, (L"Software\\OpenDesktopVR-Tests\\" + instance).c_str());

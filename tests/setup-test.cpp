@@ -9,8 +9,11 @@
 //   (in the test key), Store apps' read access (CMP-4). It runs without
 //   asking for elevation, though its name says "Setup".
 // - An update while the host runs: the Restart Manager closes it (it saves
-//   and logs why), the files are replaced, the new host starts. A host
-//   only just started, not answering yet, is asked again until it does.
+//   and logs why), the files are replaced, the new host starts and knows it
+//   updated by itself (its notification's turn comes; UP-8). A host only
+//   just started, not answering yet, is asked again until it does.
+// - An update asked for ("Install now", --asked): the new host opens its
+//   settings window again, with no notification (UP-8).
 // - An update while a game holds the layer: set aside, the game named in
 //   the log (CMP-5), cleaned once free.
 // - A newer version installed: refused, unless --allow-older.
@@ -201,9 +204,43 @@ int wmain(int argc, wchar_t** argv) {
       "its log says the setup program asked it to close");
     Check(LastSetup().find("was running: closed") != std::string::npos, "the setup log says it closed it");
     Check(WaitFor(30s, HostWindowUp), "the new host started");
+    Check(WaitFor(10s,
+            [] {
+              const auto text = Log(L"host.log");
+              return text.find("Updates: this update installed by itself") != std::string::npos
+                  && text.find("Tray: the update notice isn't shown in a test instance") != std::string::npos;
+            }),
+      "it knows it updated by itself, and its notification's turn came (a test instance only logs it)");
     std::this_thread::sleep_for(1s);
     Check(Install::CloseHost(host, 15s) == Install::CloseResult::Closed, "and closes the same way (as the next setup would)");
     Check(!HostWindowUp(), "none left running");
+  });
+
+  Scenario("An update asked for (\"Install now\"): the new host opens its settings window again (UP-8)", [&] {
+    auto running = StartHost(host);
+    if (!Check(running.hProcess && WaitFor(30s, HostWindowUp), "the installed host is running")) {
+      return;
+    }
+    std::this_thread::sleep_for(1s);
+    const auto from = Log(L"host.log").size();
+    const int code = Run(gSetup, L"--silent --asked");
+    Check(code == 0, std::format("updated (exit code {})", code));
+    WaitForSingleObject(running.hProcess, 5'000);
+    CloseHandle(running.hThread);
+    CloseHandle(running.hProcess);
+    Check(LastSetup().find("setup started (install, silent, asked for)") != std::string::npos,
+      "the setup log says it was asked for");
+    const auto since = [&] {
+      const auto text = Log(L"host.log");
+      return text.size() > from ? text.substr(from) : std::string {};
+    };
+    Check(WaitFor(30s, [&] { return since().find("Settings window opened") != std::string::npos; }),
+      "the new host opened its settings window");
+    const auto text = since();
+    Check(text.find("Updates: this update was asked for in the settings window, so it opens again") != std::string::npos,
+      "its log says why");
+    Check(text.find("the update notice") == std::string::npos, "and no notification");
+    Check(Install::CloseHost(host, 15s) == Install::CloseResult::Closed, "it closes with the window open");
   });
 
   Scenario("A host only just started is still closed: asked again until it answers", [&] {

@@ -8,6 +8,7 @@
 #include <OpenDesktopVR/Product.hpp>
 #include <OpenDesktopVR/StringUtil.hpp>
 #include <OpenDesktopVR/ThreadUtil.hpp>
+#include <OpenDesktopVR/Version.hpp>
 
 #include <Windows.h>
 
@@ -331,6 +332,29 @@ std::optional<Installed> FindInstalled(const Layout& layout) noexcept {
   } catch (...) {
   }
   return std::nullopt;
+}
+
+std::wstring HostArguments(std::string_view previous, UpdatedBy by) {
+  if (!ParseVersion(previous)) {
+    return {};
+  }
+  std::wstring arguments = L"--updated-from " + StringUtil::Widen(previous);
+  if (by == UpdatedBy::Itself) {
+    arguments += L" --updated-by itself";
+  } else if (by == UpdatedBy::Request) {
+    arguments += L" --updated-by request";
+  }
+  return arguments;
+}
+
+UpdatedBy ParseUpdatedBy(std::wstring_view text) noexcept {
+  if (text == L"itself") {
+    return UpdatedBy::Itself;
+  }
+  if (text == L"request") {
+    return UpdatedBy::Request;
+  }
+  return UpdatedBy::Setup;
 }
 
 WriteReport WriteFiles(

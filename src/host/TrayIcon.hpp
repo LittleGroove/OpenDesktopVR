@@ -29,9 +29,13 @@ class TrayIcon {
   TrayIcon& operator=(const TrayIcon&) = delete;
 
   void QuitAfter(double seconds);
-  // A warning notification from the tray icon (Windows shows it as a toast);
-  // clicking it opens the settings window's Diagnostics tab
-  void ShowWarning(std::wstring_view title, std::wstring_view text);
+  // A notification from the tray icon (Windows shows it as a toast).
+  // Clicking it opens the settings window on the tab that explains it
+  enum class Notice {
+    Administrator,// a warning (Q9): the Diagnostics tab
+    Updated,// an update by itself (UP-8): the General tab
+  };
+  void ShowNotice(Notice notice, std::wstring_view title, std::wstring_view text);
   // Runs the message loop until Exit; returns the exit code
   int Run();
 
@@ -54,6 +58,7 @@ class TrayIcon {
   HWND mWindow {nullptr};
   UINT mTaskbarCreated {0};
   bool mIconAdded {false};
+  Notice mNotice {Notice::Administrator};// the last one shown
 };
 
 }// namespace OpenDesktopVR::Host

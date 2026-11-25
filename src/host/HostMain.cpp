@@ -84,6 +84,7 @@
 #include <algorithm>
 #include <condition_variable>
 #include <cwchar>
+#include <format>
 #include <mutex>
 #include <thread>
 #include <string_view>
@@ -118,8 +119,10 @@ struct Options {
   bool mSettingsCommands {false};
   bool mSettingsWelcome {false};
   std::wstring mDebugInfoZip;
-  // The setup program started this after replacing that version (ADR-045)
+  // The setup program started this after replacing that version, and how
+  // the update came about (ADR-045, UP-8)
   std::string mUpdatedFrom;
+  Install::UpdatedBy mUpdatedBy {Install::UpdatedBy::Setup};
   bool mShowKeyboard {false};
   bool mShowQuickMenu {false};
   double mTestRecenterAfterSeconds {0};
@@ -178,6 +181,8 @@ Options ParseOptions() {
     } else if (arg == L"--updated-from" && i + 1 < argc) {
       const auto from = StringUtil::Narrow(argv[++i]);
       options.mUpdatedFrom = Install::ParseVersion(from) ? from : std::string {};
+    } else if (arg == L"--updated-by" && i + 1 < argc) {
+      options.mUpdatedBy = Install::ParseUpdatedBy(argv[++i]);
     } else if (arg == L"--show-quick-menu") {
       options.mShowQuickMenu = true;
     } else if (arg == L"--test-recenter-after" && i + 1 < argc) {
@@ -480,16 +485,35 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     updates.SetOnChange([&settings] { settings.Invalidate(); });
     settings.SetUpdates(&updates);
     Host::TrayIcon tray {instance, renderer, panels, settings};
-    if (asAdministrator) {
-      // Once a start; clicking it opens the Diagnostics tab. Test instances
-      // only log it: tests never put notifications on the desktop
+    // Test instances only log notifications: tests never put them on the
+    // desktop
+    const auto notify = [&](Host::TrayIcon::Notice notice, const char* name, std::wstring_view title,
+                          std::wstring_view text) {
       if (options.mTestInstance) {
-        Log::Info("Tray: the administrator warning isn't shown in a test instance");
+        Log::Info("Tray: {} isn't shown in a test instance", name);
       } else {
-        tray.ShowWarning(L"Open Desktop VR is running as administrator",
-          L"It doesn't need to, and a game that runs normally may not show its panels. Next time, start it "
-          L"normally: not with \"Run as administrator\", and not from a launcher that runs as administrator.");
+        tray.ShowNotice(notice, title, text);
       }
+    };
+    if (asAdministrator) {
+      // Once a start; clicking it opens the Diagnostics tab
+      notify(Host::TrayIcon::Notice::Administrator, "the administrator warning",
+        L"Open Desktop VR is running as administrator",
+        L"It doesn't need to, and a game that runs normally may not show its panels. Next time, start it "
+        L"normally: not with \"Run as administrator\", and not from a launcher that runs as administrator.");
+    }
+    // An update says so (UP-8; round 25: a silent one gave no sign). One by
+    // itself: a notification, which opens the General tab. One asked for
+    // with "Install now": that tab again, as the update closed the window
+    if (!options.mUpdatedFrom.empty() && options.mUpdatedBy == Install::UpdatedBy::Itself) {
+      Log::Info("Updates: this update installed by itself");
+      notify(Host::TrayIcon::Notice::Updated, "the update notice",
+        std::format(L"Open Desktop VR updated itself to {}", StringUtil::Widen(Product::Version)),
+        L"It installed while no game was running. Click to see what's new.");
+    } else if (!options.mUpdatedFrom.empty() && options.mUpdatedBy == Install::UpdatedBy::Request) {
+      Log::Info("Updates: this update was asked for in the settings window, so it opens again");
+      settings.ShowGeneralTab();
+      settings.Show();
     }
     if (options.mExitAfterSeconds > 0) {
       tray.QuitAfter(options.mExitAfterSeconds);

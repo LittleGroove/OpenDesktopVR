@@ -87,7 +87,8 @@ class UpdateService {
   static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
   void OnTimer();
   void StartCheck(const char* why);
-  void Install(const char* why);
+  // `asked`: "Install now", so the new host reopens the settings window
+  void Install(bool asked, const char* why);
   void Set(State state, std::string text);
 
   HINSTANCE mInstance;

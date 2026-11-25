@@ -314,7 +314,7 @@ void UpdateService::OnTimer() {
   if (mStatus.mState == State::Ready && settings.mInstallItself) {
     const auto busy = mBusy ? mBusy() : std::string {};
     if (busy.empty()) {
-      Install("by itself: no game running, the settings window closed");
+      Install(false, "by itself: no game running, the settings window closed");
       return;
     }
   }
@@ -335,12 +335,13 @@ void UpdateService::OnTimer() {
 
 void UpdateService::InstallNow() {
   if (mStatus.mState == State::Ready) {
-    Install("asked");
+    Install(true, "asked");
   }
 }
 
-void UpdateService::Install(const char* why) {
-  std::wstring line = L"\"" + mReady.wstring() + L"\" --silent";
+void UpdateService::Install(bool asked, const char* why) {
+  // The setup program tells the new host how it was updated (UP-8)
+  std::wstring line = L"\"" + mReady.wstring() + L"\" --silent" + (asked ? L" --asked" : L"");
   STARTUPINFOW startup {sizeof(startup)};
   PROCESS_INFORMATION info {};
   if (mReady.empty() || !FileUtil::Exists(mReady)

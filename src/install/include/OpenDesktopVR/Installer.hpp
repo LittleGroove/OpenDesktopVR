@@ -62,6 +62,19 @@ struct Installed {
 // From the Apps and Features entry; or a test build's folder (no entry)
 std::optional<Installed> FindInstalled(const Layout& layout) noexcept;
 
+// How an update came about, so the new host can say so (ADR-045; round 25:
+// a silent update gave no sign of itself)
+enum class UpdatedBy {
+  Setup,// the user ran the setup program: its own window said so
+  Itself,// installed by itself (UP-4): the new host shows a notification
+  Request,// "Install now" in the settings window: the new host reopens it
+};
+// The arguments, after the program's name, that start the host once
+// `previous` is replaced: empty unless `previous` is a version
+std::wstring HostArguments(std::string_view previous, UpdatedBy by);
+// The host's side: the value after --updated-by; anything else is Setup
+UpdatedBy ParseUpdatedBy(std::wstring_view text) noexcept;
+
 using Progress = std::function<void(std::size_t done, std::size_t total)>;
 
 struct WriteReport {

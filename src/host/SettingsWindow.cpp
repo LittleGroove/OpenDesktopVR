@@ -1673,7 +1673,15 @@ void SettingsWindow::UpdatesSection() {
   using State = UpdateService::State;
   const auto& status = mUpdates->GetStatus();
   if (!status.mUpdatedFrom.empty()) {
+    ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(std::format("Updated from {} to {}.", status.mUpdatedFrom, Product::Version).c_str());
+    // This version's release page (UP-8): the address is built here, from
+    // the repository and our own version
+    ImGui::SameLine();
+    if (ImGui::Button(std::format("What's new in {}", Product::Version).c_str())) {
+      const auto page = std::format("https://github.com/{}/releases/tag/v{}", Product::Repository, Product::Version);
+      ShellExecuteW(mWindow, L"open", StringUtil::Widen(page).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
   }
   if (status.mState == State::Failed) {
     const auto warning = Theme::ToRgba(Theme::StatusWarning);

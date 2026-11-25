@@ -12,6 +12,10 @@
 //   --remove-data   with --uninstall --silent: settings, profiles and logs too
 //   --no-start      leaves Open Desktop VR closed afterwards
 //   --allow-older   with --silent: replaces a newer version
+//   --asked         with --silent: the user asked for this update (the
+//                   settings window's "Install now"), so the new Open
+//                   Desktop VR opens that window again; without it, a silent
+//                   update was one by itself, and it shows a notification
 //
 // Exit codes: 0 done; 1 failed; 2 cancelled; 3 Open Desktop VR wouldn't
 // close; 4 refused (as administrator, older than what's installed, or
@@ -63,6 +67,7 @@ struct Options {
   bool mNoStart {false};
   bool mAllowOlder {false};
   bool mFromCopy {false};// the uninstaller's copy in the temp folder
+  bool mAsked {false};// with --silent: "Install now", not an update by itself
 };
 
 Options ParseOptions() {
@@ -77,6 +82,7 @@ Options ParseOptions() {
     options.mNoStart = options.mNoStart || arg == L"--no-start";
     options.mAllowOlder = options.mAllowOlder || arg == L"--allow-older";
     options.mFromCopy = options.mFromCopy || arg == L"--from-copy";
+    options.mAsked = options.mAsked || arg == L"--asked";
   }
   LocalFree(argv);
   return options;
@@ -237,11 +243,12 @@ std::wstring Names(const std::vector<Install::FileUser>& users) {
   return names;
 }
 
-// `previous`: the version it replaced, so the host can say it was updated
-bool StartHost(const fs::path& host, const std::string& previous) {
+// `previous`: the version it replaced, and how, so the host can say it was
+// updated
+bool StartHost(const fs::path& host, const std::string& previous, Install::UpdatedBy by) {
   std::wstring line = L"\"" + host.wstring() + L"\"";
-  if (Install::ParseVersion(previous)) {
-    line += L" --updated-from " + StringUtil::Widen(previous);
+  if (const auto arguments = Install::HostArguments(previous, by); !arguments.empty()) {
+    line += L" " + arguments;
   }
   STARTUPINFOW startup {sizeof(startup)};
   PROCESS_INFORMATION info {};
@@ -317,7 +324,12 @@ Outcome InstallSteps(Work& work, const Install::Layout& layout, const Install::P
   work.Say(L"Done.", 100);
 
   Outcome outcome {Done, std::format(L"Open Desktop VR {} is installed", StringUtil::Widen(payload.mVersion)), L""};
-  if (!options.mNoStart && StartHost(host, previous)) {
+  // A silent run is the app's updater; otherwise the user ran this, and the
+  // outcome below says so
+  const auto by = !options.mSilent ? Install::UpdatedBy::Setup
+    : options.mAsked             ? Install::UpdatedBy::Request
+                                 : Install::UpdatedBy::Itself;
+  if (!options.mNoStart && StartHost(host, previous, by)) {
     outcome.mText = L"It's starting now. Its settings window opens the first time; after that, it waits in the tray "
                     L"by the clock, and starting it again from the Start menu opens its window.";
   } else {
@@ -597,8 +609,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     config.mFile = logs / L"setup.log";
   }
   Log::Start(config);
-  Log::Info("Open Desktop VR setup started ({}{}{})", options.mUninstall ? "uninstall" : "install",
-    options.mSilent ? ", silent" : "", options.mFromCopy ? ", from its temp copy" : "");
+  Log::Info("Open Desktop VR setup started ({}{}{}{})", options.mUninstall ? "uninstall" : "install",
+    options.mSilent ? ", silent" : "", options.mSilent && options.mAsked ? ", asked for" : "",
+    options.mFromCopy ? ", from its temp copy" : "");
   int code = Failed;
   ThreadUtil::CatchAll("setup", [&] { code = Run(options); });
   Log::Info("Setup finished: exit code {}", code);
