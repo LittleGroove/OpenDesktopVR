@@ -22,6 +22,7 @@ odvr_executable(
   odvr::vkeyboardui
   odvr::keybinds
   odvr::capture
+  odvr::documents
   odvr::apphelperhost
   odvr::settings
   odvr::registration

@@ -278,6 +278,31 @@ Parsed ParseWords(std::span<const std::wstring> words) {
     }
     return {command, {}};
   }
+  if (Is(verb, L"page")) {
+    command.mVerb = Verb::Page;
+    if (args.size() != 2) {
+      return Error("page needs a panel (or all), then next, previous, first, last or a page number");
+    }
+    command.mTarget = PanelOrAll(args[0], false);
+    const auto& which = args[1];
+    if (Is(which, L"next")) {
+      command.mPageStep = 1;
+    } else if (Is(which, L"previous") || Is(which, L"prev")) {
+      command.mPageStep = -1;
+    } else if (Is(which, L"first")) {
+      command.mPage = 1;
+    } else if (Is(which, L"last")) {
+      command.mPage = UINT32_MAX;
+    } else {
+      bool sign = false;
+      const auto number = Number(which, &sign);
+      if (!number || sign || *number < 1 || *number > 1'000'000 || *number != std::floor(*number)) {
+        return Error("page: " + Quote(which) + " isn't next, previous, first, last or a page number");
+      }
+      command.mPage = static_cast<uint32_t>(*number);
+    }
+    return {command, {}};
+  }
   if (Is(verb, L"settings")) {
     command.mVerb = Verb::Settings;
     if (tooMany(0)) {
@@ -380,6 +405,7 @@ std::wstring Usage() {
                                            bigger, smaller: %; turn-left, turn-right,
                                            tilt-back, tilt-forward: degrees)
   OpenDesktopVR.exe window <panel> <text in the window's title>
+  OpenDesktopVR.exe page <panel> next     (or previous, first, last, or a number)
   OpenDesktopVR.exe recenter
   OpenDesktopVR.exe profile <name>        (or next, previous)
   OpenDesktopVR.exe keyboard toggle       (or show, hide)
@@ -452,6 +478,12 @@ std::string Describe(const Command& command) {
       break;
     case Verb::Settings:
       text = "settings";
+      break;
+    case Verb::Page:
+      text = command.mPageStep > 0 ? std::format("page {} next", target())
+        : command.mPageStep < 0    ? std::format("page {} previous", target())
+        : command.mPage == UINT32_MAX ? std::format("page {} last", target())
+                                      : std::format("page {} {}", target(), command.mPage);
       break;
     case Verb::Help:
       text = "help";

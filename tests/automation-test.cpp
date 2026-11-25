@@ -90,6 +90,19 @@ int main() {
     Check(c && c->mVerb == Verb::Settings && Refused({L"settings", L"now"}), "settings (what starting it again sends)");
     c = P({L"help"}).mCommand;
     Check(c && c->mVerb == Verb::Help, "help");
+    c = P({L"page", L"Checklist", L"next"}).mCommand;
+    Check(c && c->mVerb == Verb::Page && c->mPageStep == 1 && c->mTarget.mSelector == L"Checklist", "page Checklist next");
+    c = P({L"PAGE", L"all", L"prev"}).mCommand;
+    Check(c && c->mPageStep == -1 && c->mTarget.mKind == Target::Kind::All, "PAGE all prev");
+    c = P({L"page", L"#2", L"12"}).mCommand;
+    Check(c && c->mPageStep == 0 && c->mPage == 12, "page #2 12");
+    c = P({L"page", L"Charts", L"first"}).mCommand;
+    Check(c && c->mPage == 1, "page Charts first");
+    c = P({L"page", L"Charts", L"last", L"--repeat", L"2"}).mCommand;
+    Check(c && c->mPage == UINT32_MAX && c->mRepeat == 2, "page Charts last");
+    Check(Describe(*P({L"page", L"Charts", L"next"}).mCommand) == "page 'Charts' next"
+        && Describe(*P({L"page", L"Charts", L"7"}).mCommand) == "page 'Charts' 7",
+      "described for the log");
   });
 
   Scenario("Nonsense is refused with a reason (TH-9)", [] {
@@ -107,6 +120,10 @@ int main() {
       "switches: only their own words");
     Check(Refused({L"window", L"all", L"x"}) && Refused({L"window", L"#1"}), "window: one panel, and some title text");
     Check(Refused({L"recenter", L"now"}), "recenter takes nothing after it");
+    Check(Refused({L"page", L"#1"}, "page needs") && Refused({L"page", L"#1", L"0"}) && Refused({L"page", L"#1", L"-2"})
+        && Refused({L"page", L"#1", L"+2"}) && Refused({L"page", L"#1", L"2.5"}) && Refused({L"page", L"#1", L"soon"})
+        && Refused({L"page", L"#1", L"next", L"again"}) && Refused({L"page", L"#1", L"9999999"}),
+      "page: nothing, zero, signed, a fraction, a word, too many, too far");
     Check(Refused({L"toggle", L"all", L"--repeat", L"0"}) && Refused({L"toggle", L"all", L"--repeat", L"21"})
         && Refused({L"toggle", L"all", L"--repeat"}) && Refused({L"toggle", L"all", L"--force"}),
       "--repeat out of 1 to 20, missing, and unknown options");

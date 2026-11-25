@@ -329,6 +329,9 @@ void RenderLoop::Impl::ApplyPendingPanels() {
     const bool newLook = panel && !panel->mDefinition.SameLook(definition);
     const bool newKeepUpdating = panel && panel->mDefinition.mKeepUpdatingWhenCovered != definition.mKeepUpdatingWhenCovered;
     const bool newInput = panel && WantsInput(panel->mDefinition) != WantsInput(definition);
+    // A document's page, or its width (it's drawn again at the new size)
+    const bool newPageView = panel && definition.mKind == PanelKind::Document
+      && !(PageViewFor(panel->mDefinition) == PageViewFor(definition));
     if (!panel) {
       panel = std::make_unique<HostPanel>();
     }
@@ -338,6 +341,9 @@ void RenderLoop::Impl::ApplyPendingPanels() {
     }
     if (newInput && !newContent && panel->mSource) {
       panel->mSource->SetInputWanted(WantsInput(panel->mDefinition));
+    }
+    if (newPageView && !newContent && panel->mSource) {
+      panel->mSource->SetPageView(PageViewFor(panel->mDefinition));
     }
     panel->mLimiter.SetRate(panel->mDefinition.mMaxUpdatesPerSecond, mGlobalRateApplied);
     if (newContent) {

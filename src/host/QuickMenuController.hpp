@@ -46,6 +46,9 @@ class QuickMenuController {
 
   // The keybind (UI thread): true if it's now open
   bool Toggle(const char* why);
+  // From any thread: build the menu again (a document's page count
+  // arrived); posted, never waited for
+  void PostRebuild() noexcept;
   void Open(const char* why);
   void Close(const char* why);
   bool IsOpen() const noexcept {

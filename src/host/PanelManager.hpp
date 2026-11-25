@@ -29,6 +29,7 @@
 // and back when it ends, unless the user switched by hand meanwhile.
 #pragma once
 
+#include <OpenDesktopVR/DocumentStatus.hpp>
 #include <OpenDesktopVR/Events.hpp>
 #include <OpenDesktopVR/GameFollower.hpp>
 #include <OpenDesktopVR/HandService.hpp>
@@ -45,6 +46,7 @@
 #include <array>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -79,6 +81,8 @@ class PanelManager {
   // Re-read the file first for tray-menu actions; the settings window
   // re-read it when it opened. AddWindow returns the new panel's ID.
   uint64_t AddWindow(const WindowUtil::WindowInfo& window, bool reread = true);
+  // A document panel (M8a): a PDF, an image or a folder of them
+  uint64_t AddDocument(const std::wstring& path, bool reread = true);
   void Remove(uint64_t panelID, bool reread = true);
 
   // Settings-window edits: replace the panel with this ID (ST-6: only it)
@@ -103,6 +107,17 @@ class PanelManager {
   // Keybind actions on one panel's look (stored); the new value
   std::optional<float> ChangeBrightness(uint64_t panelID, float step);
   std::optional<bool> ToggleTint(uint64_t panelID);
+
+  // A document panel's page (from 0; stored): `step` pages on, or that page,
+  // kept within the document once its page count is known. The new page;
+  // nullopt if it isn't a document panel.
+  std::optional<uint32_t> StepPage(uint64_t panelID, int step);
+  std::optional<uint32_t> SetPage(uint64_t panelID, uint32_t page);
+  // What the document panels' sources know (their page counts)
+  void SetDocumentStatus(std::shared_ptr<const Documents::StatusBoard> board) noexcept {
+    mDocuments = std::move(board);
+  }
+  std::optional<Documents::DocumentStatus> DocumentStatusOf(uint64_t panelID) const;
 
   // The global keybinds (Keybinds::GlobalActions)
   const Keybinds::Slots& GlobalKeybinds(Keybinds::ActionKind kind) const noexcept;
@@ -221,6 +236,7 @@ class PanelManager {
   std::vector<PanelDefinition> mTestPanels;
   Visibility::Hidden mHidden;
   std::array<Keybinds::Slots, Keybinds::GlobalActions.size()> mGlobalKeybinds {};
+  std::shared_ptr<const Documents::StatusBoard> mDocuments;
   HandSettings mHands;
   KeyboardSettings mKeyboard;
   QuickMenuSettings mQuickMenu;

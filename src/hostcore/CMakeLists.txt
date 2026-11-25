@@ -33,6 +33,7 @@ odvr_module(
   odvr::keybinds
   odvr::render
   odvr::capture
+  odvr::documents
   odvr::panels
   odvr::xrshared
   odvr::core

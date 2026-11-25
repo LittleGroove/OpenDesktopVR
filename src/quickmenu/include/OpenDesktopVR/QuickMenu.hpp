@@ -101,6 +101,8 @@ enum class CommandKind : uint8_t {
   UpdateRate,// mStep
   ToggleHandWhilePointing,
   ToggleButton,
+  // On a panel (mArg): a document's page, mStep pages on (M8a)
+  Page,
 };
 
 struct Command {
@@ -118,6 +120,10 @@ struct PanelInfo {
   uint64_t mID {0};
   std::wstring mName;
   bool mWindow {false};// shows a window: "Change window"
+  // A document (M8a): its page (from 0) and page count (0 until read)
+  bool mDocument {false};
+  uint32_t mPage {0};
+  uint32_t mPageCount {0};
   bool mShowing {true};
   float mOpacity {1.0f};
   float mBrightness {1.0f};

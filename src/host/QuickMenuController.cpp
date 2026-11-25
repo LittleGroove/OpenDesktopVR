@@ -23,6 +23,7 @@ namespace {
 
 constexpr wchar_t WindowClass[] = L"OpenDesktopVR.QuickMenu";
 constexpr UINT CommandsMessage = WM_APP + 30;
+constexpr UINT RebuildMessage = WM_APP + 31;
 constexpr UINT_PTR ListingTimer = 1;
 constexpr UINT ListingCheckMs = 100;
 
@@ -167,6 +168,7 @@ void QuickMenuController::Run(const QuickMenu::Command& command) {
     case CommandKind::Brightness:
     case CommandKind::ToggleTint:
     case CommandKind::Size:
+    case CommandKind::Page:
       RunOnPanel(command);
       break;
     case CommandKind::MoveAcross:
@@ -225,6 +227,11 @@ void QuickMenuController::RunOnPanel(const QuickMenu::Command& command) {
     case CommandKind::ToggleTint:
       if (const auto tinted = mPanels.ToggleTint(command.mArg)) {
         Log::Info("Quick menu: '{}' tint {}", name, *tinted ? "on" : "off");
+      }
+      return;
+    case CommandKind::Page:
+      if (const auto page = mPanels.StepPage(command.mArg, command.mStep)) {
+        Log::Info("Quick menu: '{}' page {}", name, *page + 1);
       }
       return;
     case CommandKind::Size: {
@@ -372,10 +379,15 @@ QuickMenu::MenuData QuickMenuController::Gather() const {
     if (!panel.mEnabled) {
       continue;// off at the desk: not in VR at all
     }
+    const auto status = panel.mKind == PanelKind::Document ? mPanels.DocumentStatusOf(panel.mID) : std::nullopt;
+    const uint32_t pageCount = status && status->mState == Documents::DocumentState::Ready ? status->mPageCount : 0;
     data.mPanels.push_back({
       .mID = panel.mID,
       .mName = panel.mName,
       .mWindow = panel.mKind == PanelKind::Window,
+      .mDocument = panel.mKind == PanelKind::Document,
+      .mPage = Documents::ClampPage(panel.mPage, pageCount),
+      .mPageCount = pageCount,
       .mShowing = !mPanels.IsHidden(panel.mID),
       .mOpacity = panel.mOpacity,
       .mBrightness = panel.mBrightness,
@@ -466,6 +478,12 @@ void QuickMenuController::CheckListing() {
   Rebuild();
 }
 
+void QuickMenuController::PostRebuild() noexcept {
+  if (const HWND window = mWindow.load()) {
+    PostMessageW(window, RebuildMessage, 0, 0);
+  }
+}
+
 LRESULT CALLBACK QuickMenuController::WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
   if (message == WM_NCCREATE) {
     SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(reinterpret_cast<CREATESTRUCTW*>(lParam)->lpCreateParams));
@@ -473,6 +491,10 @@ LRESULT CALLBACK QuickMenuController::WindowProc(HWND window, UINT message, WPAR
   auto* self = reinterpret_cast<QuickMenuController*>(GetWindowLongPtrW(window, GWLP_USERDATA));
   if (self && message == CommandsMessage) {
     ThreadUtil::CatchAll("quick menu", [&] { self->TakeCommands(); });
+    return 0;
+  }
+  if (self && message == RebuildMessage) {
+    ThreadUtil::CatchAll("quick menu", [&] { self->Rebuild(); });
     return 0;
   }
   if (self && message == WM_TIMER && wParam == ListingTimer) {

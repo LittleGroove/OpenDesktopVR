@@ -21,7 +21,7 @@
 
 namespace OpenDesktopVR::Host {
 
-enum class PanelKind { TestPattern, Window, Keyboard, QuickMenu };
+enum class PanelKind { TestPattern, Window, Keyboard, QuickMenu, Document };
 
 struct PanelDefinition {
   uint64_t mID {0};
@@ -29,6 +29,10 @@ struct PanelDefinition {
   PanelKind mKind {PanelKind::TestPattern};
   bool mAnimated {true};          // test patterns
   WindowMatch::Rule mWindow;      // windows (ST-8: a rule, never an HWND)
+  // Documents (M8a, ADR-047): a PDF, an image or a folder of them, and the
+  // page shown (from 0), saved so the place is kept
+  std::wstring mDocumentPath;
+  uint32_t mPage {0};
   bool mEnabled {true};
   // LOCAL space: seated, origin at the head when the view was last recentered
   float mPosition[3] {0, 0, -0.6f};
@@ -73,7 +77,8 @@ struct PanelDefinition {
 
   // Same content (a new source isn't needed if only placement changed)
   bool SameContent(const PanelDefinition& other) const noexcept {
-    return mKind == other.mKind && mAnimated == other.mAnimated && mWindow == other.mWindow;
+    return mKind == other.mKind && mAnimated == other.mAnimated && mWindow == other.mWindow
+      && mDocumentPath == other.mDocumentPath;
   }
   // Same pixels apart from the content (a change means a redraw)
   bool SameLook(const PanelDefinition& other) const noexcept {
@@ -126,6 +131,15 @@ std::vector<PanelDefinition> OverlappingTestPanels();
 // A new panel for a window, placed in the next free spot of a grid in front
 // of the viewer
 PanelDefinition NewWindowPanel(const WindowUtil::WindowInfo& window, std::size_t existingWindowPanels);
+// A new panel for a document (a file or a folder), in the same grid as
+// windows: `existingPanels` is how many windows and documents there are
+PanelDefinition NewDocumentPanel(const std::wstring& path, std::size_t existingPanels);
+// A document panel's name until it's renamed: the file's name without its
+// extension, or the folder's
+std::wstring DocumentPanelName(const std::wstring& path);
+// The page a document panel shows, and the width it's drawn at (doc 08: from
+// its width in VR)
+Render::PageView PageViewFor(const PanelDefinition& definition) noexcept;
 
 uint64_t NewPanelID() noexcept;
 

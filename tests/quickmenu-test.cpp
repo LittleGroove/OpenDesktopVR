@@ -169,6 +169,34 @@ int main() {
     settings.mButton = false;
     CheckLayout("settings, button off", BuildLayout({.mOpen = true, .mPage = Page::Settings}, settings));
 
+    // A document's page (M8a): the row with its previous and next page
+    auto documents = data;
+    documents.mPanels[1].mDocument = true;
+    documents.mPanels[1].mWindow = false;
+    documents.mPanels[1].mPage = 0;
+    documents.mPanels[1].mPageCount = 12;
+    const MenuState onDocument {.mOpen = true, .mPage = Page::Panel, .mPanel = 101};
+    auto page = BuildLayout(onDocument, documents);
+    CheckLayout("panel page (a document)", page);
+    const auto previous = FindTarget(page, CommandKind::Page, 101, -1);
+    const auto next = FindTarget(page, CommandKind::Page, 101, 1);
+    const auto label = std::ranges::find(page.mItems, std::wstring {L"Page"}, &Item::mText);
+    Check(previous < 0 && next >= 0 && label != page.mItems.end() && label->mValue == L"1 of 12",
+      "page 1 of 12: next, but no previous");
+    documents.mPanels[1].mPage = 11;
+    page = BuildLayout(onDocument, documents);
+    Check(FindTarget(page, CommandKind::Page, 101, -1) >= 0 && FindTarget(page, CommandKind::Page, 101, 1) < 0,
+      "the last page: previous, but no next");
+    documents.mPanels[1].mPage = 4;
+    documents.mPanels[1].mPageCount = 0;
+    page = BuildLayout(onDocument, documents);
+    const auto unknown = std::ranges::find(page.mItems, std::wstring {L"Page"}, &Item::mText);
+    Check(unknown != page.mItems.end() && unknown->mValue == L"5" && FindTarget(page, CommandKind::Page, 101, 1) >= 0,
+      "not counted yet: the page alone, and next");
+    Check(FindTarget(BuildLayout({.mOpen = true, .mPage = Page::Panel, .mPanel = 100}, data), CommandKind::Page, 100, 1) < 0,
+      "a window's page has no page row");
+    Check(Navigate(onDocument, {CommandKind::Page, 101, 1}, documents).mPage == Page::Panel, "turning a page stays on the page");
+
     const auto closed = BuildLayout({}, data);
     Check(closed.mWidth == ButtonSize && closed.mHeight == ButtonSize && closed.mItems.size() == 1
         && closed.mItems[0].mCommand.mKind == CommandKind::Open,

@@ -128,6 +128,20 @@ void StepRow(Builder& b, std::wstring label, std::wstring value, Command command
   b.Add(ItemKind::Stepper, {plusLeft, row.mTop, row.mRight, row.mBottom}, L"+", command, {}, false, canMore);
 }
 
+// A document's page: "Page 3 of 12", with the previous and next page
+void PageRow(Builder& b, const PanelInfo& panel) {
+  const Rect row = b.NextRow();
+  const float nextLeft = row.mRight - StepperWidth;
+  const float previousLeft = nextLeft - Gap - StepperWidth;
+  const auto value = panel.mPageCount > 0 ? std::format(L"{} of {}", panel.mPage + 1, panel.mPageCount)
+                                          : std::format(L"{}", panel.mPage + 1);
+  b.Add(ItemKind::Label, {row.mLeft + Indent, row.mTop, previousLeft - Gap, row.mBottom}, L"Page", {}, value);
+  b.Add(ItemKind::Stepper, {previousLeft, row.mTop, previousLeft + StepperWidth, row.mBottom}, L"\u2039",
+    {CommandKind::Page, panel.mID, -1}, {}, false, panel.mPage > 0);
+  b.Add(ItemKind::Stepper, {nextLeft, row.mTop, row.mRight, row.mBottom}, L"\u203A", {CommandKind::Page, panel.mID, 1}, {},
+    false, panel.mPageCount == 0 || panel.mPage + 1 < panel.mPageCount);
+}
+
 Layout Closed() {
   Layout layout {ButtonSize, ButtonSize, {}};
   layout.mItems.push_back({.mKind = ItemKind::Icon,
@@ -177,6 +191,9 @@ Layout PanelPage(const MenuState& state, const MenuData& data) {
   const uint64_t id = panel->mID;
   Header(b, NameOf(*panel), true);
   ToggleRow(b, L"Show in VR", panel->mShowing, {CommandKind::TogglePanel, id});
+  if (panel->mDocument) {
+    PageRow(b, *panel);
+  }
   StepRow(b, L"Opacity", Percent(panel->mOpacity), {CommandKind::Opacity, id}, panel->mOpacity > MinLevel + Epsilon,
     panel->mOpacity < 1.0f - Epsilon);
   StepRow(b, L"Brightness", Percent(panel->mBrightness), {CommandKind::Brightness, id},
@@ -338,6 +355,9 @@ std::string Describe(const Command& command) {
       break;
     case CommandKind::ToggleTint:
       name = "tint";
+      break;
+    case CommandKind::Page:
+      name = "page";
       break;
     case CommandKind::Size:
       name = "size";

@@ -66,6 +66,14 @@ struct Crop {
   PixelRect Apply(PixelSize size) const noexcept;
 };
 
+// Documents (M8a, ADR-047): the page to show (from 0), and how many pixels
+// wide to draw it (doc 08: at the panel's own size, from its width in VR)
+struct PageView {
+  uint32_t mPage {0};
+  uint32_t mWidth {0};
+  bool operator==(const PageView&) const = default;
+};
+
 // Given to a source when it's made: call it, from any thread, when new
 // content exists. It marks the panel dirty and wakes the render loop (at
 // most every 8 ms: CP-2).
@@ -114,6 +122,11 @@ class ContentSource {
 
   // Trim the content's edges; sources that can't crop ignore it
   virtual void SetCrop(const Crop& /*crop*/) {
+  }
+
+  // Documents: another page, or another width; others ignore it. Render
+  // thread.
+  virtual void SetPageView(const PageView& /*view*/) {
   }
 
   // Keep the content's app updating while other windows cover it (CT-3:

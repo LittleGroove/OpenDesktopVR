@@ -146,6 +146,12 @@ void KeybindService::Run(const Keybinds::Action& action) {
         mToggleQuickMenu();// it logs what it did
       }
       return;
+    case ActionKind::NextPage:
+    case ActionKind::PreviousPage:
+      if (const auto page = mPanels.StepPage(action.mPanelID, action.mKind == ActionKind::NextPage ? 1 : -1)) {
+        Log::Info("Keybind: '{}' page {}", PanelName(mPanels, action.mPanelID), *page + 1);
+      }
+      return;
   }
 }
 

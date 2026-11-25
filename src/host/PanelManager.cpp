@@ -416,11 +416,65 @@ void PanelManager::FollowGame(uint32_t processID, const std::wstring& executable
   }
 }
 
+namespace {
+
+// Windows and documents share one grid of spots
+std::size_t GridPanels(const std::vector<PanelDefinition>& panels) {
+  return static_cast<std::size_t>(
+    std::ranges::count_if(panels, [](const auto& p) { return p.mKind == PanelKind::Window || p.mKind == PanelKind::Document; }));
+}
+
+}// namespace
+
+uint64_t PanelManager::AddDocument(const std::wstring& path, bool reread) {
+  uint64_t id = 0;
+  Edit([&](std::vector<PanelDefinition>& panels) {
+    auto panel = NewDocumentPanel(path, GridPanels(panels));
+    id = panel.mID;
+    Log::Info("Panels: added the document '{}'", StringUtil::Narrow(panel.mName));
+    panels.push_back(std::move(panel));
+  }, reread);
+  return id;
+}
+
+std::optional<Documents::DocumentStatus> PanelManager::DocumentStatusOf(uint64_t panelID) const {
+  return mDocuments ? mDocuments->Get(panelID) : std::nullopt;
+}
+
+std::optional<uint32_t> PanelManager::StepPage(uint64_t panelID, int step) {
+  auto panel = Find(panelID);
+  if (!panel || panel->mKind != PanelKind::Document) {
+    return std::nullopt;
+  }
+  const auto status = DocumentStatusOf(panelID);
+  const uint32_t count = status && status->mState == Documents::DocumentState::Ready ? status->mPageCount : 0;
+  const auto page = Documents::StepPage(panel->mPage, step, count);
+  if (page != panel->mPage) {
+    panel->mPage = page;
+    Update(*panel);
+  }
+  return page;
+}
+
+std::optional<uint32_t> PanelManager::SetPage(uint64_t panelID, uint32_t page) {
+  auto panel = Find(panelID);
+  if (!panel || panel->mKind != PanelKind::Document) {
+    return std::nullopt;
+  }
+  const auto status = DocumentStatusOf(panelID);
+  const uint32_t count = status && status->mState == Documents::DocumentState::Ready ? status->mPageCount : 0;
+  page = Documents::ClampPage(page, count);
+  if (page != panel->mPage) {
+    panel->mPage = page;
+    Update(*panel);
+  }
+  return page;
+}
+
 uint64_t PanelManager::AddWindow(const WindowUtil::WindowInfo& window, bool reread) {
   uint64_t id = 0;
   Edit([&](std::vector<PanelDefinition>& panels) {
-    const auto windows = std::ranges::count_if(panels, [](const auto& p) { return p.mKind == PanelKind::Window; });
-    auto panel = NewWindowPanel(window, static_cast<std::size_t>(windows));
+    auto panel = NewWindowPanel(window, GridPanels(panels));
     id = panel.mID;
     Log::Info("Panels: added '{}'", StringUtil::Narrow(panel.mName));
     panels.push_back(std::move(panel));

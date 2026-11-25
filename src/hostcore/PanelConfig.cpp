@@ -14,6 +14,9 @@ using JsonUtil::Json;
 
 namespace {
 
+// A document's path, as stored (UTF-8): Windows' longest, with room
+constexpr std::size_t MaxDocumentPathBytes = 4 * 32767;
+
 std::optional<uint64_t> ParseID(const std::string& text) {
   if (text.empty() || text.size() > 16) {
     return std::nullopt;
@@ -89,6 +92,17 @@ std::optional<PanelDefinition> FromJson(const Json& json) noexcept {
     } else if (kind == "testPattern") {
       panel.mKind = PanelKind::TestPattern;
       panel.mAnimated = JsonUtil::GetOr<bool>(json, "animated", true);
+    } else if (kind == "document") {
+      // {"path": "...", "page": 1}: the page counted from 1, as people do
+      panel.mKind = PanelKind::Document;
+      const auto document = JsonUtil::GetOr<Json>(json, "document", Json {});
+      const auto path = JsonUtil::GetOr<std::string>(document, "path", "");
+      if (path.empty() || path.size() > MaxDocumentPathBytes) {
+        return std::nullopt;
+      }
+      panel.mDocumentPath = StringUtil::Widen(path);
+      const auto page = JsonUtil::GetOr<double>(document, "page", 1);
+      panel.mPage = std::isfinite(page) && page >= 1 && page <= UINT32_MAX ? static_cast<uint32_t>(page) - 1 : 0;
     } else {
       return std::nullopt;// a kind this version doesn't have: skipped, kept on disk
     }
@@ -165,10 +179,23 @@ Json ToJson(const PanelDefinition& panel) {
     json["kind"] = "window";
     json["window"] = WindowMatch::ToJson(panel.mWindow);
     json.erase("animated");
+    json.erase("document");
+  } else if (panel.mKind == PanelKind::Document) {
+    json["kind"] = "document";
+    // Into what was read: a newer version's fields in it stay (ST-5)
+    auto& document = json["document"];
+    if (!document.is_object()) {
+      document = Json::object();
+    }
+    document["path"] = StringUtil::Narrow(panel.mDocumentPath);
+    document["page"] = static_cast<uint64_t>(panel.mPage) + 1;
+    json.erase("animated");
+    json.erase("window");
   } else {
     json["kind"] = "testPattern";
     json["animated"] = panel.mAnimated;
     json.erase("window");
+    json.erase("document");
   }
   json["position"] = Json::array({panel.mPosition[0], panel.mPosition[1], panel.mPosition[2]});
   json["faceOrigin"] = panel.mFaceOrigin;

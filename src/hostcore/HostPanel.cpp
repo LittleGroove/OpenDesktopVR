@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Robert McGough
 
+#include <OpenDesktopVR/DocumentFormats.hpp>
 #include <OpenDesktopVR/HostPanel.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <numbers>
 #include <utility>
 #include <random>
@@ -41,20 +43,52 @@ std::vector<PanelDefinition> OverlappingTestPanels() {
   return {inFront, behind};
 }
 
+namespace {
+
+// A grid in front of the viewer: three across, then a row lower
+void PlaceInGrid(PanelDefinition& panel, std::size_t index) {
+  const auto column = static_cast<float>(index % 3);
+  const auto row = static_cast<float>((index / 3) % 3);
+  panel.mPosition[0] = (column - 1.0f) * 0.5f;
+  panel.mPosition[1] = 0.05f - row * 0.35f;
+  panel.mPosition[2] = -0.7f;
+}
+
+}// namespace
+
 PanelDefinition NewWindowPanel(const WindowUtil::WindowInfo& window, std::size_t existingWindowPanels) {
   PanelDefinition panel;
   panel.mID = NewPanelID();
   panel.mName = window.mTitle.empty() ? WindowUtil::ExecutableName(window) : window.mTitle;
   panel.mKind = PanelKind::Window;
   panel.mWindow = WindowMatch::FromWindow(window);
-  // A grid in front of the viewer: three across, then a row lower
-  const auto column = static_cast<float>(existingWindowPanels % 3);
-  const auto row = static_cast<float>((existingWindowPanels / 3) % 3);
-  panel.mPosition[0] = (column - 1.0f) * 0.5f;
-  panel.mPosition[1] = 0.05f - row * 0.35f;
-  panel.mPosition[2] = -0.7f;
+  PlaceInGrid(panel, existingWindowPanels);
   panel.mWidthMeters = 0.45f;
   return panel;
+}
+
+PanelDefinition NewDocumentPanel(const std::wstring& path, std::size_t existingPanels) {
+  // A window's spot in the grid, but narrower: pages are usually portrait
+  PanelDefinition panel;
+  panel.mID = NewPanelID();
+  PlaceInGrid(panel, existingPanels);
+  panel.mName = DocumentPanelName(path);
+  panel.mKind = PanelKind::Document;
+  panel.mDocumentPath = path;
+  panel.mPage = 0;
+  panel.mWidthMeters = 0.32f;
+  return panel;
+}
+
+std::wstring DocumentPanelName(const std::wstring& path) {
+  const std::filesystem::path file {path};
+  std::error_code error;
+  auto name = file.has_stem() && !std::filesystem::is_directory(file, error) ? file.stem().wstring() : file.filename().wstring();
+  return name.empty() ? path : name;// a drive's root: its path
+}
+
+Render::PageView PageViewFor(const PanelDefinition& definition) noexcept {
+  return {definition.mPage, Documents::PageWidthFor(definition.mWidthMeters)};
 }
 
 PanelSize PanelSizeFor(const PanelDefinition& definition, uint32_t contentWidth, uint32_t contentHeight) noexcept {

@@ -35,6 +35,8 @@
 
 #include <Windows.h>
 
+#include <atomic>
+
 #include <d3d11.h>
 #include <dxgi1_2.h>
 
@@ -71,6 +73,9 @@ class SettingsWindow {
   }
   // The panels changed elsewhere (the tray menu): repaint if open
   void Invalidate();
+  // The same from any thread (a document's page count arrived): it's
+  // posted, never waited for
+  void PostInvalidate() noexcept;
 
   // Tests: half a second after opening (and once the picker, if asked for,
   // has its list), save the window as a PNG; then stay idle for two
@@ -182,6 +187,10 @@ class SettingsWindow {
   // if cancelled. Only ever outside a frame: its modal loop paints this
   // window (round 15)
   std::optional<std::filesystem::path> AskProfileFile(bool save, const std::wstring& name, bool debugInfo = false);
+  // A PDF or an image, or a folder (M8a); panelID 0 for a new panel
+  std::optional<std::filesystem::path> AskDocument(bool folder);
+  void AskForDocument(bool folder, uint64_t panelID);
+  void DocumentSection(PanelDefinition& panel, bool& changed);
   // The export or import asked for during a frame, run once it's done
   void RunPendingDialog();
   // The virtual keyboard's settings, on the Hands tab (K10)
@@ -226,6 +235,7 @@ class SettingsWindow {
   bool mSelectHands {false};
 
   HWND mWindow {nullptr};
+  std::atomic<HWND> mPostTarget {nullptr};// mWindow, for other threads
   // Made in the background at start and kept while the host runs (an idle
   // device costs no CPU); the rest exists only while the window is open
   ThreadUtil::BackgroundTask<Prepared> mPrepareTask;
@@ -270,6 +280,10 @@ class SettingsWindow {
     std::string mProfileID;
     std::wstring mName;
     bool mDebugInfo {false};// "Save debug info": a .zip, then the bundle
+    // A document panel's file or folder (M8a): a new panel, or for this one
+    bool mDocument {false};
+    bool mFolder {false};
+    uint64_t mForPanel {0};
   };
   std::optional<PendingDialog> mPendingDialog;
   // Inside a frame: a frame never starts inside another (round 15: a file

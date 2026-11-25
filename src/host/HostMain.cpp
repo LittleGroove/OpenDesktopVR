@@ -57,6 +57,8 @@
 #include <OpenDesktopVR/ClickSound.hpp>
 #include <OpenDesktopVR/CrashHandler.hpp>
 #include <OpenDesktopVR/InjectingSink.hpp>
+#include <OpenDesktopVR/DocumentSource.hpp>
+#include <OpenDesktopVR/DocumentStatus.hpp>
 #include <OpenDesktopVR/Installer.hpp>
 #include <OpenDesktopVR/Version.hpp>
 #include <OpenDesktopVR/KeyboardService.hpp>
@@ -321,17 +323,31 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     // by the renderer (ADR-036)
     const auto keyboardModel = std::make_shared<VirtualKeyboard::KeyboardModel>();
     const auto quickMenuModel = std::make_shared<Host::QuickMenuModel>();
+    // What the document panels' sources know (page counts), for the UI (M8a)
+    const auto documentStatus = std::make_shared<Documents::StatusBoard>();
     // What each kind of panel shows
     const bool staticPanels = options.mStaticPanels;
     const bool resizingPanels = options.mResizingPanels;
     Host::RenderLoop renderer {loopOptions,
-      [staticPanels, resizingPanels, &appHelper, keyboardModel, quickMenuModel](const Host::PanelDefinition& definition,
-        Render::GpuDevice& gpu, Render::MarkDirty markDirty) -> std::unique_ptr<Render::ContentSource> {
+      [staticPanels, resizingPanels, &appHelper, keyboardModel, quickMenuModel, documentStatus](
+        const Host::PanelDefinition& definition, Render::GpuDevice& gpu,
+        Render::MarkDirty markDirty) -> std::unique_ptr<Render::ContentSource> {
         if (definition.mKind == Host::PanelKind::Keyboard) {
           return std::make_unique<VirtualKeyboard::KeyboardSource>(gpu, keyboardModel, std::move(markDirty));
         }
         if (definition.mKind == Host::PanelKind::QuickMenu) {
           return std::make_unique<Host::QuickMenuSource>(gpu, quickMenuModel, std::move(markDirty));
+        }
+        if (definition.mKind == Host::PanelKind::Document) {
+          return std::make_unique<Documents::DocumentSource>(gpu,
+            Documents::DocumentSourceOptions {
+              .mPath = definition.mDocumentPath,
+              .mName = definition.mName,
+              .mPanelID = definition.mID,
+              .mView = Host::PageViewFor(definition),
+              .mBoard = documentStatus,
+            },
+            std::move(markDirty));
         }
         if (definition.mKind == Host::PanelKind::Window) {
           Capture::WindowCaptureOptions capture {definition.mWindow, definition.mName};
@@ -382,6 +398,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     // folder of its own (OPENDESKTOPVR_DATA_FOLDER: settings-migration-test)
     const bool privateFolder = ProcessUtil::GetEnvironment("OPENDESKTOPVR_DATA_FOLDER").has_value();
     Host::PanelManager panels {renderer, !options.mTestInstance || privateFolder, std::move(testPanels)};
+    panels.SetDocumentStatus(documentStatus);
     panels.Load();
     if (options.mTestInstance && !privateFolder && !options.mShowQuickMenu) {
       // Tests that count panels see only theirs: no menu button
@@ -464,6 +481,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     Host::AutomationService automation {instance, panels, renderer, keyboard, quickMenu};
     Host::SettingsWindow settings {instance, renderer, panels, keybinds, appHelper, logRing};
     settings.SetCommandRunner([&automation](std::span<const std::wstring> words) { return automation.Try(words); });
+    // A document's page count arrived: the settings window and the quick
+    // menu show it. Cleared before either goes (it waits for a call in
+    // progress), as the documents' threads outlive them.
+    documentStatus->SetOnChange([&settings, &quickMenu] {
+      settings.PostInvalidate();
+      quickMenu.PostRebuild();
+    });
+    struct ForgetDocumentStatus {
+      Documents::StatusBoard& mBoard;
+      ~ForgetDocumentStatus() {
+        mBoard.SetOnChange({});
+      }
+    } forgetDocumentStatus {*documentStatus};
     automation.SetSettingsOpener([&settings] { settings.Show(); });
     if (panels.IsFirstRun() && !options.mTestInstance) {
       // A fresh install: the way in, open, with a welcome (M6f). Test

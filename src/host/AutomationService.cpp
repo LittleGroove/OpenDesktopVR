@@ -136,6 +136,23 @@ std::optional<AutomationService::Ready> AutomationService::Prepare(const Command
       }
     }
   }
+  if (command.mVerb == Verb::Page) {
+    // "all": its documents; one panel: it must be one
+    std::erase_if(ready.mPanels, [&](uint64_t id) {
+      const auto panel = mPanels.Find(id);
+      return command.mTarget.mKind == Target::Kind::All && (!panel || panel->mKind != PanelKind::Document);
+    });
+    for (const auto id: ready.mPanels) {
+      if (const auto panel = mPanels.Find(id); !panel || panel->mKind != PanelKind::Document) {
+        why = std::format("{}: '{}' doesn't show a document", Automation::Describe(command), panel ? Utf8(panel->mName) : "?");
+        return std::nullopt;
+      }
+    }
+    if (ready.mPanels.empty()) {
+      why = std::format("{}: there's no document panel", Automation::Describe(command));
+      return std::nullopt;
+    }
+  }
   if (command.mVerb == Verb::Window) {
     for (const auto id: ready.mPanels) {
       if (const auto panel = mPanels.Find(id); !panel || panel->mKind != PanelKind::Window) {
@@ -332,6 +349,17 @@ std::string AutomationService::RunOnce(const Ready& ready) {
         mOpenSettings();
       }
       return {};
+    case Verb::Page: {
+      std::string text;
+      for (const auto& panel: panels) {
+        const auto page = command.mPageStep != 0 ? mPanels.StepPage(panel.mID, command.mPageStep)
+                                                 : mPanels.SetPage(panel.mID, command.mPage - 1);
+        if (page) {
+          text += std::format("{}'{}' page {}", text.empty() ? "" : ", ", Utf8(panel.mName), *page + 1);
+        }
+      }
+      return text.empty() ? names() : text;
+    }
     case Verb::Help:
       return {};
   }

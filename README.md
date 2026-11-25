@@ -14,6 +14,8 @@ It's free software under the GNU GPL, version 3.
 - **Windows as panels** in any OpenXR game, placed where you want them,
   with their own size, opacity, brightness and tint. Profiles switch the
   set of panels by hand or by game.
+- **Documents as panels:** a PDF, an image, or a folder of them as one run
+  of pages, turned with a keybind or the quick menu. Your place is kept.
 - **Your hands:** tap, drag and scroll on panels; a virtual keyboard shows
   when you tap into a text field.
 - **A quick menu in VR** for showing and hiding panels, moving them,

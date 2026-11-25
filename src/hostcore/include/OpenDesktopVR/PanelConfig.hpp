@@ -8,8 +8,12 @@
 //      "window": {"executable": "...", "class": "...", "title": "Discord", "titleMode": "contains"},
 //      "position": [x, y, z], "faceOrigin": true, "yawDegrees": 0,
 //      "widthMeters": 0.45, "maxUpdatesPerSecond": 0, "enabled": true},
-//     {"id": "...", "name": "...", "kind": "testPattern", "animated": true, ...}
+//     {"id": "...", "name": "...", "kind": "testPattern", "animated": true, ...},
+//     {"id": "...", "name": "Checklist", "kind": "document",
+//      "document": {"path": "C:\\...\\Checklist.pdf", "page": 3}, ...}
 //   ]
+//
+// A document's page is counted from 1 here, as people count them.
 //
 // Reading is tolerant: one bad entry is skipped, the rest load (ST-4), and
 // fields this version doesn't know survive a save (ST-5).

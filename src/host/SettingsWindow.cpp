@@ -5,6 +5,7 @@
 
 #include "UpdateService.hpp"
 
+#include <OpenDesktopVR/DocumentFormats.hpp>
 #include <OpenDesktopVR/Automation.hpp>
 #include <OpenDesktopVR/Autostart.hpp>
 #include <OpenDesktopVR/CrashHandler.hpp>
@@ -45,6 +46,7 @@ namespace {
 constexpr wchar_t WindowClass[] = L"OpenDesktopVR.Settings";
 constexpr UINT ReopenMessage = WM_APP + 1;// the graphics device was lost
 constexpr UINT FileDialogMessage = WM_APP + 2;// a file dialog asked for during a frame
+constexpr UINT InvalidateMessage = WM_APP + 3;// PostInvalidate, from another thread
 
 constexpr UINT_PTR PaintTimer = 1;
 constexpr UINT_PTR ScreenshotIdleStart = 2;
@@ -69,6 +71,17 @@ constexpr float PickerThumbnailHeight = 54;// the window picker's pictures
 constexpr float PickerProgramColumn = 200;
 
 constexpr auto Clamp = ImGuiSliderFlags_AlwaysClamp;
+
+// A document panel's second line in the list (M8a)
+std::string DocumentLine(const PanelDefinition& panel, const std::optional<Documents::DocumentStatus>& status) {
+  if (!status || status->mState == Documents::DocumentState::Loading) {
+    return "Opening...";
+  }
+  if (status->mState == Documents::DocumentState::Failed) {
+    return "Can't show it";
+  }
+  return std::format("Page {} of {}", Documents::ClampPage(panel.mPage, status->mPageCount) + 1, status->mPageCount);
+}
 
 std::string Utf8(std::wstring_view text) {
   return StringUtil::Narrow(text);
@@ -364,6 +377,12 @@ void SettingsWindow::Invalidate() {
   }
 }
 
+void SettingsWindow::PostInvalidate() noexcept {
+  if (const HWND window = mPostTarget.load()) {
+    PostMessageW(window, InvalidateMessage, 0, 0);
+  }
+}
+
 void SettingsWindow::RequestScreenshot(std::filesystem::path path, bool withPicker) {
   mScreenshot = std::move(path);
   mScreenshotWithPicker = withPicker;
@@ -387,6 +406,7 @@ bool SettingsWindow::Create() {
   if (!mWindow) {
     return false;
   }
+  mPostTarget = mWindow;
   // Sized for that monitor's DPI, centred on it
   SetScale(static_cast<float>(GetDpiForWindow(mWindow)) / USER_DEFAULT_SCREEN_DPI);
   const int workWidth = work.right - work.left;
@@ -525,6 +545,7 @@ void SettingsWindow::Destroy() {
   }
   mWindows.clear();
   if (mWindow) {
+    mPostTarget = nullptr;
     // Messages from here on go to DefWindowProc
     DestroyWindow(std::exchange(mWindow, nullptr));
   }
@@ -587,6 +608,10 @@ LRESULT CALLBACK SettingsWindow::WindowProc(HWND window, UINT message, WPARAM wP
 LRESULT SettingsWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam) {
   if (message == FileDialogMessage) {
     RunPendingDialog();
+    return 0;
+  }
+  if (message == InvalidateMessage) {
+    Invalidate();
     return 0;
   }
   if (mImGui) {
@@ -934,7 +959,7 @@ void SettingsWindow::BuildUi() {
 void SettingsWindow::PanelList(const std::vector<PanelDefinition>& panels) {
   const float width = ListWidth * mScale;
   ImGui::BeginGroup();
-  if (ImGui::BeginChild("list", {width, -ImGui::GetFrameHeightWithSpacing()}, ImGuiChildFlags_Borders)) {
+  if (ImGui::BeginChild("list", {width, -ImGui::GetFrameHeightWithSpacing() * 2}, ImGuiChildFlags_Borders)) {
     // Each row: the shown-in-VR toggle, then the name over what it shows
     // (doc 09 "Desktop UI")
     const float line = ImGui::GetTextLineHeight();
@@ -959,6 +984,7 @@ void SettingsWindow::PanelList(const std::vector<PanelDefinition>& panels) {
       const auto name = Utf8(panel.mName.empty() ? L"(no name)" : panel.mName);
       const auto program = StringUtil::FileNamePart(panel.mWindow.mExecutablePath);
       const auto showing = panel.mKind == PanelKind::TestPattern ? std::string {"Test pattern"}
+        : panel.mKind == PanelKind::Document                     ? DocumentLine(panel, mPanels.DocumentStatusOf(panel.mID))
         : !program.empty()                                       ? Utf8(program)
         : !panel.mWindow.mTitle.empty()                          ? Utf8(panel.mWindow.mTitle)
                                                                  : std::string {"Any window"};
@@ -980,6 +1006,19 @@ void SettingsWindow::PanelList(const std::vector<PanelDefinition>& panels) {
   if (ImGui::Button("Add a window...", {width, 0})) {
     OpenPicker(false);
   }
+  if (ImGui::Button("Add a document...", {width, 0})) {
+    ImGui::OpenPopup("addDocument");
+  }
+  ImGui::SetItemTooltip("A PDF or an image, or a folder of them shown as one run of pages");
+  if (ImGui::BeginPopup("addDocument")) {
+    if (ImGui::Selectable("A PDF or an image...")) {
+      AskForDocument(false, 0);
+    }
+    if (ImGui::Selectable("A folder of them...")) {
+      AskForDocument(true, 0);
+    }
+    ImGui::EndPopup();
+  }
   ImGui::EndGroup();
 }
 
@@ -995,11 +1034,12 @@ void SettingsWindow::PanelDetails(PanelDefinition panel) {
   bool changed = false;
   bool removed = false;
   const bool isWindow = panel.mKind == PanelKind::Window;
+  const bool isDocument = panel.mKind == PanelKind::Document;
 
   ImGui::PushFont(mFonts.mHeading);
   ImGui::TextUnformatted(Utf8(panel.mName.empty() ? L"(no name)" : panel.mName).c_str());
   ImGui::PopFont();
-  ImGui::TextDisabled("%s", isWindow ? "Shows a window from your desktop" : "A test pattern");
+  ImGui::TextDisabled("%s", isWindow ? "Shows a window from your desktop" : isDocument ? "Shows a document" : "A test pattern");
   ImGui::Spacing();
   PanelPreview(panel);
   ImGui::Spacing();
@@ -1042,6 +1082,8 @@ void SettingsWindow::PanelDetails(PanelDefinition panel) {
     if (ImGui::Button("Use a different window...")) {
       OpenPicker(true);
     }
+  } else if (isDocument) {
+    DocumentSection(panel, changed);
   } else {
     ImGui::SeparatorText("Pattern");
     changed |= ImGui::Checkbox("Animated", &panel.mAnimated);
@@ -2092,9 +2134,124 @@ std::optional<std::filesystem::path> SettingsWindow::AskProfileFile(bool save, c
   return result;
 }
 
+// ---- Documents (M8a) ---------------------------------------------------------
+
+void SettingsWindow::AskForDocument(bool folder, uint64_t panelID) {
+  if (mPendingDialog || !mWindow) {
+    return;
+  }
+  mPendingDialog = PendingDialog {.mDocument = true, .mFolder = folder, .mForPanel = panelID};
+  PostMessageW(mWindow, FileDialogMessage, 0, 0);// once this frame is done (round 15)
+}
+
+std::optional<std::filesystem::path> SettingsWindow::AskDocument(bool folder) {
+  const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+  struct Uninit {
+    bool mOwned;
+    ~Uninit() {
+      if (mOwned) {
+        CoUninitialize();
+      }
+    }
+  } uninit {SUCCEEDED(com)};
+  winrt::com_ptr<IFileOpenDialog> dialog;
+  if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(dialog.put())))) {
+    return std::nullopt;
+  }
+  FILEOPENDIALOGOPTIONS options {};
+  dialog->GetOptions(&options);
+  dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | (folder ? FOS_PICKFOLDERS : FOS_FILEMUSTEXIST));
+  // The types Windows can show here: PDFs, and its image decoders' (doc 04)
+  std::wstring patterns = L"*.pdf";
+  for (const auto& extension: Documents::ImageExtensions()) {
+    patterns += L";*" + extension;
+  }
+  const COMDLG_FILTERSPEC types[] {{L"PDFs and images", patterns.c_str()}, {L"PDFs", L"*.pdf"}, {L"All files", L"*.*"}};
+  if (!folder) {
+    dialog->SetFileTypes(static_cast<UINT>(std::size(types)), types);
+  }
+  dialog->SetTitle(folder ? L"A folder of PDFs and images" : L"A PDF or an image");
+  // Modal on this window: nothing else here runs a dialog meanwhile (DU-1)
+  if (FAILED(dialog->Show(mWindow))) {
+    return std::nullopt;
+  }
+  winrt::com_ptr<IShellItem> item;
+  PWSTR path = nullptr;
+  if (FAILED(dialog->GetResult(item.put())) || FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) || !path) {
+    return std::nullopt;
+  }
+  std::filesystem::path result {path};
+  CoTaskMemFree(path);
+  return result;
+}
+
+void SettingsWindow::DocumentSection(PanelDefinition& panel, bool& changed) {
+  ImGui::SeparatorText("Document");
+  const auto status = mPanels.DocumentStatusOf(panel.mID);
+  ImGui::TextWrapped("%s", Utf8(panel.mDocumentPath).c_str());
+  if (status && status->mState == Documents::DocumentState::Failed) {
+    const auto warning = Theme::ToRgba(Theme::StatusWarning);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4 {warning.r, warning.g, warning.b, warning.a});
+    ImGui::TextWrapped("Can't show it: %s.", status->mProblem.c_str());
+    ImGui::PopStyleColor();
+  }
+  // The page: kept within the document once its pages are counted
+  const uint32_t count = status && status->mState == Documents::DocumentState::Ready ? status->mPageCount : 0;
+  const uint32_t page = Documents::ClampPage(panel.mPage, count);
+  ImGui::BeginDisabled(page == 0);
+  if (ImGui::ArrowButton("##previousPage", ImGuiDir_Left)) {
+    panel.mPage = Documents::StepPage(panel.mPage, -1, count);
+    changed = true;
+  }
+  ImGui::EndDisabled();
+  ImGui::SetItemTooltip("Previous page");
+  ImGui::SameLine();
+  ImGui::AlignTextToFramePadding();
+  if (count > 0) {
+    ImGui::Text("Page %u of %u", page + 1, count);
+  } else {
+    ImGui::Text("Page %u", page + 1);
+  }
+  ImGui::SameLine();
+  ImGui::BeginDisabled(count > 0 && page + 1 >= count);
+  if (ImGui::ArrowButton("##nextPage", ImGuiDir_Right)) {
+    panel.mPage = Documents::StepPage(panel.mPage, 1, count);
+    changed = true;
+  }
+  ImGui::EndDisabled();
+  ImGui::SetItemTooltip("Next page");
+  Help("To turn pages in VR, set keys or controller buttons for \"Next page\" and \"Previous page\" on the Keybinds "
+       "tab, or use the quick menu.");
+  if (ImGui::Button("Use another file...")) {
+    AskForDocument(false, panel.mID);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Use another folder...")) {
+    AskForDocument(true, panel.mID);
+  }
+}
+
 void SettingsWindow::RunPendingDialog() {
   const auto pending = std::exchange(mPendingDialog, std::nullopt);
   if (!pending || !mWindow) {
+    return;
+  }
+  if (pending->mDocument) {
+    if (const auto path = AskDocument(pending->mFolder)) {
+      if (pending->mForPanel == 0) {
+        mSelected = mPanels.AddDocument(path->wstring());
+      } else if (auto panel = mPanels.Find(pending->mForPanel)) {// by ID: it may be gone by now (DU-2)
+        // A name still the old file's follows the new one; one typed stays
+        if (panel->mName == DocumentPanelName(panel->mDocumentPath)) {
+          panel->mName = DocumentPanelName(path->wstring());
+        }
+        panel->mDocumentPath = path->wstring();
+        panel->mPage = 0;
+        mPanels.Update(*panel);
+        mFieldsFor = 0;// the name field reads the panel again
+      }
+    }
+    KeepPainting(TailFrames);
     return;
   }
   if (pending->mDebugInfo) {
@@ -2427,6 +2584,8 @@ void SettingsWindow::CommandBuilder(const std::vector<PanelDefinition>& panels) 
     {"Tint on or off", L"tint", true, true, false, L"toggle"},
     {"Nudge (move, size, turn, tilt)", L"nudge", true, true, true, nullptr},
     {"Change a panel's window", L"window", true, false, false, nullptr},
+    {"Next page (documents)", L"page", true, true, false, L"next"},
+    {"Previous page (documents)", L"page", true, true, false, L"previous"},
     {"Recenter", L"recenter", false, false, false, nullptr},
     {"Next profile", L"profile", false, false, false, L"next"},
     {"Previous profile", L"profile", false, false, false, L"previous"},
@@ -2608,6 +2767,9 @@ void SettingsWindow::KeybindsPage(const std::vector<PanelDefinition>& panels) {
       ImGui::PopFont();
       for (std::size_t i = 0; i < Keybinds::PanelActions.size(); ++i) {
         const auto kind = Keybinds::PanelActions[i];
+        if (Keybinds::IsDocumentAction(kind) && panel.mKind != PanelKind::Document) {
+          continue;
+        }
         row(Keybinds::ActionName(kind).c_str(), {kind, panel.mID}, panel.mKeybinds[i], true);
       }
       ImGui::PopID();

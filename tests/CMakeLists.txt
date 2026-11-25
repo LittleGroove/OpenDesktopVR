@@ -149,6 +149,10 @@ odvr_test(hand-service-test SOURCES hand-service-test.cpp DEPS odvr::hostcore)
 odvr_test(keybinds-test SOURCES keybinds-test.cpp DEPS odvr::keybinds)
 # Profiles (M6a): files, unreadable ones, export and import, games, migration
 odvr_test(profiles-test SOURCES profiles-test.cpp DEPS odvr::hostcore)
+# M8a: document panels (PDFs, images, folders): the documents themselves are
+# made by the test; the source draws on the GPU, or WARP
+odvr_test(document-test SOURCES document-test.cpp DEPS odvr::documents windowscodecs)
+set_tests_properties(document-test PROPERTIES TIMEOUT 180)
 # The installer's parts (M7a, ADR-043): versions, the payload, files, the
 # shortcut, Apps and Features, Store apps' access, in a private folder and key
 odvr_test(install-test SOURCES install-test.cpp DEPS odvr::install odvr::core ole32)

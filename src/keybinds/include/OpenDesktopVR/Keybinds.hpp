@@ -97,10 +97,16 @@ enum class ActionKind : uint8_t {
   NextProfile,   // global (ADR-038)
   PreviousProfile,
   ToggleQuickMenu,// global: open or close the quick menu in VR (ADR-041)
+  NextPage,       // per panel: documents (M8a, ADR-047)
+  PreviousPage,
 };
-inline constexpr ActionKind LastActionKind = ActionKind::ToggleQuickMenu;
-inline constexpr std::array PanelActions {
-  ActionKind::TogglePanel, ActionKind::BrightnessUp, ActionKind::BrightnessDown, ActionKind::ToggleTint};
+inline constexpr ActionKind LastActionKind = ActionKind::PreviousPage;
+inline constexpr std::array PanelActions {ActionKind::TogglePanel, ActionKind::BrightnessUp, ActionKind::BrightnessDown,
+  ActionKind::ToggleTint, ActionKind::NextPage, ActionKind::PreviousPage};
+// Per-panel actions only a document panel has
+constexpr bool IsDocumentAction(ActionKind kind) noexcept {
+  return kind == ActionKind::NextPage || kind == ActionKind::PreviousPage;
+}
 // Stored in "keybinds", not with a panel
 inline constexpr std::array GlobalActions {ActionKind::ToggleAllPanels, ActionKind::ToggleKeyboard, ActionKind::Recenter,
   ActionKind::NextProfile, ActionKind::PreviousProfile, ActionKind::ToggleQuickMenu};

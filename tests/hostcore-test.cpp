@@ -19,6 +19,7 @@
 
 #include "check.hpp"
 
+#include <OpenDesktopVR/DocumentFormats.hpp>
 #include <OpenDesktopVR/HostPanel.hpp>
 #include <OpenDesktopVR/KeyboardConfig.hpp>
 #include <OpenDesktopVR/KeyboardService.hpp>
@@ -300,6 +301,54 @@ int main() {
     Check(back && back->SameContent(panel), "not part of the content: changing it doesn't restart the capture");
   });
 
+  Scenario("Document panels in settings.json (M8a): the path, the page counted from 1, nonsense refused", [] {
+    auto panel = NewDocumentPanel(L"C:\\Flight\\Checklist.pdf", 4);
+    Check(panel.mKind == PanelKind::Document && panel.mName == L"Checklist" && panel.mPage == 0 && panel.mID != 0,
+      "a new one: named after the file, on its first page");
+    Check(DocumentPanelName(L"C:\\Flight\\Charts") == L"Charts" && DocumentPanelName(L"D:\\") == L"D:\\",
+      "a folder's name; a drive's root: its path");
+    panel.mPage = 2;
+    auto json = PanelConfig::ToJson(panel);
+    Check(json["kind"] == "document" && json["document"]["path"] == "C:\\Flight\\Checklist.pdf" && json["document"]["page"] == 3
+        && !json.contains("window") && !json.contains("animated"),
+      "stored: kind, path, and page 3 (counted from 1), nothing of a window's");
+    auto back = PanelConfig::FromJson(json);
+    Check(back && back->mKind == PanelKind::Document && back->mDocumentPath == panel.mDocumentPath && back->mPage == 2
+        && back->SameContent(panel),
+      "read back the same");
+    auto other = panel;
+    other.mPage = 5;
+    other.mWidthMeters = 0.5f;
+    Check(other.SameContent(panel), "another page or size is the same content: the source stays");
+    other.mDocumentPath = L"C:\\Flight\\Other.pdf";
+    Check(!other.SameContent(panel), "another file isn't");
+    Check(PageViewFor(panel).mPage == 2 && PageViewFor(panel).mWidth == Documents::PageWidthFor(panel.mWidthMeters),
+      "its page view: the page, at the width from its size in VR");
+    json["document"]["page"] = 0;
+    Check(PanelConfig::FromJson(json) && PanelConfig::FromJson(json)->mPage == 0, "page 0 (nonsense): the first");
+    json["document"]["page"] = -4;
+    Check(PanelConfig::FromJson(json) && PanelConfig::FromJson(json)->mPage == 0, "a negative page: the first");
+    json["document"]["page"] = "seven";
+    Check(PanelConfig::FromJson(json) && PanelConfig::FromJson(json)->mPage == 0, "a page that isn't a number: the first");
+    json["document"]["page"] = 1e30;
+    Check(PanelConfig::FromJson(json) && PanelConfig::FromJson(json)->mPage == 0, "a page beyond any count: the first");
+    json["document"].erase("path");
+    Check(!PanelConfig::FromJson(json), "no path: skipped (ST-4)");
+    json["document"]["path"] = std::string(200'000, 'x');
+    Check(!PanelConfig::FromJson(json), "a path longer than Windows allows: skipped");
+    json["document"] = "C:\\file.pdf";
+    Check(!PanelConfig::FromJson(json), "\"document\" not an object: skipped");
+    auto future = PanelConfig::ToJson(panel);
+    future["document"]["outline"] = true;
+    future["zoom"] = 2;
+    const auto kept = PanelConfig::ToJson(*PanelConfig::FromJson(future));
+    Check(kept.contains("zoom") && kept["document"].value("outline", false) && kept["document"]["page"] == 3,
+      "a newer version's fields are kept, at the top and in \"document\" (ST-5)");
+    auto asWindow = *PanelConfig::FromJson(future);
+    asWindow.mKind = PanelKind::Window;
+    Check(!PanelConfig::ToJson(asWindow).contains("document"), "changed to a window: the document goes");
+  });
+
   Scenario("Keybinds are stored with the panel and in the global section (UI-2, UI-3)", [] {
     auto panel = WindowPanel();
     const auto f13 = Keybinds::Binding::From({Keybinds::Button {Keybinds::DeviceKind::Keyboard, {}, VK_F13}});
@@ -316,6 +365,17 @@ int main() {
         && PanelConfig::ReadGlobalKeybinds(settings, Keybinds::ActionKind::ToggleAllPanels)[1].IsEmpty(),
       "the keyboard's keybind round-trips beside it (K5)");
     Check(settings["keybinds"].contains("futureAction"), "a newer version's keybinds are kept (ST-5)");
+    auto document = NewDocumentPanel(L"C:\\Manual.pdf", 0);
+    document.KeybindsFor(Keybinds::ActionKind::NextPage)[0] = f13;
+    const auto json = PanelConfig::ToJson(document);
+    Check(json["keybinds"].contains("nextPage") && json["keybinds"].contains("previousPage"), "page keybinds stored by name (M8a)");
+    const auto read = PanelConfig::FromJson(json);
+    Check(read && read->KeybindsFor(Keybinds::ActionKind::NextPage)[0] == f13
+        && read->KeybindsFor(Keybinds::ActionKind::PreviousPage)[0].IsEmpty(),
+      "the next-page keybind round-trips");
+    Check(Keybinds::IsDocumentAction(Keybinds::ActionKind::NextPage) && !Keybinds::IsDocumentAction(Keybinds::ActionKind::ToggleTint)
+        && !Keybinds::IsGlobal(Keybinds::ActionKind::PreviousPage),
+      "page actions belong to a document panel");
   });
 
   Scenario("The keyboard's settings: defaults, round trip, odd values (ST-4, ST-5)", [] {

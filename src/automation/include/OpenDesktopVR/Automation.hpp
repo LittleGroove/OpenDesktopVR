@@ -46,6 +46,7 @@ enum class Verb : uint8_t {
   Menu,
   Settings,// open the settings window (also what starting the program again does)
   Help,
+  Page,// a document panel's page (M8a)
 };
 
 // What a command acts on
@@ -91,6 +92,9 @@ struct Command {
   // Window: text in its title; Profile: its name ("" with a step)
   std::wstring mText;
   int mProfileStep {0};// Profile: +1 next, -1 previous
+  // Page: +1 next, -1 previous; or a page from 1 (UINT32_MAX: the last)
+  int mPageStep {0};
+  uint32_t mPage {0};
   int mRepeat {1};
   bool operator==(const Command&) const = default;
 };
